@@ -99,7 +99,8 @@
                                 <div class="chre3-video-hint">
                                     <span class="ms-line">chre3 视频地址示例：<span class="inline-code">https://llm.chre3.com</span></span>
                                     <span class="ms-line">视频接口固定为 <span class="inline-code">POST /v1/videos</span>，查询 <span class="inline-code">GET /v1/videos/{id}</span>。</span>
-                                    <span class="ms-line">该协议下所有视频模型默认开启真人合规素材（<span class="inline-code">colored-pencil</span>），新增或改名模型也会自动发送该参数。</span>
+                                    <span class="ms-line"><span class="inline-code">视频：chre3协议</span> 用于普通素材，不发送真人合规参数。</span>
+                                    <span class="ms-line"><span class="inline-code">视频：chre3真人协议</span> 用于真人素材，固定发送 <span class="inline-code">compliance_enabled=true</span>（默认 <span class="inline-code">colored-pencil</span>）。</span>
                                 </div>
                             </label>
                             <label class="field full api-key-field">
@@ -274,6 +275,7 @@
                                         <option value="gemini" data-i18n="api.protocolGemini">Gemini 协议</option>
                                         <option value="grok">Grok 视频协议</option>
                                         <option value="chre3-video" data-i18n="api.protocolChre3Video">视频：chre3协议</option>
+                                        <option value="chre3-video-real" data-i18n="api.protocolChre3VideoReal">视频：chre3真人协议</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

@@ -315,6 +315,8 @@ JIMENG_LOGIN_SESSION = {
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
 CHRE3_VIDEO_PROTOCOL = "chre3-video"
+CHRE3_VIDEO_REAL_PROTOCOL = "chre3-video-real"
+CHRE3_VIDEO_PROTOCOLS = frozenset({CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL})
 CHRE3_VIDEO_MODEL_IDS = {
     "kling-v3-720p",
     "sora-2-pro",
@@ -322,14 +324,14 @@ CHRE3_VIDEO_MODEL_IDS = {
     "sd2-c7",
     "sd2-c8",
 }
-# Legacy OpenAI + sd2 compatibility keeps the known-model guard.  A provider
-# explicitly configured as chre3-video uses protocol-wide compliance instead.
-CHRE3_VIDEO_COMPLIANCE_MODEL_IDS = {"sd2-c7", "sd2-c8"}
 CHRE3_VIDEO_COMPLIANCE_MODES = {"colored-pencil", "watercolor", "fishnet", "grid"}
-# The provider documents colored-pencil as its reference compliance example.  Keep
-# this default protocol-local so other video providers retain their existing body.
+# The provider documents colored-pencil as its reference compliance example. Keep
+# this default local to the dedicated真人协议 so other video providers retain their body.
 CHRE3_VIDEO_DEFAULT_COMPLIANCE_MODE = "colored-pencil"
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", CHRE3_VIDEO_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+
+def is_chre3_video_protocol(value):
+    return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses", "openai-async-image"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -2525,8 +2527,8 @@ class CanvasVideoRequest(BaseModel):
     generate_audio: bool = False
     multimodal: bool = False
     trusted_asset: bool = False
-    # chre3 sd2-c7/c8 can opt out or select another documented compliance mode.
-    # None means use the protocol default (enabled).
+    # The normal chre3 protocol omits these fields by default; the real-person
+    # protocol forces them on. Explicit true remains available to API callers.
     compliance_enabled: Optional[bool] = None
     compliance_mode: str = ""
 
@@ -13204,13 +13206,13 @@ async def probe_openai_models_endpoint(client, base_url: str, api_key: str):
         return False, {"status": response.status_code, "message": f"OpenAI /v1/models 不可用 (HTTP {response.status_code})", "raw": raw}
     return False, {"status": response.status_code, "message": f"OpenAI /v1/models 服务端错误 {response.status_code}", "raw": raw}
 
-async def probe_chre3_video_endpoint(client, base_url: str, api_key: str):
+async def probe_chre3_video_endpoint(client, base_url: str, api_key: str, protocol=CHRE3_VIDEO_PROTOCOL):
     """验证 chre3 的 Bearer 入口，不调用会产生费用的 POST /v1/videos。"""
     ok, result = await probe_openai_models_endpoint(client, base_url, api_key)
     result = dict(result or {})
     result["ok"] = bool(ok)
     if ok and isinstance(result.get("raw"), dict):
-        grouped, ids = parse_upstream_models(result["raw"], CHRE3_VIDEO_PROTOCOL)
+        grouped, ids = parse_upstream_models(result["raw"], protocol)
         result.update({
             "model_count": len(ids),
             "image_models": grouped["image"],
@@ -13218,11 +13220,13 @@ async def probe_chre3_video_endpoint(client, base_url: str, api_key: str):
             "video_models": grouped["video"],
             "all": ids,
         })
-    result["protocol"] = CHRE3_VIDEO_PROTOCOL
+    result["protocol"] = protocol
     if ok:
-        result["message"] = f"chre3 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
+        label = "chre3 真人视频协议" if protocol == CHRE3_VIDEO_REAL_PROTOCOL else "chre3 视频协议"
+        result["message"] = f"{label}可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
     else:
-        result["message"] = f"chre3 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+        label = "chre3 真人视频协议" if protocol == CHRE3_VIDEO_REAL_PROTOCOL else "chre3 视频协议"
+        result["message"] = f"{label}验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
@@ -13304,14 +13308,14 @@ def parse_upstream_models(raw, protocol="openai"):
     ids = sorted(set(ids))
     grouped = {"image": [], "chat": [], "video": []}
     metadata_by_id = {}
-    if protocol == CHRE3_VIDEO_PROTOCOL:
+    if is_chre3_video_protocol(protocol):
         for it in items:
             if isinstance(it, dict):
                 raw_id = it.get("id") or it.get("name") or it.get("model")
                 if raw_id:
                     metadata_by_id[str(raw_id)] = it
     for mid in ids:
-        kind = classify_chre3_model_entry(metadata_by_id.get(mid), mid) if protocol == CHRE3_VIDEO_PROTOCOL else classify_upstream_model(mid)
+        kind = classify_chre3_model_entry(metadata_by_id.get(mid), mid) if is_chre3_video_protocol(protocol) else classify_upstream_model(mid)
         grouped[kind].append(mid)
     return grouped, ids
 
@@ -13514,13 +13518,13 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     api_key = api_key_from_payload(payload, protocol)
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
-    if protocol == CHRE3_VIDEO_PROTOCOL:
+    if is_chre3_video_protocol(protocol):
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                probe = await probe_chre3_video_endpoint(client, base_url, api_key)
+                probe = await probe_chre3_video_endpoint(client, base_url, api_key, protocol)
             return {
                 "ok": bool(probe.get("ok")),
-                "protocol": CHRE3_VIDEO_PROTOCOL,
+                "protocol": protocol,
                 "status_code": probe.get("status") or 0,
                 "message": probe.get("message") or "chre3 视频协议验证完成",
                 "model_count": probe.get("model_count") or 0,
@@ -14319,12 +14323,16 @@ def video_api_root(provider):
     return base_url
 
 def is_chre3_video_provider(provider):
-    """是否明确选择了独立的 chre3 视频协议。"""
-    return provider_protocol(provider) == CHRE3_VIDEO_PROTOCOL
+    """是否选择了任一独立的 chre3 视频协议。"""
+    return is_chre3_video_protocol(provider_protocol(provider))
+
+def is_chre3_real_video_provider(provider):
+    """是否选择了强制真人合规的 chre3 视频协议。"""
+    return provider_protocol(provider) == CHRE3_VIDEO_REAL_PROTOCOL
 
 def is_chre3_video_contract(provider, model=""):
-    """chre3-video 协议统一使用 POST/GET /v1/videos 合同，不依赖模型名称。"""
-    return effective_protocol(provider, model) == CHRE3_VIDEO_PROTOCOL
+    """两个 chre3 视频协议统一使用 POST/GET /v1/videos 合同。"""
+    return is_chre3_video_protocol(effective_protocol(provider, model))
 
 def is_sd2_video_contract(provider, model=""):
     """兼容旧配置：OpenAI 协议下的 sd2-c* 仍沿用 chre3 视频合同。"""
@@ -14529,21 +14537,11 @@ def sd2_video_size(size="", aspect_ratio=""):
     value = str(size or "").strip() or str(aspect_ratio or "").strip()
     return value or "16:9"
 
-def chre3_video_compliance_payload(payload, requested_model, force=False):
-    """Return the documented compliance fields for a chre3 video request.
-
-    The current provider account rejects unprocessed real-person references.  The
-    protocol default therefore enables its documented compliance transform.  A
-    dedicated chre3-video provider applies it to every model so future model IDs
-    do not silently lose the setting; the legacy OpenAI compatibility path remains
-    limited to the known sd2 IDs.
-    """
-    model = str(requested_model or "").strip().lower()
-    if not force and model not in CHRE3_VIDEO_COMPLIANCE_MODEL_IDS:
+def chre3_video_compliance_payload(payload, requested_model="", force=False):
+    """Return compliance fields only for the real-person protocol or an explicit opt-in."""
+    enabled = force or getattr(payload, "compliance_enabled", None) is True
+    if not enabled:
         return {}
-    enabled = getattr(payload, "compliance_enabled", None)
-    if enabled is False:
-        return {"compliance_enabled": False}
     mode = str(getattr(payload, "compliance_mode", "") or "").strip().lower()
     mode = mode or CHRE3_VIDEO_DEFAULT_COMPLIANCE_MODE
     if mode not in CHRE3_VIDEO_COMPLIANCE_MODES:
@@ -14633,7 +14631,7 @@ async def generate_sd2_video(client, payload, provider, base_url, requested_mode
     body = await build_sd2_video_request(
         payload,
         requested_model,
-        force_compliance=is_chre3_video_provider(provider),
+        force_compliance=is_chre3_real_video_provider(provider),
     )
     submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
     response = await client.post(
