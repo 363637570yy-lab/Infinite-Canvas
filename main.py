@@ -314,7 +314,15 @@ JIMENG_LOGIN_SESSION = {
 }
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+CHRE3_VIDEO_PROTOCOL = "chre3-video"
+CHRE3_VIDEO_MODEL_IDS = {
+    "kling-v3-720p",
+    "sora-2-pro",
+    "wan2.7-720p",
+    "sd2-c7",
+    "sd2-c8",
+}
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", CHRE3_VIDEO_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses", "openai-async-image"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -8490,8 +8498,8 @@ def local_asset_public_url(value: str) -> str:
         return ""
     return f"{base}{urllib.parse.quote(text, safe='/:?&=%#.-_~')}{public_media_url_suffix()}"
 
-async def openai_video_proxy_public_reference_url(ref) -> str:
-    """异步生图（openai-video-proxy）的参考图公网化。
+async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str:
+    """异步生图/视频接口的参考素材公网化。
     不走公网隧道（暴露本机服务风险高）：本地文件上传图床（Litterbox/temp.sh，72h 短链），
     与 RS 模式同一通道；真正的公网 URL 原样透传；若手动配置了 PUBLIC_MEDIA_BASE_URL 则作为兜底。"""
     raw = ref.get("url", "") if isinstance(ref, dict) else ref
@@ -8511,7 +8519,8 @@ async def openai_video_proxy_public_reference_url(ref) -> str:
     if local_path and output_file_from_url(local_path):
         upload_error = ""
         try:
-            uploaded = await upload_local_video_to_cloud(local_path)
+            allowed_prefixes = ("image/", "video/", "audio/") if allow_audio else ("image/", "video/")
+            uploaded = await upload_local_video_to_cloud(local_path, allowed_prefixes=allowed_prefixes)
             url = str((uploaded or {}).get("url") or "")
             if url.startswith(("http://", "https://")):
                 return url
@@ -8522,9 +8531,9 @@ async def openai_video_proxy_public_reference_url(ref) -> str:
             return public_url
         raise HTTPException(
             status_code=400,
-            detail=f"参考图上传图床失败，无法转成公网 URL：{upload_error[:200] or '未知错误'}。请检查网络后重试。"
+            detail=f"参考素材上传图床失败，无法转成公网 URL：{upload_error[:200] or '未知错误'}。请检查网络后重试。"
         )
-    raise HTTPException(status_code=400, detail=f"参考图不是公网 URL，无法传给上游：{text[:160]}")
+    raise HTTPException(status_code=400, detail=f"参考素材不是公网 URL，无法传给上游：{text[:160]}")
 
 def openai_video_proxy_local_image_path(ref) -> str:
     raw = ref.get("url", "") if isinstance(ref, dict) else ref
@@ -9176,11 +9185,11 @@ async def upload_video_to_temp_sh(path: str, source_url: str) -> Dict[str, str]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Temp.sh 上传异常：{exc}") from exc
 
-async def upload_local_video_to_cloud(ref_url: str, service: str = "auto") -> Dict[str, str]:
+async def upload_local_video_to_cloud(ref_url: str, service: str = "auto", allowed_prefixes=("image/", "video/")) -> Dict[str, str]:
     ref_url = str(ref_url or "").strip()
     if ref_url.startswith("http://") or ref_url.startswith("https://"):
         return {"url": ref_url, "source": ref_url, "service": "existing"}
-    path = local_media_path_for_cloud_upload(ref_url)
+    path = local_media_path_for_cloud_upload(ref_url, allowed_prefixes)
     service = str(service or os.getenv("CLOUD_VIDEO_UPLOAD_SERVICE", "auto") or "auto").strip().lower()
     if service in {"litterbox", "catbox"}:
         return await upload_video_to_litterbox(path, ref_url)
@@ -13184,6 +13193,27 @@ async def probe_openai_models_endpoint(client, base_url: str, api_key: str):
         return False, {"status": response.status_code, "message": f"OpenAI /v1/models 不可用 (HTTP {response.status_code})", "raw": raw}
     return False, {"status": response.status_code, "message": f"OpenAI /v1/models 服务端错误 {response.status_code}", "raw": raw}
 
+async def probe_chre3_video_endpoint(client, base_url: str, api_key: str):
+    """验证 chre3 的 Bearer 入口，不调用会产生费用的 POST /v1/videos。"""
+    ok, result = await probe_openai_models_endpoint(client, base_url, api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], CHRE3_VIDEO_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "all": ids,
+        })
+    result["protocol"] = CHRE3_VIDEO_PROTOCOL
+    if ok:
+        result["message"] = f"chre3 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
+    else:
+        result["message"] = f"chre3 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
     if task_ok:
@@ -13205,15 +13235,41 @@ async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
         "raw": {"task_probe": task_probe, "openai_compat_probe": compat_probe.get("raw")},
     }
 
+def is_sd2_video_model(model):
+    """sd2-c* 是中转站文档定义的 OpenAI 兼容异步视频模型族。"""
+    return str(model or "").strip().lower().startswith("sd2-c")
+
+def is_chre3_video_model(model):
+    """chre3 中转站当前公开的视频模型；协议本身也允许后续新增模型。"""
+    value = str(model or "").strip().lower()
+    return value in CHRE3_VIDEO_MODEL_IDS or is_sd2_video_model(value)
+
 def classify_upstream_model(mid):
     lc = str(mid or "").lower()
     video_keys = ["veo", "sora", "wan2", "wanx", "doubao-seedance", "doubao-1", "kling", "hailuo", "video", "t2v-", "i2v-", "s2v"]
-    if any(k in lc for k in video_keys):
+    if is_chre3_video_model(lc) or any(k in lc for k in video_keys):
         return "video"
     image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein", "seedream", "doubao-seedream", "text-to-image", "image-to-image"]
     if any(k in lc for k in image_keys):
         return "image"
     return "chat"
+
+def classify_chre3_model_entry(item, model_id=""):
+    """优先使用 chre3 模型元数据判断类型，名称判断作为兜底。"""
+    if isinstance(item, dict):
+        values = []
+        for key in ("type", "model_type", "modelType", "task", "category", "kind"):
+            value = item.get(key)
+            if isinstance(value, (str, int, float)):
+                values.append(str(value).strip().lower())
+            elif isinstance(value, list):
+                values.extend(str(part).strip().lower() for part in value)
+        capabilities = item.get("capabilities")
+        if isinstance(capabilities, dict):
+            values.extend(str(key).strip().lower() for key, enabled in capabilities.items() if enabled)
+        if any("video" in value or value in {"t2v", "i2v", "s2v"} for value in values):
+            return "video"
+    return classify_upstream_model(model_id)
 
 def parse_upstream_models(raw, protocol="openai"):
     items = raw.get("data") if isinstance(raw, dict) else None
@@ -13236,8 +13292,16 @@ def parse_upstream_models(raw, protocol="openai"):
             ids.append(mid)
     ids = sorted(set(ids))
     grouped = {"image": [], "chat": [], "video": []}
+    metadata_by_id = {}
+    if protocol == CHRE3_VIDEO_PROTOCOL:
+        for it in items:
+            if isinstance(it, dict):
+                raw_id = it.get("id") or it.get("name") or it.get("model")
+                if raw_id:
+                    metadata_by_id[str(raw_id)] = it
     for mid in ids:
-        grouped[classify_upstream_model(mid)].append(mid)
+        kind = classify_chre3_model_entry(metadata_by_id.get(mid), mid) if protocol == CHRE3_VIDEO_PROTOCOL else classify_upstream_model(mid)
+        grouped[kind].append(mid)
     return grouped, ids
 
 def apply_agnes_model_defaults(base_url, grouped, ids):
@@ -13389,6 +13453,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
                     return volcengine_default_model_payload(status=resp.status_code, raw=data)
             return {
                 "ok": True,
+                "protocol": protocol,
                 "status": resp.status_code,
                 "model_count": len(ids),
                 "image_models": grouped["image"],
@@ -13438,6 +13503,24 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     api_key = api_key_from_payload(payload, protocol)
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
+    if protocol == CHRE3_VIDEO_PROTOCOL:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                probe = await probe_chre3_video_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": CHRE3_VIDEO_PROTOCOL,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "chre3 视频协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
     openai_async_probe = is_openai_async_image_context(base_url, [], getattr(payload, "image_request_mode", ""))
     if protocol == "volcengine":
         try:
@@ -13707,6 +13790,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         }
     return {
         "total": len(ids),
+        "protocol": protocol,
         "image_models": grouped["image"],
         "chat_models": grouped["chat"],
         "video_models": grouped["video"],
@@ -14223,11 +14307,36 @@ def video_api_root(provider):
         base_url = base_url.rsplit("/", 1)[0]
     return base_url
 
+def is_chre3_video_provider(provider):
+    """是否明确选择了独立的 chre3 视频协议。"""
+    return provider_protocol(provider) == CHRE3_VIDEO_PROTOCOL
+
+def is_chre3_video_contract(provider, model=""):
+    """chre3-video 协议统一使用 POST/GET /v1/videos 合同，不依赖模型名称。"""
+    return effective_protocol(provider, model) == CHRE3_VIDEO_PROTOCOL
+
+def is_sd2_video_contract(provider, model=""):
+    """兼容旧配置：OpenAI 协议下的 sd2-c* 仍沿用 chre3 视频合同。"""
+    return is_sd2_video_model(model) and effective_protocol(provider, model) == "openai"
+
+def is_chre3_video_route(provider, model=""):
+    """新协议或历史 sd2 配置均走同一套 chre3 视频请求实现。"""
+    return is_chre3_video_contract(provider, model) or is_sd2_video_contract(provider, model)
+
+def sd2_video_api_root(base_url):
+    value = str(base_url or "").strip().rstrip("/")
+    if value.endswith("/v1") or value.endswith("/v2"):
+        return value.rsplit("/", 1)[0]
+    return value
+
 def looks_like_html_response(text: str) -> bool:
     sample = str(text or "").lstrip()[:200].lower()
     return sample.startswith("<!doctype html") or sample.startswith("<html") or "<head" in sample
 
-def video_submit_url_candidates(provider, base_url):
+def video_submit_url_candidates(provider, base_url, model=""):
+    if is_chre3_video_route(provider, model):
+        # 该合同的 POST 可能产生真实计费任务，不能用旧候选地址重试造成重复提交。
+        return [f"{sd2_video_api_root(base_url)}/v1/videos"]
     if is_grok_provider(provider, "grok-imagine-video"):
         return [f"{base_url}/v1/videos"]
     if is_agnes_provider(provider):
@@ -14245,7 +14354,10 @@ def video_submit_url_candidates(provider, base_url):
         return [f"{base_url}/v1/video/create"]
     return [f"{base_url}/v1/videos/generations", f"{base_url}/v2/videos/generations"]
 
-def video_task_url_candidates(provider, base_url, task_id, submit_url=""):
+def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=""):
+    if is_chre3_video_route(provider, model):
+        quoted_id = urllib.parse.quote(str(task_id), safe="")
+        return [f"{sd2_video_api_root(base_url)}/v1/videos/{quoted_id}"]
     if is_grok_provider(provider, "grok-imagine-video"):
         quoted_id = urllib.parse.quote(str(task_id), safe="")
         return [f"{base_url}/v1/videos/{quoted_id}"]
@@ -14315,11 +14427,11 @@ def humanize_video_task_failure(reason) -> str:
         )
     return f"视频生成任务失败：{text}"
 
-async def wait_for_video_task(client, provider, task_id, submit_url=""):
+async def wait_for_video_task(client, provider, task_id, submit_url="", model=""):
     base_url = video_api_root(provider)
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
-    task_urls = video_task_url_candidates(provider, base_url, task_id, submit_url)
+    task_urls = video_task_url_candidates(provider, base_url, task_id, submit_url, model)
     deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
     delay = max(2.0, IMAGE_POLL_INTERVAL)
     last_payload = {}
@@ -14327,9 +14439,11 @@ async def wait_for_video_task(client, provider, task_id, submit_url=""):
         await asyncio.sleep(delay)
         raw = None
         last_error = None
+        last_response = None
         for task_url in task_urls:
             try:
-                response = await client.get(task_url, headers=api_headers(provider=provider))
+                response = await client.get(task_url, headers=api_headers(provider=provider, model=model))
+                last_response = response
                 response.raise_for_status()
                 raw = response.json()
                 break
@@ -14337,6 +14451,11 @@ async def wait_for_video_task(client, provider, task_id, submit_url=""):
                 last_error = exc
                 continue
         if raw is None:
+            if is_chre3_video_route(provider, model):
+                if looks_like_html_response(getattr(last_response, "text", "")):
+                    raise HTTPException(status_code=502, detail="chre3 视频任务查询返回了网页 HTML，请确认 Base URL 和 /v1/videos/{id} 接口地址正确。")
+                if last_error:
+                    raise HTTPException(status_code=502, detail=f"chre3 视频任务查询失败：{last_error}") from last_error
             if last_error:
                 raise last_error
             raise HTTPException(status_code=502, detail=f"视频任务查询失败：{task_id}")
@@ -14356,9 +14475,168 @@ async def wait_for_video_task(client, provider, task_id, submit_url=""):
         if status in VIDEO_TASK_FAILURE_STATUSES:
             error = task_data.get("error") if isinstance(task_data.get("error"), dict) else {}
             reason = task_data.get("fail_reason") or task_data.get("message") or error.get("message") or raw.get("error") or raw.get("message") or str(raw)
+            if is_chre3_video_route(provider, model):
+                raise HTTPException(status_code=502, detail=f"chre3 视频生成任务失败：{reason}")
             raise HTTPException(status_code=502, detail=humanize_video_task_failure(reason))
         delay = min(delay * 1.6, 12)
     raise HTTPException(status_code=504, detail=f"视频生成任务超时：{last_payload or task_id}")
+
+def sd2_reference_value(ref):
+    if isinstance(ref, str):
+        return ref.strip()
+    if isinstance(ref, dict):
+        return str(ref.get("url") or "").strip()
+    return str(getattr(ref, "url", "") or "").strip()
+
+def sd2_reference_values(refs, limit):
+    values = []
+    for ref in refs or []:
+        value = sd2_reference_value(ref)
+        if value:
+            values.append(value)
+    return values[:limit]
+
+def normalize_sd2_prompt(prompt):
+    text = str(prompt or "").strip()
+    for token in ("Image", "Video", "Audio"):
+        text = re.sub(
+            rf"@{token}(\d+)",
+            lambda match, name=token: f"@{name}{match.group(1)}",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+def sd2_video_duration(duration):
+    try:
+        value = int(duration)
+    except Exception:
+        value = 8
+    return max(5, min(15, value))
+
+def sd2_video_size(size="", aspect_ratio=""):
+    value = str(size or "").strip() or str(aspect_ratio or "").strip()
+    return value or "16:9"
+
+async def sd2_public_reference_url(value, kind, index):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        public_url = await openai_video_proxy_public_reference_url({"url": raw}, allow_audio=(kind == "音频"))
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"chre3 视频第 {index} 个{kind}参考素材无法转换为公网 URL：{exc.detail}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"chre3 视频第 {index} 个{kind}参考素材无法转换为公网 URL：{exc}",
+        ) from exc
+    parsed = urllib.parse.urlsplit(str(public_url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"chre3 视频第 {index} 个{kind}参考素材没有得到有效的公网 http(s) URL，请改用公网素材或配置媒体公网地址。",
+        )
+    return str(public_url).strip()
+
+async def build_sd2_video_request(payload, requested_model):
+    image_values = sd2_reference_values(payload.images, 9)
+    video_values = sd2_reference_values(payload.videos, 3)
+    audio_values = sd2_reference_values(payload.audios, 3)
+    if audio_values and not (image_values or video_values):
+        raise HTTPException(status_code=400, detail="chre3 视频接口的 audio_refs 不能单独使用，请至少再提供 1 张图片或 1 条参考视频。")
+
+    image_urls = [
+        await sd2_public_reference_url(value, "图片", index)
+        for index, value in enumerate(image_values, 1)
+    ]
+    video_urls = [
+        await sd2_public_reference_url(value, "视频", index)
+        for index, value in enumerate(video_values, 1)
+    ]
+    audio_urls = [
+        await sd2_public_reference_url(value, "音频", index)
+        for index, value in enumerate(audio_values, 1)
+    ]
+    body = {
+        "model": selected_model(requested_model, "sd2-c8"),
+        "prompt": normalize_sd2_prompt(payload.prompt),
+        "duration": sd2_video_duration(payload.duration),
+        "size": sd2_video_size(payload.size, payload.aspect_ratio),
+    }
+    if image_urls:
+        body["image_refs"] = image_urls
+    if video_urls:
+        body["video_refs"] = video_urls
+    if audio_urls:
+        body["audio_refs"] = audio_urls
+    return body
+
+def sd2_response_error_text(response):
+    text = str(getattr(response, "text", "") or "").strip()
+    try:
+        raw = response.json()
+    except Exception:
+        return text[:500]
+    if isinstance(raw, dict):
+        error = raw.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("detail") or error.get("type")
+            if message:
+                return str(message)
+        elif isinstance(error, str) and error.strip():
+            return error.strip()
+        for key in ("message", "detail"):
+            if raw.get(key):
+                return str(raw[key])
+    return text[:500] or str(raw)[:500]
+
+async def generate_sd2_video(client, payload, provider, base_url, requested_model):
+    """调用 chre3 视频合同：POST /v1/videos，GET /v1/videos/{id}。"""
+    body = await build_sd2_video_request(payload, requested_model)
+    submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
+    response = await client.post(
+        submit_url,
+        headers=api_headers(provider=provider, model=requested_model),
+        json=body,
+    )
+    if response.status_code >= 400:
+        detail = sd2_response_error_text(response)
+        raise HTTPException(status_code=response.status_code, detail=f"chre3 视频接口错误：{detail}")
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or "")[:500]
+        if looks_like_html_response(resp_text):
+            detail = (
+                "chre3 视频接口返回了网页 HTML，而不是 JSON。请确认 API 设置里的 Base URL 是中转站接口根地址，"
+                "例如 https://llm.chre3.com，而不是管理后台网页地址。"
+            )
+        else:
+            detail = f"chre3 视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"chre3 视频接口返回了无法识别的响应：{str(raw)[:500]}")
+    task_id = extract_task_id(raw) or raw.get("task_id") or raw.get("id")
+    result = raw
+    initial_task_data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+    initial_status = str(initial_task_data.get("status") or initial_task_data.get("task_status") or "").upper()
+    if initial_status in VIDEO_TASK_FAILURE_STATUSES:
+        error = initial_task_data.get("error") if isinstance(initial_task_data.get("error"), dict) else {}
+        reason = initial_task_data.get("message") or error.get("message") or raw.get("message") or raw.get("error") or str(raw)
+        raise HTTPException(status_code=502, detail=f"chre3 视频生成任务失败：{reason}")
+    if task_id and not video_output_urls(raw):
+        result = await wait_for_video_task(client, provider, task_id, submit_url, requested_model)
+    urls = video_output_urls(result)
+    if not urls:
+        error_text = sd2_response_error_text(response) if raw.get("error") else ""
+        detail = error_text or f"视频生成成功但没有返回视频：{result}"
+        raise HTTPException(status_code=502, detail=f"chre3 视频接口{detail}")
+    local_urls = [await save_remote_video_to_output(url) for url in urls]
+    return {"videos": local_urls, "task_id": task_id, "raw": result}
 
 def apimart_video_size(size):
     value = str(size or "16:9").strip()
@@ -15094,9 +15372,13 @@ async def canvas_video(payload: CanvasVideoRequest):
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip("/"))
-    submit_urls = video_submit_url_candidates(provider, base_url)
-    submit_url = submit_urls[0]
-    requested_model = selected_model(payload.model, "agnes-video-v2.0" if is_agnes else "veo3-fast")
+    if is_chre3_video_provider(provider):
+        default_video_model = "sd2-c8"
+    elif is_agnes:
+        default_video_model = "agnes-video-v2.0"
+    else:
+        default_video_model = "veo3-fast"
+    requested_model = selected_model(payload.model, default_video_model)
     if is_grok_provider(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as grok_client:
@@ -15157,6 +15439,17 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(玉玉) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求上游视频接口失败：{exc}") from exc
+    if is_chre3_video_route(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as sd2_client:
+                return await generate_sd2_video(sd2_client, payload, provider, base_url, requested_model)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(chre3) 网络/TLS错误 model={requested_model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求 chre3 视频接口失败：{exc}") from exc
+    submit_urls = video_submit_url_candidates(provider, base_url, requested_model)
+    submit_url = submit_urls[0]
     try:
         async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
             # --- 构造图片载荷 ---

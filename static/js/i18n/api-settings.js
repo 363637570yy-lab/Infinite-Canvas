@@ -21,6 +21,7 @@
         "api.protocolOpenAI": { zh: "OpenAI 直连", en: "OpenAI Direct" },
         "api.protocolApimart": { zh: "异步协议", en: "Async Protocol" },
         "api.protocolGemini": { zh: "Gemini 协议", en: "Gemini Protocol" },
+        "api.protocolChre3Video": { zh: "视频：chre3协议", en: "Video: chre3 Protocol" },
         "api.protocolVolcengine": { zh: "火山引擎协议", en: "Volcengine Protocol" },
         "api.key": { zh: "API Key", en: "API Key" },
         "api.msNotes": { zh: "ModelScope 使用提示", en: "ModelScope Notes" },

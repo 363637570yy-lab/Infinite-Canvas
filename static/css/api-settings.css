@@ -350,6 +350,8 @@ body.show-runninghub .runninghub-hint { display:block; }
 body.show-apimart-domestic-hint .apimart-hint { display:block; }
 .volcengine-hint { display:none; margin-top:8px; color:var(--muted); font-size:11.5px; line-height:1.65; font-weight:600; }
 body.show-volcengine-standalone .volcengine-hint { display:block; }
+.chre3-video-hint { display:none; margin-top:8px; color:var(--muted); font-size:11.5px; line-height:1.65; font-weight:600; }
+body.show-chre3-video .chre3-video-hint { display:block; }
 .rh-key-stack { display:none; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 body.show-runninghub .rh-key-stack { display:grid; }
 .volcengine-key-stack { display:none; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
