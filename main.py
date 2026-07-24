@@ -322,6 +322,13 @@ CHRE3_VIDEO_MODEL_IDS = {
     "sd2-c7",
     "sd2-c8",
 }
+# Legacy OpenAI + sd2 compatibility keeps the known-model guard.  A provider
+# explicitly configured as chre3-video uses protocol-wide compliance instead.
+CHRE3_VIDEO_COMPLIANCE_MODEL_IDS = {"sd2-c7", "sd2-c8"}
+CHRE3_VIDEO_COMPLIANCE_MODES = {"colored-pencil", "watercolor", "fishnet", "grid"}
+# The provider documents colored-pencil as its reference compliance example.  Keep
+# this default protocol-local so other video providers retain their existing body.
+CHRE3_VIDEO_DEFAULT_COMPLIANCE_MODE = "colored-pencil"
 SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", CHRE3_VIDEO_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses", "openai-async-image"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
@@ -2518,6 +2525,10 @@ class CanvasVideoRequest(BaseModel):
     generate_audio: bool = False
     multimodal: bool = False
     trusted_asset: bool = False
+    # chre3 sd2-c7/c8 can opt out or select another documented compliance mode.
+    # None means use the protocol default (enabled).
+    compliance_enabled: Optional[bool] = None
+    compliance_mode: str = ""
 
 class TempShUploadRequest(BaseModel):
     url: str = ""
@@ -14518,6 +14529,28 @@ def sd2_video_size(size="", aspect_ratio=""):
     value = str(size or "").strip() or str(aspect_ratio or "").strip()
     return value or "16:9"
 
+def chre3_video_compliance_payload(payload, requested_model, force=False):
+    """Return the documented compliance fields for a chre3 video request.
+
+    The current provider account rejects unprocessed real-person references.  The
+    protocol default therefore enables its documented compliance transform.  A
+    dedicated chre3-video provider applies it to every model so future model IDs
+    do not silently lose the setting; the legacy OpenAI compatibility path remains
+    limited to the known sd2 IDs.
+    """
+    model = str(requested_model or "").strip().lower()
+    if not force and model not in CHRE3_VIDEO_COMPLIANCE_MODEL_IDS:
+        return {}
+    enabled = getattr(payload, "compliance_enabled", None)
+    if enabled is False:
+        return {"compliance_enabled": False}
+    mode = str(getattr(payload, "compliance_mode", "") or "").strip().lower()
+    mode = mode or CHRE3_VIDEO_DEFAULT_COMPLIANCE_MODE
+    if mode not in CHRE3_VIDEO_COMPLIANCE_MODES:
+        allowed = ", ".join(sorted(CHRE3_VIDEO_COMPLIANCE_MODES))
+        raise HTTPException(status_code=400, detail=f"chre3 合规模式无效：{mode}；可选值：{allowed}")
+    return {"compliance_enabled": True, "compliance_mode": mode}
+
 async def sd2_public_reference_url(value, kind, index):
     raw = str(value or "").strip()
     if not raw:
@@ -14542,7 +14575,7 @@ async def sd2_public_reference_url(value, kind, index):
         )
     return str(public_url).strip()
 
-async def build_sd2_video_request(payload, requested_model):
+async def build_sd2_video_request(payload, requested_model, force_compliance=False):
     image_values = sd2_reference_values(payload.images, 9)
     video_values = sd2_reference_values(payload.videos, 3)
     audio_values = sd2_reference_values(payload.audios, 3)
@@ -14567,6 +14600,7 @@ async def build_sd2_video_request(payload, requested_model):
         "duration": sd2_video_duration(payload.duration),
         "size": sd2_video_size(payload.size, payload.aspect_ratio),
     }
+    body.update(chre3_video_compliance_payload(payload, requested_model, force=force_compliance))
     if image_urls:
         body["image_refs"] = image_urls
     if video_urls:
@@ -14596,7 +14630,11 @@ def sd2_response_error_text(response):
 
 async def generate_sd2_video(client, payload, provider, base_url, requested_model):
     """调用 chre3 视频合同：POST /v1/videos，GET /v1/videos/{id}。"""
-    body = await build_sd2_video_request(payload, requested_model)
+    body = await build_sd2_video_request(
+        payload,
+        requested_model,
+        force_compliance=is_chre3_video_provider(provider),
+    )
     submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
     response = await client.post(
         submit_url,
