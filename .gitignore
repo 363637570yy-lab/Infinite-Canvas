@@ -23,6 +23,8 @@ output/
 # 本地运维配置与临时产物
 # .codex-project 含服务器别名、IP、端口、部署目录和容器名，绝不入公开仓库
 /.codex-project/
+# vps_runner 会在此写 SSH 主机密钥指纹（含主机地址），同样不得入公开仓库
+/.codex/
 .codex-local/
 .codex-temp/
 .codex-runtime/
