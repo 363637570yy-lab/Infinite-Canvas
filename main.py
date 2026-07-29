@@ -342,6 +342,24 @@ CANGYUAN_VIDEO_MAX_DURATION = 15
 CANGYUAN_VIDEO_MAX_IMAGE_REFS = 4
 CANGYUAN_VIDEO_MAX_VIDEO_REFS = 3
 CANGYUAN_VIDEO_MAX_AUDIO_REFS = 1
+# 苍元同站的视频模型分属不同的 payloadBuilder 家族，字段互不通用。/v1/models 只返回
+# id + supported_endpoint_types，不带家族信息，所以家族映射按模型 id 显式登记；未登记的
+# id 一律留在 seedance-flat（本协议最早实现、也是站点模型最多的家族），不按名称乱猜。
+CANGYUAN_FAMILY_SEEDANCE_FLAT = "seedance-flat"
+CANGYUAN_FAMILY_OMNI_FRAME = "omni-frame"
+CANGYUAN_FAMILY_OMNI_V2V = "omni-v2v"
+CANGYUAN_VIDEO_MODEL_FAMILIES = {
+    "omni-fast": CANGYUAN_FAMILY_OMNI_FRAME,
+    "omni-fast-no-water": CANGYUAN_FAMILY_OMNI_FRAME,
+    "omni-v2v": CANGYUAN_FAMILY_OMNI_V2V,
+    "omni-v2v-no-water": CANGYUAN_FAMILY_OMNI_V2V,
+}
+# omni 两族的官方参数里没有 duration / resolution / audio，比例只收 16:9 和 9:16。
+CANGYUAN_OMNI_ASPECT_RATIOS = {"16:9", "9:16"}
+CANGYUAN_OMNI_PORTRAIT_RATIOS = {"9:16", "3:4"}
+CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS = 1
+CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS = 2
+CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS = 2
 SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
@@ -14778,9 +14796,90 @@ async def cangyuan_reference_url(value, kind, index, allow_data_uri=False):
         return raw
     return await sd2_public_reference_url(raw, kind, index, label="苍元视频")
 
-async def build_cangyuan_video_request(payload, requested_model):
+def cangyuan_video_family(model):
+    """按模型 id 判定 payloadBuilder 家族；未登记的 id 保持 seedance-flat。"""
+    mid = str(model or "").strip().lower()
+    if not mid:
+        return CANGYUAN_FAMILY_SEEDANCE_FLAT
+    family = CANGYUAN_VIDEO_MODEL_FAMILIES.get(mid)
+    if family:
+        return family
+    # 站点用 `-no-water` 之类的后缀派生同族新模型，前缀规则只在 omni 两族内生效。
+    if mid.startswith("omni-v2v"):
+        return CANGYUAN_FAMILY_OMNI_V2V
+    if mid.startswith("omni-"):
+        return CANGYUAN_FAMILY_OMNI_FRAME
+    return CANGYUAN_FAMILY_SEEDANCE_FLAT
+
+def cangyuan_omni_aspect_ratio(aspect_ratio="", size=""):
+    value = str(aspect_ratio or "").strip() or str(size or "").strip()
+    if value in CANGYUAN_OMNI_ASPECT_RATIOS:
+        return value
+    # omni 只收 16:9 / 9:16，画布上的其它比例按取向就近落到竖屏或横屏。
+    return "9:16" if value in CANGYUAN_OMNI_PORTRAIT_RATIOS else "16:9"
+
+async def build_cangyuan_omni_frame_request(payload, model):
+    """omni-fast 系（图生视频）：只有 model / prompt / aspect_ratio + 单张图或成对首尾帧。"""
+    if sd2_reference_values(payload.videos, 1) or sd2_reference_values(payload.audios, 1):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{model} 是图生视频模型，不支持参考视频/音频。要做视频转视频请改用 omni-v2v 系模型。",
+        )
     body = {
-        "model": selected_model(requested_model, CANGYUAN_VIDEO_DEFAULT_MODEL),
+        "model": model,
+        "prompt": normalize_sd2_prompt(payload.prompt),
+        "aspect_ratio": cangyuan_omni_aspect_ratio(payload.aspect_ratio, payload.size),
+    }
+    # 首尾帧与单图互斥，成对标注的首尾帧优先。
+    first_ref, last_ref = cangyuan_frame_pair(payload.images)
+    if first_ref is not None:
+        body["first_image_url"] = await cangyuan_reference_url(sd2_reference_value(first_ref), "首帧图片", 1, allow_data_uri=True)
+        body["last_image_url"] = await cangyuan_reference_url(sd2_reference_value(last_ref), "尾帧图片", 2, allow_data_uri=True)
+        return body
+
+    image_values = sd2_reference_values(payload.images, CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS + 1)
+    if len(image_values) > CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS:
+        # 多出来的图在上游会被直接丢掉，宁可在这里报错也不要静默少送素材。
+        raise HTTPException(
+            status_code=400,
+            detail=f"{model} 只接受 1 张参考图；要用首尾帧请保留两张并分别标注首帧和尾帧，其余请移除。",
+        )
+    if image_values:
+        body["image_url"] = await cangyuan_reference_url(image_values[0], "图片", 1, allow_data_uri=True)
+    return body
+
+async def build_cangyuan_omni_v2v_request(payload, model):
+    """omni-v2v 系（视频转视频）：参考视频是主输入，没有 duration / resolution / audio。"""
+    if sd2_reference_values(payload.audios, 1):
+        raise HTTPException(status_code=400, detail=f"{model} 不支持参考音频，请移除音频素材后重试。")
+    body = {
+        "model": model,
+        "prompt": normalize_sd2_prompt(payload.prompt),
+        "aspect_ratio": cangyuan_omni_aspect_ratio(payload.aspect_ratio, payload.size),
+    }
+    video_values = sd2_reference_values(payload.videos, CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS)
+    image_values = sd2_reference_values(payload.images, CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS)
+    if video_values:
+        body["reference_videos"] = [
+            await cangyuan_reference_url(value, "视频", index)
+            for index, value in enumerate(video_values, 1)
+        ]
+    if image_values:
+        body["reference_image_urls"] = [
+            await cangyuan_reference_url(value, "图片", index, allow_data_uri=True)
+            for index, value in enumerate(image_values, 1)
+        ]
+    return body
+
+async def build_cangyuan_video_request(payload, requested_model):
+    model = selected_model(requested_model, CANGYUAN_VIDEO_DEFAULT_MODEL)
+    family = cangyuan_video_family(model)
+    if family == CANGYUAN_FAMILY_OMNI_FRAME:
+        return await build_cangyuan_omni_frame_request(payload, model)
+    if family == CANGYUAN_FAMILY_OMNI_V2V:
+        return await build_cangyuan_omni_v2v_request(payload, model)
+    body = {
+        "model": model,
         "prompt": normalize_sd2_prompt(payload.prompt),
         "aspect_ratio": cangyuan_video_aspect_ratio(payload.aspect_ratio, payload.size),
         "duration": cangyuan_video_duration(payload.duration),
