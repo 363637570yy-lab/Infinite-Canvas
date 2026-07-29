@@ -1,0 +1,102 @@
+# Infinite-Canvas 项目规则
+
+适用于仓库根目录及本仓库创建的 Git worktree。
+
+## 基础
+
+- 使用简体中文沟通；文本文件使用 UTF-8。
+- `AGENTS.md` 是规则源，`CLAUDE.md` 是整文件镜像；只改前者，再覆盖后者并比较 SHA-256。
+- `.agents/skills` 是项目 Skill 源；修改后整文件同步同名 `.claude/skills` 并比较 SHA-256。
+- 普通功能开发不得顺手修改规则或 Skill，除非用户本轮明确要求。
+
+## Git
+
+- 修改前运行 `git status --short --branch` 和 `git remote -v`。
+- `origin` 是用户仓库 `363637570yy-lab/Infinite-Canvas`，是唯一推送和部署目标。
+- `upstream` 是原作者仓库 `hero8152/Infinite-Canvas`，**只读**；其 push URL 已被故意设为无效值，不得恢复、不得推送、不得用它做破坏性重置。
+- 本项目是用户的产品化分支，不是上游镜像。吸收上游更新走 `git fetch upstream` + 新建同步分支 + merge / cherry-pick，冲突时优先保留用户改造。
+- `main` 是默认集成、推送和部署目标；未经授权不创建或切换额外分支 / worktree。
+- 用户已有改动是工作基线，不覆盖、回滚、清理或无关格式化。
+- 不使用 `git add .`；只有用户明确要求时才提交或推送。
+- 本仓库曾是浅克隆（`--depth`），已于 2026-07-29 执行 `git fetch --unshallow upstream` 补全为 335 个提交的完整历史。不得再以浅克隆方式重建本地仓库，否则无法推送到空仓库。
+
+## 架构与代码
+
+- 后端是 Python + FastAPI，入口 `main.py`；前端是**原生 JS**，无框架、无打包步骤，`static/js/*.js` 由 `static/*.html` 直接引用。
+- 不引入前端框架、构建链或 npm 依赖；不把 `static/` 改造成需要编译的产物。
+- 业务事实以用户目标、当前代码、真实接口响应和运行证据为准；文档、README 和历史兼容代码只能提供线索。
+- 数据是文件型：画布存 `data/canvases`，会话存 `data/conversations`，素材存 `assets/`，产物存 `output/`。服务器上这些位于 `runtime/` 下并由持久化挂载承载。
+- 不得把画布、会话或素材改存到数据库，也不得把二进制内容写进画布 JSON；画布只保存引用和元数据。
+- 读写画布 JSON 必须经过 `main.py` 中既有的画布读写路径，不得在别处另写一套裸文件读写或路径拼接。
+- `GET` 不得创建、修复、迁移或补种画布、节点或素材。
+- 上游 API Key、代理和中转站配置由 `API/.env` 和 `runtime/data/api_providers.json` 承载；不得硬编码进代码、不得提交进仓库。
+- 前端不保存权威业务状态；画布修改必须落盘并可在刷新后恢复。
+- 生成任务的失败、取消、超时、上游拒绝、鉴权、额度和限流必须进入可追踪终态，前端必须展示失败和可执行动作。
+- `main.py` 已 18000+ 行，`static/js/smart-canvas.js`、`static/js/canvas.js` 均超 14000 行。不为满足行数做无关重构；止血小修优先最小改动，新增独立业务域不得继续堆入这三个文件。
+
+## 视频协议（本项目核心易错区）
+
+- 已实现协议：`chre3-video`（普通）、`chre3-video-real`（真人合规，强制 `compliance_enabled` + `compliance_mode`）、`cangyuan`（苍元算力 seedance 系）。
+- 新接协议前必须先用只读探测确认上游真实字段，不得假设与既有协议同构。已知差异：chre3 用 `size` / `image_refs` / `video_refs` / `audio_refs`，cangyuan 用 `aspect_ratio` / `resolution` / `audio` / `reference_image_urls` / `reference_videos` / `reference_audios`。字段猜错的表现是纯文生能跑通、**参考图被上游静默忽略**，不会报错。
+- `cangyuan` 目前只实现了 `seedance-flat` 家族。同站的 `chat-video`（sora-2 / veo-3-1 系，参考图字段是 `images`）、`omni-frame`、`omni-v2v` **未实现**；选中这些模型纯文生可用但参考图会被忽略。新增家族必须显式实现并加测试。
+- 模型分类读 `supported_endpoint_types`，**不得按模型名称兜底**。苍元站 `/v1/models` 不返回 `type` / `category` / `capabilities`，名称兜底会把 6 个 seedance 模型误判成 chat。
+- `audio` 字段映射画布"生成音频"开关（默认关），而上游默认开启；默认值变更会静默改变产物有无声音，必须在改动说明里点明。
+- 协议改动必须配套 `tests/` 下的协议单测（参照 `test_cangyuan_protocol.py`、`test_chre3_protocol_split.py`），覆盖请求体构造、字段映射和路由判定。
+- 真实付费生成需要用户本轮明确授权并冻结模型、次数和参数；无授权时只允许 `/v1/models` 等无费用端点探测和本地请求体断言。
+
+## 范围与 Skill
+
+- "检查并修复""修几个问题"等默认由主代理定点诊断、实现和验证，不自动调用审计、浏览器、服务器或协议 Skill。
+- 既有合同内且不改变数据结构、画布格式、协议字段、付费调用或部署目标的小修直接实施，无需先做完整审计。
+- 用户目标、明确排除项和验收标准构成冻结范围；审计可扩大证据面，不得扩大实现或授权范围。
+- 只有新增画布 / 数据结构变更、协议家族、权限或用户可见合同、付费调用、部署目标时，才暂停并申请新增授权。
+
+| Skill | 触发条件 | 职责 |
+|---|---|---|
+| `canvas-vps-maintenance` + `$vps-maintenance` | 明确要求服务器连接、状态、部署、重启、备份、回滚或远程命令 | 项目适配和远程执行通道 |
+| `canvas-acceptance` | 明确要求服务器浏览器、Codex Browser、Chrome、截图或浏览器验收 | 浏览器操作、断言和证据 |
+| `canvas-protocol-dev` | 明确要求接入 / 修改视频或图片生成协议、对接新中转站 | 上游探测、字段映射、路由和协议测试 |
+| `canvas-audit` | 明确要求全面、专项合同、规则或生成链路审计 | 只读证据、覆盖矩阵和 findings |
+
+- "真实测试""全程监测"属于验收要求，不自动触发 `canvas-audit`；只有用户明确要求审计时才触发。
+- 一个阶段只有一个 owner。普通 bug 由主代理处理；白屏或加载故障只有在明确要求浏览器证据时才触发浏览器 Skill。
+- Git 写操作、高风险服务器授权、付费边界和最终判断始终由主代理负责。
+
+## 本地、服务器与安全
+
+- 本地只做代码 / 规则编辑、Git、pytest 纯逻辑测试，以及明确要求的浏览器操作。
+- 部署、重启、容器、备份、回滚、`runtime/` 与 `API/.env` 的读写必须通过服务器侧授权通道，使用 `canvas-vps-maintenance` 与全局 `$vps-maintenance`；不得凭记忆猜测主机、路径、容器、端口或凭据。
+- 服务器事实以全局 `SERVER_INFO.md` 档案为准，允许整文件明文读取；读取不授权复述，凭据值只在用户明确索取该值时输出。
+- **本仓库是公开仓库。** 服务器别名、IP、端口、部署目录、容器名、域名、备份路径和内网拓扑一律不得写入本仓库任何文件，包括规则、Skill、注释、测试和提交说明；这些只允许存在于被 `.gitignore` 排除的 `.codex-project/` 和仓库外的全局档案。
+- API Key、Token、Cookie、私钥、完整鉴权头、代理订阅和连接串不得进入仓库、终端输出、截图或最终回复。
+- `API/.env` 当前被 Git 跟踪且内容为空；本地填入真实值后不得提交，提交前必须确认它未被 staged。
+- 删除、清理、迁移、部署和其他破坏性操作前确认绝对目标、影响范围、备份或回滚方案。
+
+## 部署
+
+具体的服务器别名、目录、容器、端口、备份路径和浏览器目标**不写入本仓库**（本仓库是公开仓库），统一由本地 `.codex-project/vps-maintenance/` 与全局 `SERVER_INFO.md` 承载。本节只保留与代码行为绑定的硬约束。
+
+- **不得断言 `/static/*` 的 `?v=` 版本号**。应用启动时会用 `main.py` 的 cache_version 重写所有静态引用的版本串，源码里手写的版本号在运行态必然对不上。2026-07-24 和 2026-07-29 两次部署都因此误判，其中一次触发了无谓回滚。运行态断言只用主程序哈希、功能标记和容器状态。
+- 部署不得覆盖或变更 `runtime/`、`API/.env` 和既有持久化挂载；部署后必须 diff 挂载数与挂载点，为空才算通过。
+- 部署前必须建立文件备份（含 SHA-256）和可执行的回滚镜像标签；没有回滚方案则停止。
+- 部署后验证：容器 `running`、重启次数 `0`、挂载 diff 为空、逐文件 git blob 与目标提交相等、入口与改动到的静态资源返回 `200`、空视频请求返回 `422`、近期日志 `Traceback` / `ERROR` / `500` 计数为 `0`。
+- 服务器与本地看到的模型数可能不同（中转站按令牌分组返回），不属于部署故障。
+
+## 验证与交付
+
+- 中间轮次只运行依赖被改模块的测试文件，不运行全量；一轮改动结束不等于任务交付。
+- 全量只在用户确认当前版本可交付时运行一次；同一份代码内容不得重复运行全量。
+- 验证证据按 `command + code_hash + environment + result` 复用；代码哈希运行 `powershell -File .agents/scripts/get-worktree-code-hash.ps1`。
+- 交付时运行 `python -m pytest tests/ -v`；协议改动必须包含对应协议测试。
+- 偶发失败不得靠重复运行全量复现；固定输入、定点排查或如实报告为剩余风险。
+- 纯规则、Skill、文档或注释改动不运行无关业务全测；执行对应静态、镜像或测试校验。
+- 未实际运行的验证不得写成通过；失败必须说明命令、现象和剩余风险。
+- 只有用户明确要求时才提交、推送或部署；默认发布目标为 `origin/main`，不得从工作分支静默改变。
+- 维护记录写入仓库**外**的父级 `MAINTENANCE.md` 档案（路径见本地 `.codex-project/`），条目需含 Target / Result / Release / Changes / Backup / Rollback / Validation / Evidence / Skipped and risk。维护记录不入本仓库。
+- 修改规则后执行：
+
+```powershell
+Copy-Item -LiteralPath AGENTS.md -Destination CLAUDE.md -Force
+if ((Get-FileHash AGENTS.md -Algorithm SHA256).Hash -ne (Get-FileHash CLAUDE.md -Algorithm SHA256).Hash) { throw '规则镜像不一致' }
+git status --short --branch
+```

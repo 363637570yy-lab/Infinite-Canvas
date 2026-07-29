@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 运行时数据（服务器由持久化挂载承载，不入库）
+runtime/
+data/canvases/
+data/conversations/
+assets/input/
+assets/library/
+assets/output/
+assets/uploads/
+output/
+
+# 凭据（真实值只存服务器 runtime/API/.env）
+*.env.local
+.env.local
+
+# 本地运维配置与临时产物
+# .codex-project 含服务器别名、IP、端口、部署目录和容器名，绝不入公开仓库
+/.codex-project/
+.codex-local/
+.codex-temp/
+.codex-runtime/
+.codex-artifacts/
+*.log
+*.tmp
+
+# Claude 本地配置：只保留 skills 镜像入库
+/.claude/*
+!/.claude/skills/
+!/.claude/skills/**
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
