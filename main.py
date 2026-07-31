@@ -653,6 +653,9 @@ APIMART_IMAGE_TASK_TIMEOUT = float(os.getenv("APIMART_IMAGE_TASK_TIMEOUT", "1800
 APIMART_IMAGE_POLL_INTERVAL = float(os.getenv("APIMART_IMAGE_POLL_INTERVAL", "5"))
 APIMART_IMAGE_INITIAL_POLL_DELAY = float(os.getenv("APIMART_IMAGE_INITIAL_POLL_DELAY", "10"))
 VIDEO_POLL_TIMEOUT = float(os.getenv("VIDEO_POLL_TIMEOUT", "1800"))
+# 原子落盘时等待 os.replace 成功的上限（秒）。只在 Windows 上会真正用到：那里不允许覆盖
+# 正被读取的文件，需要等读侧关闭句柄。Linux 上第一次就成功，这个值不会生效。
+ATOMIC_REPLACE_TIMEOUT = float(os.getenv("ATOMIC_REPLACE_TIMEOUT", "10"))
 ONLINE_IMAGE_PROMPT_MAX_LENGTH = int(os.getenv("ONLINE_IMAGE_PROMPT_MAX_LENGTH", "20000"))
 VIDEO_PROMPT_MAX_LENGTH = int(os.getenv("VIDEO_PROMPT_MAX_LENGTH", "4000"))
 LLM_MESSAGE_MAX_LENGTH = int(os.getenv("LLM_MESSAGE_MAX_LENGTH", "20000"))
@@ -3247,11 +3250,44 @@ def canvas_path(canvas_id):
         raise HTTPException(status_code=400, detail="无效的画布 ID")
     return os.path.join(CANVAS_DIR, f"{cleaned}.json")
 
+def atomic_write_json(path, data, indent=2):
+    """写同目录临时文件后 os.replace 落盘，读侧只会看到旧内容或新内容。
+
+    画布自动保存频率很高（前端每秒可发多次 PUT），直接 open('w') 会先把目标文件截断成 0 字节
+    再逐块写入；并发的 GET /api/canvases/{id} 在这个窗口里读到残缺 JSON 就是 500。
+    临时文件用 `.json.tmp` 结尾，不会被按 `.json` 过滤的目录遍历扫到。
+
+    读侧刻意不加锁：os.replace 本身就保证读到的是完整的旧内容或完整的新内容，而 load_canvas
+    是在事件循环上同步调用的，让它去等一次几百 KB 的写会把整个服务卡住。代价是 Windows 上
+    MoveFileEx 不能覆盖正被打开的文件（Linux 无此限制），所以这里带退避重试。"""
+    temp_path = f"{path}.tmp"
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        deadline = time.monotonic() + ATOMIC_REPLACE_TIMEOUT
+        delay = 0.002
+        while True:
+            try:
+                os.replace(temp_path, path)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.6, 0.05)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
 def save_canvas(canvas):
     with CANVAS_LOCK:
         canvas["updated_at"] = max(now_ms(), int(canvas.get("updated_at") or 0) + 1)
-        with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        atomic_write_json(canvas_path(canvas["id"]), canvas)
 
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
@@ -3273,8 +3309,7 @@ def load_projects():
 
 def save_projects(projects):
     with CANVAS_LOCK:
-        with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+        atomic_write_json(PROJECTS_PATH, {"projects": projects})
 
 def project_record(p):
     return {
@@ -3345,12 +3380,18 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic", project=N
     save_canvas(canvas)
     return canvas
 
+def read_canvas_file(path):
+    """读画布 JSON。持 CANVAS_LOCK 是为了 Windows：那里不允许 os.replace 覆盖正被打开的文件，
+    读写重叠会让保存直接失败。Linux 上只靠原子落盘就够，这把锁是跨平台一致性的代价。"""
+    with CANVAS_LOCK:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
 def load_canvas(canvas_id):
     path = canvas_path(canvas_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
-    with open(path, 'r', encoding='utf-8') as f:
-        canvas = json.load(f)
+    canvas = read_canvas_file(path)
     if canvas.get("deleted_at"):
         raise HTTPException(status_code=404, detail="画布已在回收站")
     return canvas
@@ -3359,8 +3400,7 @@ def load_canvas_any(canvas_id):
     path = canvas_path(canvas_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="画布不存在")
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    return read_canvas_file(path)
 
 CANVAS_COLORS = {"", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink", "slate"}
 
@@ -3409,8 +3449,7 @@ def iter_canvas_records(include_deleted=False):
         if not filename.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CANVAS_DIR, filename), 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            data = read_canvas_file(os.path.join(CANVAS_DIR, filename))
         except Exception:
             continue
         is_deleted = bool(data.get("deleted_at"))
@@ -3547,8 +3586,7 @@ def canvas_assets_index():
         if not filename.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CANVAS_DIR, filename), "r", encoding="utf-8") as f:
-                canvas = json.load(f)
+            canvas = read_canvas_file(os.path.join(CANVAS_DIR, filename))
         except Exception:
             continue
         if canvas.get("deleted_at"):
@@ -16360,8 +16398,7 @@ async def delete_project(project_id: str):
                 continue
             if str(data.get("project") or "") == project_id:
                 data["project"] = DEFAULT_PROJECT_ID
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(path, data)
                 moved += 1
     return {"ok": True, "moved": moved}
 
@@ -16407,8 +16444,7 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
                 canvas["board_x"] = float(payload.board_x)
             if payload.board_y is not None:
                 canvas["board_y"] = float(payload.board_y)
-            with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
-                json.dump(canvas, f, ensure_ascii=False, indent=2)
+            atomic_write_json(canvas_path(canvas["id"]), canvas)
             return canvas
 
     canvas = await asyncio.to_thread(mutate_meta)
