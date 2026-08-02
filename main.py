@@ -177,6 +177,18 @@ MODELSCOPE_VERSION_URL = MODELSCOPE_FILE_API_ROOT + "VERSION"
 MODELSCOPE_UPDATE_NOTES_URL = MODELSCOPE_FILE_API_ROOT + "static/update-notes.json"
 MODELSCOPE_TREE_URL = "https://www.modelscope.ai/api/v1/studio/daniel8152/Infinite-Canvas/repo/files?Revision=master&Recursive=true"
 
+# 在线自更新默认关闭。上面这些源指向上游作者的仓库/空间，本项目是它的产品化分支，
+# 一键更新会用上游代码覆盖本分支的协议实现和落盘逻辑。需要时在服务端显式打开，
+# 并先把 GITHUB_* / MODELSCOPE_* 改成本项目自己的发布源。
+SELF_UPDATE_ENABLED = str(os.getenv("SELF_UPDATE_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+def require_self_update_enabled():
+    if not SELF_UPDATE_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="在线更新已关闭。如需启用，请在服务端设置 SELF_UPDATE_ENABLED=1，并确认更新源指向本项目自己的仓库。",
+        )
+
 @app.on_event("startup")
 async def startup_event():
     global GLOBAL_LOOP
@@ -1792,8 +1804,16 @@ def parse_prompt_template_markdown(text: str):
 @app.get("/api/app-info")
 def app_info():
     version = current_app_version()
-    return {
+    info = {
         "version": version,
+        "self_update_enabled": SELF_UPDATE_ENABLED,
+        "update_notes": read_local_update_notes(version),
+    }
+    # 更新关闭时不下发远程源地址：前端有「后端检测不可用就由浏览器直连 VERSION」的兜底，
+    # 一旦下发就等于绕过这里的开关继续外呼上游仓库。
+    if not SELF_UPDATE_ENABLED:
+        return info
+    info.update({
         "repo_url": GITHUB_REPO_URL,
         "version_url": GITHUB_VERSION_URL,
         "tree_url": GITHUB_TREE_URL,
@@ -1813,8 +1833,8 @@ def app_info():
                 "update_notes_url": MODELSCOPE_UPDATE_NOTES_URL,
             },
         },
-        "update_notes": read_local_update_notes(version),
-    }
+    })
+    return info
 
 def connectivity_probe(name: str, url: str, timeout: float = 5.0) -> Dict[str, Any]:
     started = time.time()
@@ -1863,6 +1883,7 @@ def update_connectivity_targets() -> List[Tuple[str, str, str, bool]]:
 @app.get("/api/update-connectivity/probe")
 def update_connectivity_probe(name: str):
     """实时检测：只探测单个目标，前端可并发调用并逐条刷新。"""
+    require_self_update_enabled()
     for t_name, url, source, required in update_connectivity_targets():
         if t_name == name:
             item = connectivity_probe(t_name, url)
@@ -1873,6 +1894,7 @@ def update_connectivity_probe(name: str):
 
 @app.get("/api/update-connectivity")
 def update_connectivity():
+    require_self_update_enabled()
     targets = update_connectivity_targets()
     results = []
     for name, url, source, required in targets:
@@ -1938,6 +1960,21 @@ def version_gt(a: str, b: str) -> bool:
 def check_update():
     """服务端检测 GitHub 与 ModelScope 两个源的远端版本（走系统代理，避免浏览器跨域/被墙）。"""
     current = current_app_version()
+    # 更新关闭时返回结构完整的「已是最新」结果，而不是报错：
+    # 前端遇到本接口失败会退回浏览器直连远端 VERSION，报错反而会激活那条兜底。
+    if not SELF_UPDATE_ENABLED:
+        closed = {"version": "", "ok": False, "error": "在线更新已关闭", "url": "", "source": ""}
+        return {
+            "current": current,
+            "github": {**closed, "source": "github"},
+            "modelscope": {**closed, "source": "modelscope"},
+            "latest": {},
+            "update_notes": {},
+            "update_notes_sources": {},
+            "update_available": False,
+            "reachable": True,
+            "self_update_enabled": False,
+        }
     # 并发检测两个源，避免串行 8s+8s 拖慢首屏更新提示
     holder: Dict[str, Dict[str, Any]] = {}
     def _probe(key: str, url: str):
@@ -2097,6 +2134,31 @@ def safe_update_target(path: str) -> str:
         raise ValueError(f"更新路径不安全：{rel}")
     return target
 
+def validate_staged_update(staging_root: str, root_files, static_files) -> None:
+    """半截下载或语法损坏的包不允许覆盖线上代码。
+
+    落地阶段是先备份再逐个 os.replace，一旦写到一半才发现 main.py 是残缺的，
+    进程下次启动就直接起不来。这里在动任何线上文件之前先把暂存包验一遍。
+    """
+    main_path = os.path.join(staging_root, "main.py")
+    version_path = os.path.join(staging_root, "VERSION")
+    if not os.path.isfile(main_path) or not os.path.isfile(version_path):
+        raise RuntimeError("更新暂存缺少 main.py 或 VERSION")
+    with open(main_path, "rb") as f:
+        try:
+            compile(f.read(), main_path, "exec")
+        except SyntaxError as exc:
+            raise RuntimeError(f"更新暂存的 main.py 语法错误（第 {exc.lineno} 行）：{exc.msg}") from exc
+    with open(version_path, "r", encoding="utf-8") as f:
+        version = (f.read().strip().splitlines() or [""])[0].strip()
+    if not version or len(version) > 80 or any(ch in version for ch in "<>\r\n"):
+        raise RuntimeError("更新暂存的 VERSION 格式异常")
+    for rel in list(root_files or []) + list(static_files or []):
+        safe_update_target(rel)
+        staged_path = os.path.join(staging_root, *str(rel).replace("\\", "/").split("/"))
+        if not os.path.isfile(staged_path):
+            raise RuntimeError(f"更新暂存缺少文件：{rel}")
+
 def safe_static_dir() -> str:
     target = os.path.abspath(STATIC_DIR)
     expected = os.path.abspath(os.path.join(BASE_DIR, "static"))
@@ -2250,6 +2312,7 @@ def stage_update_from_source(source: str, staging_root: str) -> Tuple[List[str],
 
 @app.post("/api/update-from-github")
 def update_from_github(req: UpdateRequest = UpdateRequest()):
+    require_self_update_enabled()
     if not UPDATE_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="正在更新中，请稍后再试")
     staging_root = ""
@@ -2293,6 +2356,8 @@ def update_from_github(req: UpdateRequest = UpdateRequest()):
             detail = "；".join(download_errors) or "未知错误"
             print(f"[update] 所有下载源均失败 → {detail}")
             raise HTTPException(status_code=502, detail=f"所有下载源均失败 → {detail}")
+
+        validate_staged_update(staging_root, root_files, static_files)
 
         updated = []
         for rel in root_files:
@@ -2413,6 +2478,7 @@ def list_update_backups() -> List[Dict[str, Any]]:
 
 @app.get("/api/update-backups")
 def get_update_backups():
+    require_self_update_enabled()
     return {"backups": list_update_backups()}
 
 class RollbackRequest(BaseModel):
@@ -2422,6 +2488,7 @@ class RollbackRequest(BaseModel):
 
 @app.post("/api/update-rollback")
 def rollback_update(req: RollbackRequest):
+    require_self_update_enabled()
     if not req.name:
         raise HTTPException(status_code=400, detail="缺少备份名称")
     if not UPDATE_LOCK.acquire(blocking=False):
@@ -3635,7 +3702,9 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
     mdl = selected_model(model, default_model)
     protocol = effective_protocol(api_provider, mdl)
     if protocol == "gemini":
-        base = base_root if base_root.endswith("/v1beta") else base_root + "/v1beta"
+        # 与 gemini_endpoint_url 同因：APIMart 的 base_url 配到 /v1，拼 /v1beta 会双前缀
+        gemini_root = gemini_native_api_root(api_provider) if is_apimart_provider(api_provider) else base_root
+        base = gemini_root if gemini_root.endswith("/v1beta") else gemini_root + "/v1beta"
     elif protocol == "volcengine":
         base = base_root if base_root.endswith("/api/v3") else base_root + "/api/v3"
     elif protocol == "runninghub":
@@ -3831,6 +3900,11 @@ def image_payload_from_string(value, mime_type="image/png", assume_b64=False):
                 "value": encoded.strip(),
                 "mime_type": header.split(";", 1)[0].replace("data:", "", 1) or mime_type or "image/png",
             }
+    # APIMart 代理的 Gemini 图像模型会把结果塞进 Markdown：![image](data:image/jpeg;base64,...)
+    # 放在纯 data URL 分支之后，常规路径不进正则。
+    embedded = re.search(r"data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/_=-]+)", text)
+    if embedded:
+        return {"type": "b64", "value": embedded.group(2), "mime_type": embedded.group(1)}
     if looks_like_generated_image_url(text):
         return {"type": "url", "value": text}
     if assume_b64 or looks_like_image_base64(text):
@@ -3950,6 +4024,11 @@ def extract_images(data):
                         "value": value,
                         "mime_type": inline.get("mimeType") or inline.get("mime_type") or "image/png",
                     })
+                # 同一批模型也可能只在 text part 里给 Markdown data URL，没有 inlineData。
+                # add_image 按 (type, value) 去重，两者并存时不会重复收录。
+                embedded = image_payload_from_string(part.get("text"))
+                if embedded:
+                    add_image(embedded)
 
     current = data
     if isinstance(current, dict) and isinstance(current.get("data"), dict) and isinstance(current["data"].get("result"), dict):
@@ -4003,6 +4082,10 @@ def extract_image(data):
                         "value": value,
                         "mime_type": inline.get("mimeType") or inline.get("mime_type") or "image/png",
                     }
+                # 放在 inlineData 之后，原生结构始终优先。
+                embedded = image_payload_from_string(part.get("text"))
+                if embedded:
+                    return embedded
     if isinstance(data.get("data"), dict) and isinstance(data["data"].get("result"), dict):
         data = data["data"]
     if isinstance(data.get("result"), dict):
@@ -9854,8 +9937,21 @@ def gemini_model_name(model):
     value = selected_model(model, "gemini-3-pro-image-preview").strip()
     return value[len("models/"):] if value.startswith("models/") else value
 
+def gemini_native_api_root(provider):
+    """APIMart 把原生 Gemini API 挂在站点根的 /v1beta 下，但 base_url 通常配到 /v1。
+
+    provider_endpoint_url 的前缀剥离只在 base_url 结尾与 default_path 开头是同一前缀时生效，
+    "/v1" 对 "/v1beta/" 不匹配，直接拼接会得到 /v1/v1beta 的双前缀而请求失败。
+    这里退回 scheme://host 重新拼，不写死域名，换镜像域名仍然可用。
+    """
+    base_url = str((provider or {}).get("base_url") or AI_BASE_URL).strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(base_url)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url
+
 def gemini_endpoint_url(provider, model):
     model_name = urllib.parse.quote(gemini_model_name(model), safe="")
+    if is_apimart_provider(provider) and not str((provider or {}).get("image_generation_endpoint") or "").strip():
+        return f"{gemini_native_api_root(provider)}/v1beta/models/{model_name}:generateContent"
     return provider_endpoint_url(provider, "image_generation_endpoint", f"/v1beta/models/{model_name}:generateContent")
 
 def gemini_image_config(size):
@@ -9900,7 +9996,8 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
         response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
         response.raise_for_status()
-        raw = response.json()
+        # APIMart 把原生 Gemini body 包在 {code, data} 里，先解包 candidates 才可见
+        raw = unwrap_apimart_response(response.json()) if is_apimart_provider(provider) else response.json()
         return extract_image(raw), raw
 
 def volcengine_endpoint_url(provider):

@@ -1614,14 +1614,8 @@
                     </svg>
                     <span class="side-pill-text" data-i18n="common.project">项目主页</span>
                 </button>
-                <button id="update-now-btn" class="update-now-btn" onclick="runProjectUpdate()" type="button" title="一键更新">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
-                        <path d="M21 3v6h-6"></path>
-                    </svg>
-                    <span id="update-now-text" class="update-now-text" data-i18n="update.oneClick">一键更新</span>
-                </button>
-                <div id="project-version-badge" class="project-version-badge" title="点击检测更新" role="button" tabindex="0" onclick="checkForUpdates(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();checkForUpdates(true);}">v-</div>
+                <!-- 在线自更新已关闭（后端 SELF_UPDATE_ENABLED 默认为 false），此处不再提供一键更新入口。 -->
+                <div id="project-version-badge" class="project-version-badge">v-</div>
             </div>
 
             <div class="author-box">
@@ -2117,7 +2111,7 @@
                 sidebar.addEventListener('mouseenter', () => pauseScaleInFrames());
                 sidebar.addEventListener('mouseleave', () => pauseScaleInFrames());
             }
-            checkForUpdates();
+            loadLocalVersion();
         });
 
         // sync theme when iframe loads
@@ -2178,8 +2172,8 @@
                 badge.textContent = 'v-';
             }
             badge.title = window.StudioI18n?.lang?.() === 'en'
-                ? `Current version: ${full} · click to check for updates`
-                : `当前版本：${full} · 点击检测更新`;
+                ? `Current version: ${full}`
+                : `当前版本：${full}`;
         }
 
         function refreshUpdateButtonText() {
@@ -2758,6 +2752,15 @@
         }
         window.rollbackProjectUpdate = rollbackProjectUpdate;
 
+        // 在线自更新已关闭：首屏只读本地版本号填徽标，不做任何远端版本比对。
+        async function loadLocalVersion() {
+            try {
+                const info = await fetch('/api/app-info', { cache:'no-store' }).then(r => r.json()).catch(() => ({}));
+                appInfo = {...appInfo, ...info};
+                setProjectVersionBadge(String(appInfo.version || '').trim());
+            } catch(e) {}
+        }
+
         async function checkForUpdates(manual = false) {
             const isEn = window.StudioI18n?.lang?.() === 'en';
             const badge = document.getElementById('project-version-badge');
@@ -2769,33 +2772,18 @@
                 setProjectVersionBadge(current);
                 let best = null;
                 let reachable = false;
-                let serverChecked = false;
-                // 优先走后端检测：服务端用系统代理同时检测 GitHub 和 ModelScope，避免浏览器跨域/被墙
+                // 只走后端检测：自更新关闭时后端固定返回 update_available=false
                 try {
                     const r = await fetch('/api/check-update', { cache:'no-store' });
                     if(r.ok) {
                         const d = await r.json();
-                        serverChecked = true;
                         reachable = !!d.reachable;
                         if(d.current) { current = String(d.current).trim(); setProjectVersionBadge(current); }
                         if(d.latest?.version) best = {source:d.latest.source, version:d.latest.version, update_notes:d.latest.update_notes || d.update_notes || null};
                     }
                 } catch(e) {}
-                // 兜底：旧后端无 /api/check-update 时，浏览器直接拉取双源 VERSION
-                if(!serverChecked) {
-                    const sources = appInfo.sources || {};
-                    const candidates = [
-                        {source:'github', url:sources.github?.version_url || appInfo.version_url || ''},
-                        {source:'modelscope', url:sources.modelscope?.version_url || ''},
-                    ].filter(item => item.url);
-                    for(const item of candidates) {
-                        try {
-                            const remoteText = await fetch(`${item.url}${item.url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache:'no-store' }).then(r => r.ok ? r.text() : '');
-                            const remote = String(remoteText || '').trim().split(/\r?\n/)[0].trim();
-                            if(remote){ reachable = true; if(!best || compareVersions(remote, best.version) > 0) best = {source:item.source, version:remote}; }
-                        } catch(e) {}
-                    }
-                }
+                // 原来这里有一条兜底：后端检测不可用时由浏览器直连远端 VERSION。
+                // 自更新关闭后这条兜底会绕过后端开关继续外呼上游仓库，已移除。
                 const hasUpdate = !!(current && best?.version && compareVersions(best.version, current) > 0);
                 if(hasUpdate) {
                     if(best.source === 'modelscope') setUpdateSource('modelscope');
