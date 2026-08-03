@@ -8697,6 +8697,40 @@ def local_asset_public_url(value: str) -> str:
         return ""
     return f"{base}{urllib.parse.quote(text, safe='/:?&=%#.-_~')}{public_media_url_suffix()}"
 
+# 上游 /v1/videos 合同明确接受的图片格式。AVIF 是唯一常见却被拒的格式，
+# 必须在出站前转码——否则上游会跑完一次异步计费任务才报「unsupported image format」。
+UPSTREAM_SAFE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif", ".heic", ".heif"}
+
+def upstream_safe_image_ref(local_path):
+    """把本地参考图换成上游收得下的格式，返回可继续走上传流程的本地 URL。
+    非图片（视频/音频）和已受支持的格式原样返回；AVIF 等转成 PNG；
+    SVG 这类无法当位图用的直接报错，不让上游白跑一次计费任务。"""
+    file_path = output_file_from_url(local_path)
+    if not file_path:
+        return local_path
+    real = _sniff_image_ext(file_path)
+    if real is None or real in UPSTREAM_SAFE_IMAGE_EXTS:
+        return local_path
+    if real == ".svg":
+        raise HTTPException(status_code=400, detail="参考图是 SVG 矢量图，上游只接受位图，请先导出成 PNG/JPG 再用。")
+    try:
+        stamp = f"{file_path}:{os.path.getmtime(file_path)}:{os.path.getsize(file_path)}"
+    except OSError:
+        return local_path
+    filename = f"refconv_{hashlib.sha256(stamp.encode('utf-8')).hexdigest()[:16]}.png"
+    converted = output_path_for(filename, "input")
+    if not os.path.exists(converted):
+        try:
+            with Image.open(file_path) as img:
+                keep_alpha = img.mode in {"RGBA", "LA", "PA"} or "transparency" in img.info
+                img.convert("RGBA" if keep_alpha else "RGB").save(converted, format="PNG", optimize=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"参考图是上游不支持的 {real.lstrip('.').upper()} 格式，本地转 PNG 也失败了：{exc}。请换一张 PNG/JPG 图片。",
+            ) from exc
+    return output_url_for(filename, "input")
+
 async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str:
     """异步生图/视频接口的参考素材公网化。
     不走公网隧道（暴露本机服务风险高）：本地文件上传图床（Litterbox/temp.sh，72h 短链），
@@ -8716,6 +8750,7 @@ async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str
     elif text.startswith(("/output/", "/assets/")):
         local_path = text
     if local_path and output_file_from_url(local_path):
+        local_path = upstream_safe_image_ref(local_path)
         upload_error = ""
         try:
             allowed_prefixes = ("image/", "video/", "audio/") if allow_audio else ("image/", "video/")
@@ -9405,19 +9440,26 @@ async def upload_local_video_to_cloud(ref_url: str, service: str = "auto", allow
 async def upload_local_video_to_temp_sh(ref_url: str) -> Dict[str, str]:
     return await upload_local_video_to_cloud(ref_url, "auto")
 
+def _ai_image_ext(raw, declared_type=""):
+    """产物扩展名以真实字节为准，声明的 MIME 只作兜底。
+    上游偶尔回 AVIF/HEIC 却声明 image/png，只信声明会落盘成名实不符的 .png。"""
+    real = _sniff_image_ext_bytes(raw[:16] if raw else b"")
+    if real:
+        return real
+    declared = str(declared_type or "").lower()
+    if "jpeg" in declared or "jpg" in declared:
+        return ".jpg"
+    if "webp" in declared:
+        return ".webp"
+    return ".png"
+
 async def save_ai_image_to_output(image_data, prefix="online_", category="output"):
-    filename = f"{prefix}{uuid.uuid4().hex[:10]}.png"
-    path = output_path_for(filename, category)
+    stem = f"{prefix}{uuid.uuid4().hex[:10]}"
     if image_data["type"] == "b64":
-        mime_type = str(image_data.get("mime_type") or "").lower()
-        if "jpeg" in mime_type or "jpg" in mime_type:
-            filename = filename[:-4] + ".jpg"
-            path = output_path_for(filename, category)
-        elif "webp" in mime_type:
-            filename = filename[:-4] + ".webp"
-            path = output_path_for(filename, category)
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(image_data["value"]))
+        raw = base64.b64decode(image_data["value"])
+        filename = f"{stem}{_ai_image_ext(raw, image_data.get('mime_type'))}"
+        with open(output_path_for(filename, category), "wb") as f:
+            f.write(raw)
         return output_url_for(filename, category)
     value = image_data["value"]
     if value.startswith("/output/") or value.startswith("/assets/"):
@@ -9428,14 +9470,8 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(value)
             response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "")
-            if "jpeg" in content_type or "jpg" in content_type:
-                filename = filename[:-4] + ".jpg"
-                path = output_path_for(filename, category)
-            elif "webp" in content_type:
-                filename = filename[:-4] + ".webp"
-                path = output_path_for(filename, category)
-            with open(path, "wb") as f:
+            filename = f"{stem}{_ai_image_ext(response.content, response.headers.get('Content-Type', ''))}"
+            with open(output_path_for(filename, category), "wb") as f:
                 f.write(response.content)
             return output_url_for(filename, category)
     except Exception as e:
@@ -11887,7 +11923,7 @@ async def upload_ai_base64(payload: Base64UploadRequest):
         raise HTTPException(status_code=400, detail="内容为空")
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="超过 50MB")
-    kind, ext = _local_upload_kind_ext(payload.name or "", ct or "image/png")
+    kind, ext = _local_upload_kind_ext(payload.name or "", ct or "image/png", content)
     if kind is None:
         kind, ext = "image", ".png"
     filename = f"ai_ref_{uuid.uuid4().hex[:12]}{ext}"
@@ -11926,8 +11962,11 @@ async def upload_comfyui_base64(payload: Base64UploadRequest):
         raise HTTPException(status_code=502, detail="上传到 ComfyUI 失败")
     return {"name": comfy_name}
 
-def _local_upload_kind_ext(filename, content_type):
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+def _local_upload_kind_ext(filename, content_type, content=b""):
+    """判定素材类型和落盘扩展名。传入 content 时以文件真实魔数为准——
+    只按 content_type 猜会把 HEIC/AVIF/TIFF/BMP 一律命名成 .png，
+    落盘后文件名与内容不符，送到上游会被判为无法解码的图片。"""
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif", ".heic", ".heif"}
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".flv"}
     audio_exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
     ext = os.path.splitext(filename or "")[1].lower()
@@ -11940,8 +11979,12 @@ def _local_upload_kind_ext(filename, content_type):
         if ext not in audio_exts:
             ext = ".wav" if "wav" in ct else ".ogg" if "ogg" in ct else ".m4a" if "mp4" in ct else ".mp3"
         return "audio", ext
-    if ext in image_exts or ct.startswith("image/"):
-        if ext not in image_exts:
+    real = _sniff_image_ext_bytes(content[:16]) if content else None
+    if real or ext in image_exts or ct.startswith("image/"):
+        if real:
+            # .jpg/.jpeg 视为同一种，不把用户原本的 .jpeg 改写成 .jpg
+            ext = ext if (real == ".jpg" and ext == ".jpeg") else real
+        elif ext not in image_exts:
             ext = ".jpg" if "jpeg" in ct else ".webp" if "webp" in ct else ".gif" if "gif" in ct else ".png"
         return "image", ext
     return None, ext
@@ -12138,6 +12181,18 @@ def migrate_double_extension_uploads():
     if renamed:
         print(f"修复双重扩展名素材: {renamed} 个")
 
+# ISO-BMFF 容器（ftyp box）的 brand → 扩展名。AVIF 上游不收，HEIC/HEIF 上游收，
+# 但两者都会被「按 content_type 猜扩展名」的旧逻辑误命名成 .png，必须按 brand 认准。
+_BMFF_IMAGE_BRANDS = {
+    b"avif": ".avif", b"avis": ".avif",
+    b"heic": ".heic", b"heix": ".heic", b"heim": ".heic", b"heis": ".heic",
+    b"hevc": ".heic", b"hevx": ".heic", b"hevm": ".heic", b"hevs": ".heic",
+    b"mif1": ".heif", b"msf1": ".heif",
+}
+# 旧迁移只在这几种之间互相纠正扩展名。历史文件一旦改名，画布 JSON 里存的 URL 就失效，
+# 所以扩大魔数识别范围时不能连带扩大迁移范围。
+_MIGRATABLE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
 def _sniff_image_ext_bytes(head):
     """按文件头魔数判断真实图片格式，返回规范扩展名（含点），无法识别返回 None。"""
     head = head or b""
@@ -12151,6 +12206,15 @@ def _sniff_image_ext_bytes(head):
         return ".gif"
     if head[:2] == b"BM":
         return ".bmp"
+    if head[:4] in (b"II\x2a\x00", b"MM\x00\x2a"):
+        return ".tiff"
+    if head[4:8] == b"ftyp":
+        brand = _BMFF_IMAGE_BRANDS.get(head[8:12])
+        if brand:
+            return brand
+    sample = head.lstrip(b"\xef\xbb\xbf").lstrip()[:5].lower()
+    if sample.startswith(b"<svg") or sample.startswith(b"<?xml"):
+        return ".svg"
     return None
 
 def _sniff_image_ext(path):
@@ -12174,7 +12238,9 @@ def migrate_mislabeled_image_extensions():
                 continue
             path = os.path.join(current, name)
             real = _sniff_image_ext(path)
-            if not real:
+            if not real or real not in _MIGRATABLE_IMAGE_EXTS:
+                # AVIF/HEIC/TIFF 等新识别出来的格式故意不迁移：改名会让画布 JSON 里
+                # 已存的 URL 指向不存在的文件，出站转码那一层会处理它们。
                 continue
             # .jpg/.jpeg 视为同一种，不互相纠正
             if real == ext or (real == ".jpg" and ext == ".jpeg"):
@@ -12209,7 +12275,7 @@ async def upload_local_assets(files: List[UploadFile] = File(...), folder: str =
         content = await file.read()
         if not content:
             continue
-        kind, ext = _local_upload_kind_ext(file.filename, file.content_type)
+        kind, ext = _local_upload_kind_ext(file.filename, file.content_type, content)
         if kind is None:
             continue
         base = os.path.splitext(os.path.basename(file.filename or "file"))[0]
@@ -12263,11 +12329,7 @@ async def import_local_assets_from_urls(payload: LocalAssetUrlImportRequest):
                     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
                     content = response.content
                     name_path = urllib.parse.urlparse(src_url).path
-                kind, ext = _local_upload_kind_ext(name_path, content_type)
-                if kind == "image":
-                    real = _sniff_image_ext_bytes(content[:16])   # 以真实内容为准，避免 webp 被叫成 .png 等
-                    if real and not (real == ".jpg" and ext == ".jpeg"):
-                        ext = real
+                kind, ext = _local_upload_kind_ext(name_path, content_type, content)
                 if kind not in ("image", "video"):
                     raise HTTPException(status_code=400, detail=f"不是图片或视频资源：{content_type or src_url}")
                 if not content:
@@ -13509,7 +13571,9 @@ def classify_upstream_model(mid):
     return "chat"
 
 def classify_chre3_model_entry(item, model_id=""):
-    """优先使用 chre3 模型元数据判断类型，名称判断作为兜底。"""
+    """chre3 是按视频协议整站配置的：只认上游元数据，元数据没表态就归视频。
+    这里刻意不按模型名称兜底——上游会持续新增模型名（如 sd2-fast），
+    按名称猜会让新模型静默掉出视频列表，而它们本就该走同一条 chre3 链路。"""
     if isinstance(item, dict):
         values = []
         for key in ("type", "model_type", "modelType", "task", "category", "kind"):
@@ -13523,7 +13587,11 @@ def classify_chre3_model_entry(item, model_id=""):
             values.extend(str(key).strip().lower() for key, enabled in capabilities.items() if enabled)
         if any("video" in value or value in {"t2v", "i2v", "s2v"} for value in values):
             return "video"
-    return classify_upstream_model(model_id)
+        if any("image" in value for value in values):
+            return "image"
+        if any("chat" in value or value in {"llm", "text", "completion", "completions"} for value in values):
+            return "chat"
+    return "video"
 
 def classify_cangyuan_model_entry(item, model_id=""):
     """苍元的 /v1/models 只给 supported_endpoint_types，据此判断端点类型。"""
@@ -14525,6 +14593,17 @@ def video_api_root(provider):
         base_url = base_url.rsplit("/", 1)[0]
     return base_url
 
+def provider_first_video_model(provider):
+    """纯视频协议站不写死默认模型名：取该 provider 已保存的第一个视频模型。
+    取不到返回空串，交由 selected_model 抛显式错误，避免静默打到已下架的模型名。"""
+    models = (provider or {}).get("video_models")
+    if isinstance(models, list):
+        for model in models:
+            value = str(model or "").strip()
+            if value:
+                return value
+    return ""
+
 def is_chre3_video_provider(provider):
     """是否选择了任一独立的 chre3 视频协议。"""
     return is_chre3_video_protocol(provider_protocol(provider))
@@ -14814,7 +14893,7 @@ async def build_sd2_video_request(payload, requested_model, force_compliance=Fal
         for index, value in enumerate(audio_values, 1)
     ]
     body = {
-        "model": selected_model(requested_model, "sd2-c8"),
+        "model": selected_model(requested_model, ""),
         "prompt": normalize_sd2_prompt(payload.prompt),
         "duration": sd2_video_duration(payload.duration),
         "size": sd2_video_size(payload.size, payload.aspect_ratio),
@@ -15836,7 +15915,7 @@ async def canvas_video(payload: CanvasVideoRequest):
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip("/"))
     if is_chre3_video_provider(provider):
-        default_video_model = "sd2-c8"
+        default_video_model = provider_first_video_model(provider)
     elif is_cangyuan_video_provider(provider):
         default_video_model = CANGYUAN_VIDEO_DEFAULT_MODEL
     elif is_agnes:
