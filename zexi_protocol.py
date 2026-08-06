@@ -1086,22 +1086,38 @@ def make_zexi_reference_resolver(client, base_url, api_key, local_path_of=None, 
     return resolve
 
 
-def zexi_raise_for_error(response, raw, label="泽西同学"):
-    """把上游错误转成 HTTPException。
+def zexi_raise_for_error(response, raw, label="泽西同学", context=""):
+    """把上游错误转成 HTTPException，并在服务端留痕。
 
     HTTP 状态码不可信：实测纯参数错误（grok duration=16）返回 HTTP 500 +
     code=build_request_failed。所以参数类错误一律改判 400，让前端提示改参数
     而不是当成上游故障去重试。
+
+    失败原文必须打到服务端日志：这是付费链路，上游又明确标注部分线路"不稳定"，
+    只把原因塞进响应体交给前端，事后无法判断是我们的请求体问题还是上游拒绝。
+    日志只含上游返回的公开错误信息，不含 Key。
     """
     detail = zexi_error_text(raw, getattr(response, "text", ""))
+    status = getattr(response, "status_code", 502) or 502
+    print(f"[zexi] 上游失败 label={label} http={status} context={context} detail={detail[:300]}")
     if zexi_is_param_error(raw):
         raise HTTPException(status_code=400, detail=f"{label}参数错误：{detail}")
-    status = getattr(response, "status_code", 502) or 502
     if status == 401:
         raise HTTPException(status_code=400, detail=f"{label} API Key 无效或未配置：{detail}")
     if status in {402, 403}:
         raise HTTPException(status_code=400, detail=f"{label}账户额度或权限不足：{detail}")
-    raise HTTPException(status_code=502 if status >= 500 else status, detail=f"{label}接口错误：{detail}")
+    if status in {424, 429} or status >= 500:
+        # 站点文档把 424 / 429 / 5xx 归为"生成线路暂时繁忙或任务被拒绝"，并承诺失败退款。
+        # 这类失败与请求体无关，提示要能让用户区分"换模型重试"和"改参数"。
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"{label}线路暂时不可用（上游 HTTP {status}）：{detail}。"
+                "这不是参数问题；该站部分模型自身标注为“不稳定”，可改用能力目录里状态为“可用”的模型重试。"
+                "站点规则为失败任务退款。"
+            ),
+        )
+    raise HTTPException(status_code=status, detail=f"{label}接口错误：{detail}")
 
 
 async def submit_zexi_video(client, base_url, api_key, body):
@@ -1123,7 +1139,7 @@ async def submit_zexi_video(client, base_url, api_key, body):
             ) from exc
         raise HTTPException(status_code=502, detail=f"泽西同学视频接口返回非 JSON 响应：{text}") from exc
     if response.status_code >= 400:
-        zexi_raise_for_error(response, raw, "泽西同学视频")
+        zexi_raise_for_error(response, raw, "泽西同学视频", context=f"submit model={body.get('model')}")
     state, status_text = zexi_task_state(raw)
     if state == "failed":
         raise HTTPException(status_code=502, detail=f"泽西同学视频任务提交即失败（{status_text}）：{zexi_error_text(raw)}")
@@ -1169,9 +1185,12 @@ async def poll_zexi_task(client, task_url, api_key, poll_interval=5.0, timeout=1
             raise HTTPException(status_code=502, detail=f"{label}任务不存在：{zexi_error_text(last_raw)}")
         state, status_text = zexi_task_state(last_raw)
         if state == "failed":
+            reason = zexi_error_text(last_raw) or "上游未给出原因"
+            # 任务是提交成功后才失败的，属于已计费再退款的路径，服务端必须留痕。
+            print(f"[zexi] 任务终态失败 label={label} status={status_text or 'failed'} reason={reason[:300]}")
             raise HTTPException(
                 status_code=502,
-                detail=f"{label}任务失败（{status_text or 'failed'}）：{zexi_error_text(last_raw) or '上游未给出原因'}",
+                detail=f"{label}任务失败（{status_text or 'failed'}）：{reason}",
             )
         if state == "success":
             return last_raw
@@ -1201,7 +1220,7 @@ async def submit_zexi_image(client, base_url, api_key, body):
         text = (getattr(response, "text", "") or "")[:400]
         raise HTTPException(status_code=502, detail=f"泽西同学图片接口返回非 JSON 响应：{text}") from exc
     if response.status_code >= 400:
-        zexi_raise_for_error(response, raw, "泽西同学图片")
+        zexi_raise_for_error(response, raw, "泽西同学图片", context=f"submit model={body.get('model')}")
     task_id = zexi_task_id(raw)
     if not task_id:
         raise HTTPException(status_code=502, detail=f"泽西同学图片接口没有返回任务号：{str(raw)[:300]}")

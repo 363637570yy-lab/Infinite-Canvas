@@ -10627,7 +10627,14 @@ async function runVideoNode(nodeId, opts={}){
     const pendingId = uid('p');
     const run = runSnapshot(node, prompt, refs);
     if(out) out._pending = [...(out._pending || []), makePendingForRun(pendingId, run, node, {refs, cascadeTargetId})];
-    if(!opts.cascade){ node.running = true; refreshRunNodes(node, out); }
+    if(!opts.cascade){
+        // running 只做 2 秒防连点冷却，不锁整轮生成——视频动辄几分钟，锁到结束等于
+        // 一个节点同时只能有一个任务。图片生成节点一直是这个行为，视频节点此前是唯一例外。
+        // 每轮的 pendingId、run 快照和 out._pending 条目都是独立的，并发互不干扰。
+        node.running = true;
+        refreshRunNodes(node, out);
+        setTimeout(() => { node.running = false; refreshRunNodes(node, out); }, 2000);
+    }
     else refreshRunNodes(node, out);
     try {
         const result = await cascadeFetch('/api/canvas-video', {

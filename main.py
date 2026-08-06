@@ -15312,6 +15312,11 @@ def make_zexi_resolver(client, base_url, api_key):
 async def generate_zexi_video(client, payload, provider, base_url, requested_model):
     api_key = zexi_api_key(provider)
     catalog = await zexi.fetch_zexi_catalog(base_url, "video")
+    label = catalog.availability_label(requested_model)
+    if label and label not in {"可用"}:
+        # 站点会把线路状态标在目录里（如"不稳定"）。这类模型提交失败率明显更高，
+        # 事后排查时需要知道当时选的就是被上游标注过的线路。
+        print(f"[zexi] 注意：模型 {requested_model} 的上游线路状态为“{label}”")
     resolve = make_zexi_resolver(client, base_url, api_key)
     body = await zexi.build_zexi_video_request(payload, requested_model, catalog=catalog, resolve_ref=resolve)
     task_id, submit_raw = await zexi.submit_zexi_video(client, base_url, api_key, body)

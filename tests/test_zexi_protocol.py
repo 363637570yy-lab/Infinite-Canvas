@@ -587,6 +587,34 @@ class ZexiResponseNormalizationTests(unittest.TestCase):
         # 判成 400 而不是 502，前端才会提示改参数而不是当成上游故障重试
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_busy_line_rejection_is_distinguished_from_parameter_errors(self):
+        """424 是站点文档里的"生成线路繁忙或任务被拒绝"，不是参数问题。
+
+        2026-08-06 线上 minimax-h3 真实收到过 424（该模型在能力目录里被上游自己
+        标注为"不稳定"）。提示必须让用户能区分"换模型重试"和"改参数"，
+        否则会反复调参数而问题根本不在那里。
+        """
+        class FakeResponse:
+            status_code = 424
+            text = ""
+
+        raw = {"error": {"message": "upstream busy", "type": "new_api_error"}}
+        with self.assertRaises(HTTPException) as ctx:
+            zexi.zexi_raise_for_error(FakeResponse(), raw, "泽西同学视频")
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("不是参数问题", ctx.exception.detail)
+        self.assertIn("退款", ctx.exception.detail)
+
+    def test_rate_limit_is_treated_as_line_unavailable(self):
+        class FakeResponse:
+            status_code = 429
+            text = ""
+
+        with self.assertRaises(HTTPException) as ctx:
+            zexi.zexi_raise_for_error(FakeResponse(), {"message": "too many requests"}, "泽西同学视频")
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("线路暂时不可用", ctx.exception.detail)
+
     def test_upstream_server_errors_stay_502(self):
         class FakeResponse:
             status_code = 503
