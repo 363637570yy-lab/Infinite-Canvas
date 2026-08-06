@@ -111,6 +111,19 @@
                                     <span class="ms-line"><span class="inline-code">omni-v2v</span> / <span class="inline-code">-no-water</span>（视频转视频）：参考视频 ≤2 为主输入，参考图 ≤2，不支持参考音频，同样无时长和清晰度参数，画幅仅 16:9 / 9:16。</span>
                                     <span class="ms-line"><span class="inline-code">sora-2</span> / <span class="inline-code">veo-3-1</span> 系走站点的 chat-video 家族，本协议尚未实现其参考图字段，选中后请只用纯文生。</span>
                                 </div>
+                                <div class="zexi-hint">
+                                    <span class="ms-line">泽西同学地址：<span class="inline-code">https://zexitongxue.com</span>（同一个平台同时提供视频和图片）。</span>
+                                    <span class="ms-line">视频 <span class="inline-code">POST /v1/videos</span> → <span class="inline-code">GET /v1/videos/{id}</span>；图片 <span class="inline-code">POST /v1/images/generations/async</span> → <span class="inline-code">GET /v1/images/tasks/{id}</span>。成品均由后端带鉴权取回后落盘。</span>
+                                    <span class="ms-line">时长、清晰度、参考图上限按模型读取站点能力目录，不写死；目录里 <span class="inline-code">can_use=false</span> 的模型会被拦下不提交。</span>
+                                    <span class="ms-line"><span class="inline-code">seedance-2.5</span>：图片 ≤30、视频 ≤10、音频 ≤10（合计 ≤50），时长 4–30 秒，清晰度 480p / 720p；<b>没有首尾帧模式</b>，标注的首尾帧会当成普通参考图。</span>
+                                    <span class="ms-line"><span class="inline-code">grok</span>：固定 720p，时长仅 6 / 10 / 15 秒，<b>多图参考时最高 10 秒</b>；参考图 ≤9，不支持参考视频和音频。</span>
+                                    <span class="ms-line"><span class="inline-code">minimax-h3</span>：参考图 ≤9、参考音频 ≤3，<b>不支持参考视频</b>（站点明确要求不要提交视频字段）。</span>
+                                    <span class="ms-line">其余 seedance / doubao / dolo 系走通用扁平字段：首尾帧用 <span class="inline-code">first_frame</span> / <span class="inline-code">last_frame</span>，分辨率由模型名固定、请求体不再重复发送。</span>
+                                    <span class="ms-line"><b>音频开关对本平台无效</b>：站点没有公开任何音频开关字段，成片是否带声音完全由上游默认值决定。</span>
+                                    <span class="ms-line">本地参考图会自动上传到站点换公网直链；<b>参考视频和音频必须是公网直链</b>（站点上传接口只收图片，传视频音频会被改成 .png）。</span>
+                                    <span class="ms-line">图片目前只支持<b>单张参考图</b>：站点未公开多图字段名，附 2 张以上会直接报错而不是静默丢弃。</span>
+                                    <span class="ms-line">站点会按（模型 + 提示词 + 参数）去重，完全相同的请求会返回同一个任务和同一张结果图。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -286,6 +299,7 @@
                                         <option value="chre3-video" data-i18n="api.protocolChre3Video">视频：chre3协议</option>
                                         <option value="chre3-video-real" data-i18n="api.protocolChre3VideoReal">视频：chre3真人协议</option>
                                         <option value="cangyuan" data-i18n="api.protocolCangyuanVideo">视频：苍元协议</option>
+                                        <option value="zexi" data-i18n="api.protocolZexi">泽西同学协议（视频+图片）</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

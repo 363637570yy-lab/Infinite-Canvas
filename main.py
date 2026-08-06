@@ -38,6 +38,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+# 泽西同学（zexitongxue.com）协议：请求体构造、能力目录与提交轮询都在独立模块，
+# 这里只做路由接线。模块不反向 import main.py。
+import zexi_protocol as zexi
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -372,13 +375,21 @@ CANGYUAN_OMNI_PORTRAIT_RATIOS = {"9:16", "3:4"}
 CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS = 1
 CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS = 2
 CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS = 2
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+# 泽西同学（zexitongxue.com）：同样是 POST /v1/videos + GET /v1/videos/{id}，但与
+# cangyuan 的字段和上限都不同（首尾帧用 first_frame/last_frame 而不是 first_image_url，
+# 上限按模型读能力目录而不是常量，且没有 audio 开关字段），所以单独成一个协议；
+# 它还带一条 cangyuan 没有的图片异步链路 /v1/images/generations/async。
+ZEXI_PROTOCOL = zexi.ZEXI_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
 
 def is_cangyuan_video_protocol(value):
     return str(value or "").strip().lower() == CANGYUAN_VIDEO_PROTOCOL
+
+def is_zexi_protocol(value):
+    return str(value or "").strip().lower() == ZEXI_PROTOCOL
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -9509,7 +9520,13 @@ def image_output_meta(url, source_item=None):
             pass
     return meta
 
-async def save_remote_video_to_output(url, prefix="video_", category="output"):
+async def save_remote_video_to_output(url, prefix="video_", category="output", extra_headers=None):
+    """下载上游成片并落盘。
+
+    extra_headers 只给需要鉴权取片的站点用（如泽西同学的站内 /content）。httpx 在
+    跨源重定向时会自动丢弃 Authorization，所以即使站点 302 到第三方 CDN，
+    我们的 Key 也不会被带到对方主机。
+    """
     if not url:
         return ""
     if url.startswith("/output/") or url.startswith("/assets/"):
@@ -9528,6 +9545,8 @@ async def save_remote_video_to_output(url, prefix="video_", category="output"):
             "User-Agent": "ComfyUI-API-Modelscope/1.0",
             "Accept": "video/*,application/octet-stream,*/*;q=0.8",
         }
+        if extra_headers:
+            headers.update({str(k): str(v) for k, v in extra_headers.items() if k and v})
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -11241,6 +11260,11 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         return await generate_jimeng_provider_image(prompt, size, model, reference_images, provider)
     if is_runninghub_provider(provider):
         return await generate_runninghub_provider_image(prompt, size, model, reference_images, provider)
+    if is_zexi_route(provider, model):
+        return await generate_zexi_image(
+            prompt, size, quality, model, reference_images, provider,
+            aspect_ratio=aspect_ratio, resolution=resolution,
+        )
     is_apimart = is_apimart_provider(provider)
     if effective_protocol(provider, model) == "gemini" and not is_apimart:
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider)
@@ -13530,6 +13554,38 @@ async def probe_cangyuan_video_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"苍元视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_zexi_endpoint(client, base_url: str, api_key: str):
+    """验证泽西同学入口，只打免费的 /v1/models，不碰会计费的 POST。
+
+    /v1/models 需要 Bearer 且按 key 分组过滤；能力目录 /ai-api/models 必须匿名，
+    两者分开取，目录取不到不影响验证结论。
+    """
+    ok, result = await probe_openai_models_endpoint(client, zexi.zexi_api_root(base_url), api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], ZEXI_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "all": ids,
+        })
+    result["protocol"] = ZEXI_PROTOCOL
+    if ok:
+        # 测试连接是用户主动确认站点状态的时刻，强制绕过 5 分钟缓存拿最新目录。
+        catalog = await zexi.fetch_zexi_catalog(base_url, "video", force=True)
+        note = (
+            f"，能力目录 {len(catalog)} 个视频模型"
+            if len(catalog)
+            else "，但能力目录暂不可达：此时只能跑纯文生，附参考素材的请求会被拦下"
+        )
+        result["message"] = f"泽西同学协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型{note}"
+    else:
+        result["message"] = f"泽西同学协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
     if task_ok:
@@ -13626,7 +13682,7 @@ def parse_upstream_models(raw, protocol="openai"):
     ids = sorted(set(ids))
     grouped = {"image": [], "chat": [], "video": []}
     metadata_by_id = {}
-    uses_metadata = is_chre3_video_protocol(protocol) or is_cangyuan_video_protocol(protocol)
+    uses_metadata = is_chre3_video_protocol(protocol) or is_cangyuan_video_protocol(protocol) or is_zexi_protocol(protocol)
     if uses_metadata:
         for it in items:
             if isinstance(it, dict):
@@ -13634,7 +13690,9 @@ def parse_upstream_models(raw, protocol="openai"):
                 if raw_id:
                     metadata_by_id[str(raw_id)] = it
     for mid in ids:
-        if is_cangyuan_video_protocol(protocol):
+        if is_zexi_protocol(protocol):
+            kind = zexi.classify_zexi_model_entry(metadata_by_id.get(mid), mid)
+        elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
             kind = classify_chre3_model_entry(metadata_by_id.get(mid), mid)
@@ -13827,6 +13885,24 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "protocol": protocol,
                 "status_code": probe.get("status") or 0,
                 "message": probe.get("message") or "苍元视频协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_zexi_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_zexi_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "泽西同学协议验证完成",
                 "model_count": probe.get("model_count") or 0,
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
@@ -14121,15 +14197,31 @@ async def build_online_image_result(payload: OnlineImageRequest):
         if not image_refs:
             raise HTTPException(status_code=400, detail="请先选择要放大的图片")
         count = 1
+    # 泽西同学按（模型 + prompt + 参数）去重：并发发 N 个相同请求只会拿回同一个任务，
+    # 所以多图改用上游的 n 一次提交，本地不再循环。
+    is_zexi_image = operation != "upscale" and is_zexi_route(provider, model)
+    zexi_count = count
+    if is_zexi_image:
+        count = 1
     async def generate_one():
         if operation == "upscale":
             image_data, raw_item = await generate_jimeng_upscale_image(image_refs, payload.resolution_type)
+        elif is_zexi_image:
+            image_data, raw_item = await generate_zexi_image(
+                payload.prompt, request_size, payload.quality, model, image_refs, provider,
+                aspect_ratio=payload.aspect_ratio, resolution=payload.resolution, n=zexi_count,
+            )
         else:
             image_data, raw_item = await generate_ai_image(payload.prompt, request_size, payload.quality, model, image_refs, provider["id"], payload.aspect_ratio, payload.resolution)
-        try:
-            image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]
-        except HTTPException:
-            image_items = [image_data]
+        if isinstance(raw_item, dict) and raw_item.get("zexi_images"):
+            # 泽西的成品已在上面带鉴权取回；返回体里没有可直接下载的地址，
+            # 不能交给 extract_images 去抓 URL。
+            image_items = list(raw_item["zexi_images"])
+        else:
+            try:
+                image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]
+            except HTTPException:
+                image_items = [image_data]
         local_urls = []
         local_items = []
         for item in image_items:
@@ -14168,7 +14260,9 @@ async def build_online_image_result(payload: OnlineImageRequest):
         "provider_name": provider.get("name") or provider["id"],
         "task_id": extract_task_id(raw) if isinstance(raw, dict) else None,
         "request_id": raw.get("id") if isinstance(raw, dict) else None,
-        "params": {"provider_id": provider["id"], "model": model, "size": request_size, "requested_size": payload.size, "aspect_ratio": payload.aspect_ratio, "resolution": payload.resolution, "quality": payload.quality, "n": count, "reference_images": refs},
+        # 泽西同学把张数交给上游的 n 一次提交，本地循环次数被压成 1；历史记录要记
+        # 用户真正请求的张数，不能记成本地循环数。
+        "params": {"provider_id": provider["id"], "model": model, "size": request_size, "requested_size": payload.size, "aspect_ratio": payload.aspect_ratio, "resolution": payload.resolution, "quality": payload.quality, "n": zexi_count if is_zexi_image else count, "reference_images": refs},
         "raw_usage": raw.get("usage") if isinstance(raw, dict) else None,
     }
     save_to_history(result)
@@ -14632,8 +14726,17 @@ def is_cangyuan_video_route(provider, model=""):
     """苍元视频协议：POST /v1/videos，GET /v1/videos/{id}。"""
     return is_cangyuan_video_protocol(effective_protocol(provider, model))
 
+def is_zexi_provider(provider):
+    """是否选择了泽西同学协议（视频与图片同一个 provider）。"""
+    return is_zexi_protocol(provider_protocol(provider))
+
+def is_zexi_route(provider, model=""):
+    return is_zexi_protocol(effective_protocol(provider, model))
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
+    if is_zexi_route(provider, model):
+        return "泽西同学视频"
     if is_cangyuan_video_route(provider, model):
         return "苍元视频"
     if is_chre3_video_route(provider, model):
@@ -14651,6 +14754,8 @@ def looks_like_html_response(text: str) -> bool:
     return sample.startswith("<!doctype html") or sample.startswith("<html") or "<head" in sample
 
 def video_submit_url_candidates(provider, base_url, model=""):
+    if is_zexi_route(provider, model):
+        return [zexi.zexi_video_submit_url(base_url)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         # 该合同的 POST 可能产生真实计费任务，不能用旧候选地址重试造成重复提交。
         return [f"{sd2_video_api_root(base_url)}/v1/videos"]
@@ -14672,6 +14777,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
     return [f"{base_url}/v1/videos/generations", f"{base_url}/v2/videos/generations"]
 
 def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=""):
+    if is_zexi_route(provider, model):
+        return [zexi.zexi_video_task_url(base_url, task_id)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         quoted_id = urllib.parse.quote(str(task_id), safe="")
         return [f"{sd2_video_api_root(base_url)}/v1/videos/{quoted_id}"]
@@ -15179,6 +15286,124 @@ async def generate_cangyuan_video(client, payload, provider, base_url, requested
         raise HTTPException(status_code=502, detail=f"苍元视频接口{detail}")
     local_urls = [await save_remote_video_to_output(url) for url in urls]
     return {"videos": local_urls, "task_id": task_id, "raw": result}
+
+# ---- 泽西同学（zexitongxue.com）：POST /v1/videos，GET /v1/videos/{id}，/content 取片 ----
+def zexi_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+def make_zexi_resolver(client, base_url, api_key):
+    """本地图片走站内上传换直链；参考视频 / 音频只能用公网直链（站内上传会把它们改成 .png）。"""
+    async def public_url_of(value, kind, index):
+        return await sd2_public_reference_url(value, kind, index, label="泽西同学")
+    return zexi.make_zexi_reference_resolver(
+        client,
+        base_url,
+        api_key,
+        local_path_of=openai_video_proxy_local_image_path,
+        public_url_of=public_url_of,
+    )
+
+async def generate_zexi_video(client, payload, provider, base_url, requested_model):
+    api_key = zexi_api_key(provider)
+    catalog = await zexi.fetch_zexi_catalog(base_url, "video")
+    resolve = make_zexi_resolver(client, base_url, api_key)
+    body = await zexi.build_zexi_video_request(payload, requested_model, catalog=catalog, resolve_ref=resolve)
+    task_id, submit_raw = await zexi.submit_zexi_video(client, base_url, api_key, body)
+    result = submit_raw
+    if zexi.zexi_task_state(submit_raw)[0] != "success":
+        result = await zexi.poll_zexi_task(
+            client,
+            zexi.zexi_video_task_url(base_url, task_id),
+            api_key,
+            poll_interval=max(5.0, IMAGE_POLL_INTERVAL),
+            timeout=VIDEO_POLL_TIMEOUT,
+            label="泽西同学视频",
+        )
+    # 成片一律走站内 /content：doubao 系的 result_url 是火山临时 CDN，2.5 / grok 是
+    # 站内需鉴权地址，两种形态都能被 /content 覆盖，也省掉按 URL 形态分支。
+    content_url = zexi.zexi_video_content_url(base_url, task_id)
+    local_url = await save_remote_video_to_output(
+        content_url, extra_headers={"Authorization": bearer_auth_value(api_key)}
+    )
+    if not str(local_url or "").startswith(("/output/", "/assets/")):
+        # save_remote_video_to_output 失败时会原样返回入参 URL，而这个地址需要鉴权，
+        # 前端拿到也放不出来，所以这里必须显式失败而不是把它当成成功结果落进画布。
+        raise HTTPException(
+            status_code=502,
+            detail=f"泽西同学任务 {task_id} 已完成，但成片下载失败。成片在上游只保留有限时间，请稍后用任务号重试。",
+        )
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
+
+async def generate_zexi_image(prompt, size, quality, model, reference_images, provider, aspect_ratio="", resolution="", n=1):
+    """泽西同学图片：POST /v1/images/generations/async → 轮询 → 带鉴权取图。
+
+    两个站点特性决定了这里的写法：
+    1. 结果地址需要 Bearer 且只保留约 2 小时，所以直接取回字节，不把地址交给前端；
+       返回体里也不带上游地址，避免被 extract_images 抓去当成可直接下载的图。
+    2. 站点按（模型 + prompt + 参数）去重，完全相同的请求会返回同一个 task_id。
+       所以多图用上游的 n 一次提交，而不是并发发 N 个相同请求。
+    """
+    base_url = zexi.zexi_api_root(provider.get("base_url") or "")
+    api_key = zexi_api_key(provider)
+    try:
+        count = max(1, min(8, int(n or 1)))
+    except Exception:
+        count = 1
+    timeout = httpx.Timeout(connect=20.0, read=600.0, write=120.0, pool=20.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resolve = make_zexi_resolver(client, base_url, api_key)
+        refs = [ref for ref in (reference_images or []) if (ref.get("url") if isinstance(ref, dict) else ref)]
+        ref_urls = []
+        for index, ref in enumerate(refs, 1):
+            value = zexi.zexi_reference_value(ref)
+            if value:
+                ref_urls.append(await resolve(value, "图片", index))
+        body = zexi.build_zexi_image_request(
+            prompt, model,
+            size=size, aspect_ratio=aspect_ratio, quality=quality, resolution=resolution,
+            n=count, reference_urls=ref_urls,
+        )
+        task_id, submit_raw = await zexi.submit_zexi_image(client, base_url, api_key, body)
+        result = submit_raw
+        if zexi.zexi_task_state(submit_raw)[0] != "success":
+            result = await zexi.poll_zexi_task(
+                client,
+                zexi.zexi_image_task_url(base_url, task_id),
+                api_key,
+                poll_interval=max(3.0, IMAGE_POLL_INTERVAL),
+                timeout=IMAGE_TASK_TIMEOUT,
+                label="泽西同学图片",
+            )
+        images = []
+        for index in range(count):
+            try:
+                content, content_type = await zexi.download_zexi_content(
+                    client, zexi.zexi_image_content_url(base_url, task_id, index), api_key, expect="图片"
+                )
+            except HTTPException:
+                # n>1 时上游是否真的出多张未经验证；第 1 张必须成功，后续缺失按少于请求数处理。
+                if index == 0:
+                    raise
+                break
+            images.append({
+                "type": "b64",
+                "value": base64.b64encode(content).decode("ascii"),
+                "mime_type": (content_type or "").split(";")[0].strip() or "image/png",
+            })
+    status = zexi.zexi_task_state(result)[1]
+    return images[0], {
+        "task_id": task_id,
+        "model": body.get("model"),
+        "status": status,
+        "zexi_images": images,
+        "requested_n": count,
+    }
 
 def apimart_video_size(size):
     value = str(size or "16:9").strip()
@@ -15914,7 +16139,8 @@ async def canvas_video(payload: CanvasVideoRequest):
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip("/"))
-    if is_chre3_video_provider(provider):
+    if is_chre3_video_provider(provider) or is_zexi_provider(provider):
+        # 纯中转站不写死默认模型名，取用户已保存的第一个视频模型。
         default_video_model = provider_first_video_model(provider)
     elif is_cangyuan_video_provider(provider):
         default_video_model = CANGYUAN_VIDEO_DEFAULT_MODEL
@@ -15992,6 +16218,15 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(chre3) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 chre3 视频接口失败：{exc}") from exc
+    if is_zexi_route(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as zexi_client:
+                return await generate_zexi_video(zexi_client, payload, provider, base_url, requested_model)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(泽西同学) 网络/TLS错误 model={requested_model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求泽西同学视频接口失败：{exc}") from exc
     if is_cangyuan_video_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as cangyuan_client:

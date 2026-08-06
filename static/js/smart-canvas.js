@@ -14311,6 +14311,9 @@ function coolNodeRunningState(node, ms=2000){
         const current = nodes.find(n => n.id === node.id);
         if(current){
             current.running = false;
+            // 冷却结束会改变 smartNodeInFlight 的结果，运行按钮要跟着重算；
+            // render() 不负责按钮状态。任务仍在跑时 pending 还在，按钮依旧保持禁用。
+            syncRunButtonState();
             render();
         }
     }, ms);
@@ -15179,9 +15182,19 @@ async function runGeneration(){
     const refs = request.refs;
     const previousSettings = cloneSmartSettings(settings);
     const runSettings = smartSettingsForNode(node);
+    // 运行期间用节点自己的参数临时接管全局 settings，跑完还原。但全局 settings 同时就是
+    // 参数面板正在编辑的对象，所以这个"接管"必须尽早结束——否则用户在长任务（尤其是
+    // 几分钟的视频）运行途中改的协议 / 模型，会被任务结束时的还原动作静默回滚。
+    // releaseSettingsOverride 幂等：谁先到谁还原，之后的调用都是空操作。
     settings = {...settings, ...cloneSmartSettings(runSettings || {})};
-    if(!prompt && smartRunNeedsPrompt(settings)){
+    let settingsOverrideActive = true;
+    const releaseSettingsOverride = () => {
+        if(!settingsOverrideActive) return;
+        settingsOverrideActive = false;
         settings = previousSettings;
+    };
+    if(!prompt && smartRunNeedsPrompt(settings)){
+        releaseSettingsOverride();
         toast(tr('smart.toastNeedPrompt'));
         return;
     }
@@ -15254,17 +15267,21 @@ async function runGeneration(){
             await runComfyGeneration(pendingNode, prompt, refs, pendingNode, pendingMeta);
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             addSmartGenerationLog({run:runLog, outputs:pendingNode.images || [], runMs:nowMs() - runLogStart});
-            settings = previousSettings;
+            releaseSettingsOverride();
             return;
         }
         if(isApiLikeEngine(settings.engine) && settings.apiKind === 'video'){
-            const outVideos = await runApiVideoGeneration(prompt, refs);
+            // 视频是本项目最长的单次任务，接管全局 settings 几分钟代价太大：期间用户改的
+            // 协议、模型、参数都会在结束时被回滚。这里把本轮参数定格成快照后立刻交还全局，
+            // 后续只用快照，运行结束也不再有任何还原动作去覆盖用户的修改。
+            const videoRunSettings = cloneSmartSettings(settings);
+            releaseSettingsOverride();
+            const outVideos = await runApiVideoGeneration(prompt, refs, videoRunSettings);
             if(!outVideos.length) throw new Error(tr('smart.errNoOutVideos'));
             finalizePendingNode(pendingNode, outVideos, pendingMeta, 'video');
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             addSmartGenerationLog({run:runLog, outputs:outVideos, runMs:nowMs() - runLogStart});
             clearPromptInput({preserveDraft:true});
-            settings = previousSettings;
             scheduleSave();
             return;
         }
@@ -15291,7 +15308,7 @@ async function runGeneration(){
             if(pendingNode.jimengPending || smartRecoverableImageTask(pendingNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
-                settings = previousSettings;
+                releaseSettingsOverride();
                 scheduleSave();
                 return;
             }
@@ -15300,7 +15317,7 @@ async function runGeneration(){
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             addSmartGenerationLog({run:runLog, outputs:pendingNode.images || [], runMs:nowMs() - runLogStart});
             clearPromptInput({preserveDraft:true});
-            settings = previousSettings;
+            releaseSettingsOverride();
             scheduleSave();
             return;
         }
@@ -15310,10 +15327,10 @@ async function runGeneration(){
         if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
         addSmartGenerationLog({run:runLog, outputs:outImages, runMs:nowMs() - runLogStart});
         clearPromptInput({preserveDraft:true});
-        settings = previousSettings;
+        releaseSettingsOverride();
         scheduleSave();
     } catch(e) {
-        settings = previousSettings;
+        releaseSettingsOverride();
         if(handleJimengPendingSignal(pendingNode, e)){
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             delete pendingNode._runMetaTargetId;
@@ -15338,10 +15355,13 @@ async function runGeneration(){
         if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
-        if(!apiConcurrentRun){
-            clearNodeRunningState(pendingNode);
-            syncRunButtonState();
-        }
+        // clearNodeRunningState 只在非并发路径调用：并发路径靠 coolNodeRunningState 的
+        // 冷却令牌自行释放，提前清会打断它。但按钮状态刷新对两条路径都必须做——
+        // 它只是按当前选中节点重算 disabled，不改任何运行状态。漏掉这一步时，
+        // 视频这类长任务跑完后 runBtn 会一直停在运行开始时置下的 disabled=true，
+        // 直到用户点别的节点触发 syncSelectionUi 才恢复。
+        if(!apiConcurrentRun) clearNodeRunningState(pendingNode);
+        syncRunButtonState();
         render();
     }
 }

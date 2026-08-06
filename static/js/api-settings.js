@@ -97,7 +97,8 @@ const CHRE3_VIDEO_PROTOCOL = 'chre3-video';
 const CHRE3_VIDEO_REAL_PROTOCOL = 'chre3-video-real';
 const CHRE3_VIDEO_PROTOCOLS = new Set([CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL]);
 const CANGYUAN_VIDEO_PROTOCOL = 'cangyuan';
-const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
+const ZEXI_PROTOCOL = 'zexi';
+const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
     return CHRE3_VIDEO_PROTOCOLS.has(String(value || '').trim().toLowerCase());
@@ -105,6 +106,10 @@ function isChre3VideoProtocol(value){
 
 function isCangyuanVideoProtocol(value){
     return String(value || '').trim().toLowerCase() === CANGYUAN_VIDEO_PROTOCOL;
+}
+
+function isZexiProtocol(value){
+    return String(value || '').trim().toLowerCase() === ZEXI_PROTOCOL;
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -867,6 +872,7 @@ function updateProtocolFromInput(){
     document.body.classList.toggle('show-gemini-cli', item.protocol === 'gemini-cli');
     document.body.classList.toggle('show-chre3-video', isChre3VideoProtocol(item.protocol));
     document.body.classList.toggle('show-cangyuan-video', isCangyuanVideoProtocol(item.protocol));
+    document.body.classList.toggle('show-zexi', isZexiProtocol(item.protocol));
     clearVerifyResult();
     // 协议会改变整个表单（如即梦 CLI 账户面板、默认模型、Key 占位）。renderEditor 是唯一切换这些的入口，
     // 这里复跑一次让面板立即出现；保存并恢复 Key 输入框，避免推荐流程里先填的 Key 被 renderEditor 清空。
@@ -2539,6 +2545,7 @@ function renderEditor(){
     const currentProtocolValue = String(protocolInput?.value || item.protocol || '').toLowerCase();
     const isChre3Video = isChre3VideoProtocol(currentProtocolValue);
     const isCangyuanVideo = isCangyuanVideoProtocol(currentProtocolValue);
+    const isZexi = isZexiProtocol(currentProtocolValue);
     if(isRunningHub){
         ensureRunningHubLists(item);
         if(rhFreeKeyInput){
@@ -2600,6 +2607,7 @@ function renderEditor(){
     document.body.classList.toggle('show-gemini-cli', isGeminiCli);
     document.body.classList.toggle('show-chre3-video', isChre3Video);
     document.body.classList.toggle('show-cangyuan-video', isCangyuanVideo);
+    document.body.classList.toggle('show-zexi', isZexi);
     updateApimartDomesticHint(item);
     renderProviderOnboarding(item);
     renderRecommendApi();
