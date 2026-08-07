@@ -443,37 +443,38 @@ class ZexiSilentDegradationGuardTests(unittest.TestCase):
             ))
         self.assertIn("互斥", ctx.exception.detail)
 
-    def test_unknown_capability_blocks_reference_material_but_not_text_to_video(self):
-        """目录读不到时按未知处理：不能用家族默认上限放行参考素材。
+    def test_models_absent_from_the_catalog_are_still_submitted(self):
+        """能力目录是增强，不是准入门槛。
 
-        目录必须匿名访问，网络波动或站点变更都会让它拿不到；此时用猜测替代上游表态
-        的代价是参考素材被静默忽略而费用照扣。纯文生不含这个风险，必须继续可用。
+        站点的请求合同是 POST /v1/videos + 文档字段。目录按令牌分组返回、也会漏掉
+        新上架模型；目录里查不到就本地拦死，会让 /v1/models 里明明可选的模型完全
+        不可用——这比"参考素材可能被上游忽略"更糟。此处按家族默认上限提交，
+        素材能力交给上游判定。
         """
-        empty = zexi.ZexiCatalog()
+        for cat in (zexi.ZexiCatalog(), catalog()):
+            payload = video_payload(
+                model="brand-new-model",
+                duration=6,
+                images=[{"url": "https://example.com/a.jpg"}],
+                audios=["https://example.com/s.mp3"],
+            )
+            body = run(zexi.build_zexi_video_request(
+                payload, "brand-new-model", catalog=cat, resolve_ref=fake_resolve
+            ))
+            self.assertEqual(body["model"], "brand-new-model")
+            self.assertEqual(body["images"], ["https://example.com/a.jpg"])
+            self.assertEqual(body["audio_url"], "https://example.com/s.mp3")
 
-        text_only = video_payload(model="seedance-2.0-720p-pro-431", duration=6)
-        body = run(zexi.build_zexi_video_request(
-            text_only, "seedance-2.0-720p-pro-431", catalog=empty, resolve_ref=fake_resolve
-        ))
-        self.assertEqual(body["duration"], 6)
-        self.assertNotIn("images", body)
-
-        for kwargs in (
-            {"images": [{"url": "https://example.com/a.jpg"}]},
-            {"videos": ["https://example.com/m.mp4"]},
-            {"audios": ["https://example.com/s.mp3"]},
-            {"images": [
-                {"url": "https://example.com/f.jpg", "role": "first_frame"},
-                {"url": "https://example.com/l.jpg", "role": "last_frame"},
-            ]},
-        ):
-            payload = video_payload(model="seedance-2.0-720p-pro-431", **kwargs)
-            with self.assertRaises(HTTPException) as ctx:
-                run(zexi.build_zexi_video_request(
-                    payload, "seedance-2.0-720p-pro-431", catalog=empty, resolve_ref=fake_resolve
-                ))
-            self.assertEqual(ctx.exception.status_code, 400, kwargs)
-            self.assertIn("能力目录", ctx.exception.detail)
+    def test_catalog_still_tightens_when_it_actually_states_a_limit(self):
+        """目录明确表态时仍然收紧——这才是它真正的价值。"""
+        payload = video_payload(
+            model="seedance-2.0-720p-pro-431",
+            images=[{"url": "https://example.com/a.jpg"}],
+        )
+        with self.assertRaises(HTTPException):
+            run(zexi.build_zexi_video_request(
+                payload, "seedance-2.0-720p-pro-431", catalog=catalog(), resolve_ref=fake_resolve
+            ))
 
     def test_catalog_knows_reports_entry_presence(self):
         self.assertTrue(catalog().knows("seedance-2.5"))

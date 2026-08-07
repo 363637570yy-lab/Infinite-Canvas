@@ -15330,18 +15330,40 @@ async def generate_zexi_video(client, payload, provider, base_url, requested_mod
             timeout=VIDEO_POLL_TIMEOUT,
             label="泽西同学视频",
         )
-    # 成片一律走站内 /content：doubao 系的 result_url 是火山临时 CDN，2.5 / grok 是
-    # 站内需鉴权地址，两种形态都能被 /content 覆盖，也省掉按 URL 形态分支。
+    # 取片有两条路：站内 /content（需鉴权，全家族通用）和任务返回的 result_url
+    # （doubao 系是火山临时 CDN，公网可取）。先走 /content，失败再回落 result_url——
+    # 任务此时已经计费成功，只因取片方式不通就判失败等于白扣钱。
+    # 回落时不带 Authorization：result_url 可能指向第三方 CDN，不能把 Key 发过去。
+    def _saved_ok(value):
+        return str(value or "").startswith(("/output/", "/assets/"))
+
     content_url = zexi.zexi_video_content_url(base_url, task_id)
     local_url = await save_remote_video_to_output(
         content_url, extra_headers={"Authorization": bearer_auth_value(api_key)}
     )
-    if not str(local_url or "").startswith(("/output/", "/assets/")):
-        # save_remote_video_to_output 失败时会原样返回入参 URL，而这个地址需要鉴权，
-        # 前端拿到也放不出来，所以这里必须显式失败而不是把它当成成功结果落进画布。
+    if not _saved_ok(local_url):
+        print(f"[zexi] 成片 /content 下载失败 task={task_id} model={requested_model}，尝试回落 result_url")
+        for candidate in zexi.zexi_video_result_urls(result):
+            if candidate == content_url:
+                continue
+            same_host = zexi.zexi_api_root(candidate).rstrip("/") == zexi.zexi_api_root(base_url).rstrip("/")
+            fallback = await save_remote_video_to_output(
+                candidate,
+                extra_headers={"Authorization": bearer_auth_value(api_key)} if same_host else None,
+            )
+            if _saved_ok(fallback):
+                print(f"[zexi] 成片改由 result_url 取回成功 task={task_id}")
+                local_url = fallback
+                break
+    if not _saved_ok(local_url):
+        # 两条路都不通才算失败。任务已计费，提示要让用户知道钱花了、片还在上游。
+        print(f"[zexi] 成片下载彻底失败 task={task_id} model={requested_model} 候选={zexi.zexi_video_result_urls(result)[:3]}")
         raise HTTPException(
             status_code=502,
-            detail=f"泽西同学任务 {task_id} 已完成，但成片下载失败。成片在上游只保留有限时间，请稍后用任务号重试。",
+            detail=(
+                f"泽西同学任务 {task_id} 生成成功但成片下载失败（站内 /content 与 result_url 都取不到）。"
+                "该任务已在上游计费，成片只保留有限时间，请尽快用任务号在站点侧自行下载。"
+            ),
         )
     return {"videos": [local_url], "task_id": task_id, "raw": result}
 

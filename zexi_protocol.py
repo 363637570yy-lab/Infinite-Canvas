@@ -479,18 +479,12 @@ async def build_zexi_video_request(payload, requested_model, catalog=None, resol
     # 分支——首尾帧就是这样绕过检查的：flat 家族的首尾帧分支在取上限之前就返回了，
     # max_reference_images=0 的模型照样收到 first_frame / last_frame，上游静默忽略并照常扣费。
     if image_values or video_values or audio_values:
+        # 能力目录只是增强，不是准入门槛。站点的请求合同是 POST /v1/videos + 文档字段，
+        # 目录里没有这个模型（新上架、按令牌分组不同、或本就只在 /v1/models 里）时
+        # 按文档正常提交，由上游自己判定——本地拦下会让合法模型完全不可用。
+        # 只有目录**明确说了**上限时才据此收紧。
         if not catalog.knows(model):
-            # 能力目录读不到时不按家族默认上限放行：那是用猜测替代上游表态，
-            # 猜错的代价是参考素材被静默忽略而费用照扣。纯文生不受影响。
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"无法确认模型 {model} 的参考素材能力：泽西同学的能力目录当前读不到"
-                    "（该目录必须匿名访问，可能是网络波动或站点变更）。"
-                    "为避免参考素材被上游静默忽略却照常扣费，这里先拦下。"
-                    "请稍后重试，或移除参考素材改用纯文生。"
-                ),
-            )
+            print(f"[zexi] 能力目录没有 {model} 的条目，按家族默认上限提交，素材能力以上游判定为准")
         max_images = _limit(catalog, model, family, "images")
         max_videos = _limit(catalog, model, family, "videos")
         max_audios = _limit(catalog, model, family, "audios")
@@ -1070,6 +1064,7 @@ def make_zexi_reference_resolver(client, base_url, api_key, local_path_of=None, 
             url = await public_url_of(text, kind, index)
             if zexi_is_public_http_url(url):
                 return url
+        print(f"[zexi] 素材公网化失败 kind={kind} index={index} value={text[:120]}")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1194,9 +1189,11 @@ async def poll_zexi_task(client, task_url, api_key, poll_interval=5.0, timeout=1
             )
         if state == "success":
             return last_raw
+    stuck_id = zexi_task_id(last_raw) or ""
+    print(f"[zexi] 轮询超时 label={label} timeout={int(timeout)}s task={stuck_id} last_state={zexi_task_state(last_raw)}")
     raise HTTPException(
         status_code=504,
-        detail=f"{label}任务在 {int(timeout)} 秒内未完成，请稍后用任务号 {zexi_task_id(last_raw) or ''} 重新查询。",
+        detail=f"{label}任务在 {int(timeout)} 秒内未完成，请稍后用任务号 {stuck_id} 重新查询。",
     )
 
 
