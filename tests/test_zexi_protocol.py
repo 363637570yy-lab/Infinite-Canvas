@@ -336,6 +336,36 @@ class ZexiVideoFamilyTests(unittest.TestCase):
         self.assertEqual(body["reference_videos"], ["https://example.com/m.mp4"])
         self.assertEqual(body["audio_url"], "https://example.com/s.mp3")
 
+    def test_single_reference_uses_image_url_and_multi_uses_images(self):
+        """站点对单图 / 多图用的是两套字段，混用会被静默忽略。
+
+        站点文档（grok-api「请求字段」与 video-api「素材与兼容字段」）：
+            单图：image_url、image、input_reference
+            多图：images、image_urls、reference_image_urls、reference_images
+
+        线上实测教训：1 张参考图塞进 images 数组，上游照常出片、照常扣费，
+        参考图零作用且不报错——本项目规则里点名最贵的失败模式。
+        """
+        one = video_payload(model="grok", duration=6, images=[{"url": "https://example.com/a.jpg"}])
+        body = run(zexi.build_zexi_video_request(one, "grok", catalog=catalog(), resolve_ref=fake_resolve))
+        self.assertEqual(body["image_url"], "https://example.com/a.jpg")
+        self.assertNotIn("images", body)
+
+        two = video_payload(
+            model="grok", duration=6,
+            images=[{"url": "https://example.com/a.jpg"}, {"url": "https://example.com/b.jpg"}],
+        )
+        body2 = run(zexi.build_zexi_video_request(two, "grok", catalog=catalog(), resolve_ref=fake_resolve))
+        self.assertEqual(body2["images"], ["https://example.com/a.jpg", "https://example.com/b.jpg"])
+        self.assertNotIn("image_url", body2)
+
+    def test_seedance_25_always_uses_the_images_array(self):
+        """seedance-2.5 是例外：站点文档明确要求统一用 images，单图也不例外。"""
+        payload = video_payload(model="seedance-2.5", images=[{"url": "https://example.com/a.jpg"}])
+        body = run(zexi.build_zexi_video_request(payload, "seedance-2.5", catalog=catalog(), resolve_ref=fake_resolve))
+        self.assertEqual(body["images"], ["https://example.com/a.jpg"])
+        self.assertNotIn("image_url", body)
+
     def test_grok_multi_image_caps_duration_at_ten_seconds(self):
         payload = video_payload(
             model="grok",
@@ -370,7 +400,7 @@ class ZexiVideoFamilyTests(unittest.TestCase):
         )
         body = run(zexi.build_zexi_video_request(payload, "minimax-h3", catalog=catalog(), resolve_ref=fake_resolve))
 
-        self.assertEqual(body["images"], ["https://example.com/a.jpg"])
+        self.assertEqual(body["image_url"], "https://example.com/a.jpg")
         self.assertEqual(body["audios"], ["https://example.com/s.mp3"])
         for key in ("videos", "reference_video", "reference_videos", "video_urls"):
             self.assertNotIn(key, body)
@@ -463,7 +493,7 @@ class ZexiSilentDegradationGuardTests(unittest.TestCase):
                 payload, "brand-new-model", catalog=cat, resolve_ref=fake_resolve
             ))
             self.assertEqual(body["model"], "brand-new-model")
-            self.assertEqual(body["images"], ["https://example.com/a.jpg"])
+            self.assertEqual(body["image_url"], "https://example.com/a.jpg")
             self.assertEqual(body["audio_url"], "https://example.com/s.mp3")
 
     def test_catalog_still_tightens_when_it_actually_states_a_limit(self):

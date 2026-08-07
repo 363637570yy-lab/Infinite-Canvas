@@ -512,6 +512,27 @@ async def _resolve_images(resolve, refs, limit, family, model, catalog):
     return [await resolve(value, "图片", index) for index, value in enumerate(values, 1)]
 
 
+def _apply_reference_images(body, images):
+    """按站点约定放置参考图字段。
+
+    站点对单图和多图用的是**不同字段**（/docs/video-api.html 与 grok 文档均如此）：
+        单图：image_url、imageUrl、image、input_reference
+        多图：images、image_urls、reference_image_urls、reference_images
+
+    线上实测教训：1 张参考图时塞进 images 数组，上游会静默忽略——照常出片、照常
+    扣费、参考图零作用、不报任何错。所以单图必须走 image_url。
+
+    seedance-2.5 是例外（站点文档明确要求统一用 images），由该家族自行构造，不走这里。
+    """
+    if not images:
+        return body
+    if len(images) == 1:
+        body["image_url"] = images[0]
+    else:
+        body["images"] = images
+    return body
+
+
 async def _build_seedance_25(payload, model, catalog, resolve, image_refs, video_values, audio_values):
     """Seedance 2.5：images / videos / audios + seconds + resolution + aspect_ratio。
 
@@ -560,8 +581,7 @@ async def _build_grok(payload, model, catalog, resolve, image_refs):
         "ratio": zexi_aspect_ratio(family, payload.aspect_ratio, payload.size),
         "resolution": zexi_resolution(catalog, model, payload.resolution, family),
     }
-    if images:
-        body["images"] = images
+    _apply_reference_images(body, images)
     return body
 
 
@@ -582,8 +602,7 @@ async def _build_minimax_h3(payload, model, catalog, resolve, image_refs, audio_
         "aspect_ratio": zexi_aspect_ratio(family, payload.aspect_ratio, payload.size),
         "resolution": zexi_resolution(catalog, model, payload.resolution, family),
     }
-    if images:
-        body["images"] = images
+    _apply_reference_images(body, images)
     if audio_values:
         body["audios"] = [await resolve(value, "音频", index) for index, value in enumerate(audio_values, 1)]
     return body
@@ -627,8 +646,7 @@ async def _build_seedance_flat(payload, model, catalog, resolve, image_refs, vid
 
     max_images = _limit(catalog, model, family, "images")
     images = await _resolve_images(resolve, image_refs, max_images, family, model, catalog)
-    if images:
-        body["images"] = images
+    _apply_reference_images(body, images)
     if video_values:
         body["reference_videos"] = [await resolve(value, "视频", index) for index, value in enumerate(video_values, 1)]
     if audio_values:
