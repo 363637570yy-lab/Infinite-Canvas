@@ -15048,6 +15048,7 @@ async def generate_sd2_video(client, payload, provider, base_url, requested_mode
     )
     if response.status_code >= 400:
         detail = sd2_response_error_text(response)
+        print(f"[video] chre3 上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
         raise HTTPException(status_code=response.status_code, detail=f"chre3 视频接口错误：{detail}")
     try:
         raw = response.json()
@@ -15247,6 +15248,7 @@ async def generate_cangyuan_video(client, payload, provider, base_url, requested
     )
     if response.status_code >= 400:
         detail = sd2_response_error_text(response)
+        print(f"[video] 苍元上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
         raise HTTPException(status_code=response.status_code, detail=f"苍元视频接口错误：{detail}")
     try:
         raw = response.json()
@@ -16136,9 +16138,29 @@ def volcengine_video_prompt_text(prompt, aspect_ratio="", duration=None):
     suffix_text = " ".join(suffixes)
     return f"{text} {suffix_text}".strip() if text else suffix_text
 
+def log_video_request_entry(provider, payload):
+    """视频生成入口留痕。
+
+    访问日志只有状态码，出问题时无法判断是哪个平台哪个模型——多个中转站同时在用，
+    某些 provider 的失败路径（如按上游状态码原样透传的分支）又完全没有日志，
+    结果就是线上出现 500/502 也定不了责。这一行让每次失败都能归属。
+    """
+    try:
+        images = len(payload.images or [])
+        videos = len([v for v in (payload.videos or []) if v])
+        audios = len([a for a in (payload.audios or []) if a])
+        print(
+            f"[video] provider={provider.get('id')} protocol={effective_protocol(provider, payload.model)} "
+            f"model={payload.model or '(默认)'} duration={payload.duration} ratio={payload.aspect_ratio} "
+            f"res={payload.resolution or '-'} refs=img{images}/vid{videos}/aud{audios}"
+        )
+    except Exception as exc:  # 留痕失败绝不能影响生成
+        print(f"[video] 入口留痕失败：{exc}")
+
 @app.post("/api/canvas-video")
 async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
+    log_video_request_entry(provider, payload)
     if is_jimeng_provider(provider):
         return await generate_jimeng_video(payload, provider)
     if is_runninghub_provider(provider):
