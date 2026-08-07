@@ -400,7 +400,9 @@ class ZexiVideoFamilyTests(unittest.TestCase):
         )
         body = run(zexi.build_zexi_video_request(payload, "minimax-h3", catalog=catalog(), resolve_ref=fake_resolve))
 
-        self.assertEqual(body["image_url"], "https://example.com/a.jpg")
+        # H3 专属文档只背书 images 数组（"素材兼容能力以具体模型说明为准"），单图也走 images
+        self.assertEqual(body["images"], ["https://example.com/a.jpg"])
+        self.assertNotIn("image_url", body)
         self.assertEqual(body["audios"], ["https://example.com/s.mp3"])
         for key in ("videos", "reference_video", "reference_videos", "video_urls"):
             self.assertNotIn(key, body)

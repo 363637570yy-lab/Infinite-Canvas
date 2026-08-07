@@ -590,6 +590,10 @@ async def _build_minimax_h3(payload, model, catalog, resolve, image_refs, audio_
 
     站点文档明确写"不要提交 videos / reference_video / reference_videos"，
     本族因此不构造任何视频字段；上游附了视频素材会在上面被拦下。
+
+    参考图**始终用 images 数组**，单图也不例外：video-api.html 的 H3 专属章节
+    只给了 images 形态，而"素材与兼容字段"一节明写"素材兼容能力以具体模型
+    说明为准"——单图别名表是站点通用说明，H3 自己的文档没有背书 image_url。
     """
     family = ZEXI_FAMILY_MINIMAX_H3
     max_images = _limit(catalog, model, family, "images")
@@ -602,7 +606,8 @@ async def _build_minimax_h3(payload, model, catalog, resolve, image_refs, audio_
         "aspect_ratio": zexi_aspect_ratio(family, payload.aspect_ratio, payload.size),
         "resolution": zexi_resolution(catalog, model, payload.resolution, family),
     }
-    _apply_reference_images(body, images)
+    if images:
+        body["images"] = images
     if audio_values:
         body["audios"] = [await resolve(value, "音频", index) for index, value in enumerate(audio_values, 1)]
     return body
