@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 
+import httpx
 from fastapi import HTTPException
 
 import main
@@ -657,6 +658,22 @@ class ZexiResponseNormalizationTests(unittest.TestCase):
             zexi.zexi_upload_result_url(raw),
             "https://zexitongxue.com/ai/reference-images/20260806/x.png",
         )
+
+    def test_empty_httpx_errors_still_produce_a_readable_message(self):
+        """httpx 的连接类异常 str() 常常是空的。
+
+        线上真实表现：多张参考图连续上传触发 BrokenPipeError → httpx.ReadError，
+        str(exc) 为空串，用户看到的弹窗是"请求泽西同学视频接口失败："后面什么都没有。
+        """
+        self.assertEqual(zexi.zexi_exception_text(httpx.ReadError("")), "ReadError")
+        self.assertEqual(zexi.zexi_exception_text(httpx.ConnectTimeout("")), "ConnectTimeout")
+        self.assertIn("boom", zexi.zexi_exception_text(httpx.ReadError("boom")))
+
+        chained = httpx.ReadError("")
+        chained.__cause__ = BrokenPipeError(32, "Broken pipe")
+        text = zexi.zexi_exception_text(chained)
+        self.assertIn("ReadError", text)
+        self.assertIn("Broken pipe", text)
 
     def test_public_url_detection_rejects_local_hosts(self):
         self.assertTrue(zexi.zexi_is_public_http_url("https://example.com/a.jpg"))

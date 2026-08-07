@@ -21,6 +21,7 @@ can_use / duration_profile / resolution_profile / max_reference_images。
 所以 catalog 通道绝对不能复用 main.py 的 api_headers()。
 """
 
+import asyncio
 import math
 import re
 import time
@@ -1011,44 +1012,105 @@ def zexi_is_public_http_url(value):
     return not re.match(r"^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)", host)
 
 
-async def upload_zexi_reference(client, base_url, api_key, local_path, filename="", content_type=""):
+ZEXI_UPLOAD_ATTEMPTS = 3
+
+
+def zexi_exception_text(exc):
+    """httpx 的连接类异常常常 str() 为空（ReadError / BrokenPipeError 都是）。
+
+    直接把它插进错误提示会得到"失败："后面什么都没有的空消息，用户无从判断。
+    这里保证至少给出异常类型名。
+    """
+    text = str(exc or "").strip()
+    if text:
+        return text[:300]
+    name = type(exc).__name__ if exc is not None else "未知错误"
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        cause_text = str(cause).strip() or type(cause).__name__
+        return f"{name}（{cause_text}）"[:300]
+    return name
+
+
+async def upload_zexi_reference(base_url, api_key, local_path, filename="", content_type="",
+                                attempts=ZEXI_UPLOAD_ATTEMPTS):
     """把本地素材传到 POST /v1/images/upload，换站内公网直链。
 
-    注意：这个端点实测**只适用于图片**——传 mp3 / mp4 也会被改名 .png 并以
+    **每次上传用独立的短连接。** 画布素材动辄数 MB，多张素材复用同一条长连接连续
+    推流时站点会掐断连接（线上实测 BrokenPipeError → httpx.ReadError），而生成流程
+    那条 client 的超时是按轮询设的 1800 秒，掐断后只表现为一个空消息的 ReadError，
+    既不会快速失败也说不清原因。连接类失败按退避重试。
+
+    另注：这个端点实测**只适用于图片**——传 mp3 / mp4 也会被改名 .png 并以
     image/png 返回。因此参考视频和音频不能走这里，必须另找公网直链。
     """
     with open(local_path, "rb") as fh:
         content = fh.read()
-    files = {"file": (filename or "reference.png", content, content_type or "application/octet-stream")}
-    response = await client.post(
-        zexi_upload_url(base_url),
-        headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
-        files=files,
-    )
-    if response.status_code >= 400:
+    # 写超时按体积放宽：大图上行慢，固定小超时会把正常上传误判成失败。
+    write_timeout = max(120.0, len(content) / (64 * 1024))
+    timeout = httpx.Timeout(connect=15.0, read=120.0, write=write_timeout, pool=15.0)
+    last_error = ""
+    for attempt in range(1, max(1, int(attempts)) + 1):
         try:
-            detail = zexi_error_text(response.json(), response.text)
-        except Exception:
-            detail = (response.text or "")[:300]
-        raise HTTPException(status_code=400, detail=f"泽西同学素材上传失败（HTTP {response.status_code}）：{detail}")
-    try:
-        raw = response.json()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="泽西同学素材上传返回了非 JSON 响应。") from exc
-    url = zexi_upload_result_url(raw)
-    if not url:
-        raise HTTPException(status_code=502, detail=f"泽西同学素材上传没有返回地址：{str(raw)[:300]}")
-    return url
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                files = {"file": (filename or "reference.png", content, content_type or "application/octet-stream")}
+                response = await client.post(
+                    zexi_upload_url(base_url),
+                    headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
+                    files=files,
+                )
+        except Exception as exc:
+            last_error = zexi_exception_text(exc)
+            print(f"[zexi] 素材上传第 {attempt}/{attempts} 次失败 file={filename} bytes={len(content)} err={last_error}")
+            if attempt < attempts:
+                await asyncio.sleep(1.5 * attempt)
+                continue
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"泽西同学素材上传失败（{filename or local_path}，{len(content)} 字节，"
+                    f"重试 {attempts} 次后仍失败）：{last_error}"
+                ),
+            ) from exc
+
+        if response.status_code >= 400:
+            try:
+                detail = zexi_error_text(response.json(), response.text)
+            except Exception:
+                detail = (response.text or "")[:300]
+            # 4xx 是站点明确拒绝（格式/大小/鉴权），重试没有意义；5xx 才值得再试。
+            if response.status_code < 500 or attempt >= attempts:
+                print(f"[zexi] 素材上传被拒 http={response.status_code} file={filename} detail={str(detail)[:200]}")
+                raise HTTPException(
+                    status_code=400 if response.status_code < 500 else 502,
+                    detail=f"泽西同学素材上传失败（{filename or '参考素材'}，HTTP {response.status_code}）：{detail}",
+                )
+            last_error = f"HTTP {response.status_code}: {detail}"
+            await asyncio.sleep(1.5 * attempt)
+            continue
+
+        try:
+            raw = response.json()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="泽西同学素材上传返回了非 JSON 响应。") from exc
+        url = zexi_upload_result_url(raw)
+        if not url:
+            raise HTTPException(status_code=502, detail=f"泽西同学素材上传没有返回地址：{str(raw)[:300]}")
+        return url
+
+    raise HTTPException(status_code=502, detail=f"泽西同学素材上传失败：{last_error or '未知错误'}")
 
 
-def make_zexi_reference_resolver(client, base_url, api_key, local_path_of=None, public_url_of=None):
+def make_zexi_reference_resolver(base_url, api_key, local_path_of=None, public_url_of=None):
     """构造素材归一函数。
 
-    图片：本地文件走站内上传接口，不需要本机对公网可达。
+    图片：本地文件走站内上传接口，不需要本机对公网可达。上传自带独立连接与重试，
+    所以这里不再接收共享 client——共享长连接连续推多张大图正是线上 Broken pipe 的成因。
     视频 / 音频：站内上传接口会把它们改成 .png，所以只能用真正的公网直链，
     走调用方注入的 public_url_of（图床 / PUBLIC_MEDIA_BASE_URL）；拿不到就显式报错。
     """
     image_kinds = {"图片", "首帧图片", "尾帧图片"}
+    uploaded = {"count": 0}
 
     async def resolve(value, kind, index):
         text = str(value or "").strip()
@@ -1059,7 +1121,11 @@ def make_zexi_reference_resolver(client, base_url, api_key, local_path_of=None, 
         local_path = local_path_of(text) if local_path_of else ""
         if local_path and kind in image_kinds:
             filename = local_path.replace("\\", "/").rsplit("/", 1)[-1] or "reference.png"
-            return await upload_zexi_reference(client, base_url, api_key, local_path, filename=filename)
+            # 连续上传之间留一点间隔：站点对短时间内的连续大文件推流会掐连接。
+            if uploaded["count"]:
+                await asyncio.sleep(0.4)
+            uploaded["count"] += 1
+            return await upload_zexi_reference(base_url, api_key, local_path, filename=filename)
         if public_url_of:
             url = await public_url_of(text, kind, index)
             if zexi_is_public_http_url(url):

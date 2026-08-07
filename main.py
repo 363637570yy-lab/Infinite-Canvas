@@ -15299,12 +15299,14 @@ def zexi_api_key(provider):
         )
     return api_key
 
-def make_zexi_resolver(client, base_url, api_key):
-    """本地图片走站内上传换直链；参考视频 / 音频只能用公网直链（站内上传会把它们改成 .png）。"""
+def make_zexi_resolver(base_url, api_key):
+    """本地图片走站内上传换直链；参考视频 / 音频只能用公网直链（站内上传会把它们改成 .png）。
+
+    上传在模块内自带独立连接与重试，不复用生成流程那条长超时 client。
+    """
     async def public_url_of(value, kind, index):
         return await sd2_public_reference_url(value, kind, index, label="泽西同学")
     return zexi.make_zexi_reference_resolver(
-        client,
         base_url,
         api_key,
         local_path_of=openai_video_proxy_local_image_path,
@@ -15319,7 +15321,7 @@ async def generate_zexi_video(client, payload, provider, base_url, requested_mod
         # 站点会把线路状态标在目录里（如"不稳定"）。这类模型提交失败率明显更高，
         # 事后排查时需要知道当时选的就是被上游标注过的线路。
         print(f"[zexi] 注意：模型 {requested_model} 的上游线路状态为“{label}”")
-    resolve = make_zexi_resolver(client, base_url, api_key)
+    resolve = make_zexi_resolver(base_url, api_key)
     body = await zexi.build_zexi_video_request(payload, requested_model, catalog=catalog, resolve_ref=resolve)
     task_id, submit_raw = await zexi.submit_zexi_video(client, base_url, api_key, body)
     result = submit_raw
@@ -15386,7 +15388,7 @@ async def generate_zexi_image(prompt, size, quality, model, reference_images, pr
         count = 1
     timeout = httpx.Timeout(connect=20.0, read=600.0, write=120.0, pool=20.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resolve = make_zexi_resolver(client, base_url, api_key)
+        resolve = make_zexi_resolver(base_url, api_key)
         refs = [ref for ref in (reference_images or []) if (ref.get("url") if isinstance(ref, dict) else ref)]
         ref_urls = []
         for index, ref in enumerate(refs, 1):
@@ -16275,7 +16277,7 @@ async def canvas_video(payload: CanvasVideoRequest):
             raise
         except httpx.HTTPError as exc:
             log_net_error(f"视频(泽西同学) 网络/TLS错误 model={requested_model}", exc)
-            raise HTTPException(status_code=502, detail=f"请求泽西同学视频接口失败：{exc}") from exc
+            raise HTTPException(status_code=502, detail=f"请求泽西同学视频接口失败：{zexi.zexi_exception_text(exc)}") from exc
     if is_cangyuan_video_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as cangyuan_client:
