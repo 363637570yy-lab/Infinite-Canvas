@@ -43,6 +43,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import zexi_protocol as zexi
 # Pidoi 同站多模型使用三套不同视频请求体，纯逻辑独立于主路由模块。
 import pidoi_protocol as pidoi
+# MegabyAI 的 /v1/videos 请求体、模型能力与任务响应归一化独立维护。
+import megabyai_protocol as megabyai
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -384,7 +386,9 @@ CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS = 2
 ZEXI_PROTOCOL = zexi.ZEXI_PROTOCOL
 # Pidoi 同站的 omni / 933 / tejiasd 请求字段互不通用，单独注册为协议。
 PIDOI_PROTOCOL = pidoi.PIDOI_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+# MegabyAI 的 referenceImages/referenceVideos/referenceAudios 与现有协议不同，单独注册。
+MEGABYAI_PROTOCOL = megabyai.MEGABYAI_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -397,6 +401,9 @@ def is_zexi_protocol(value):
 
 def is_pidoi_protocol(value):
     return str(value or "").strip().lower() == PIDOI_PROTOCOL
+
+def is_megabyai_protocol(value):
+    return str(value or "").strip().lower() == MEGABYAI_PROTOCOL
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -13616,6 +13623,27 @@ async def probe_pidoi_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"Pidoi 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_megabyai_endpoint(client, base_url: str, api_key: str):
+    """验证 MegabyAI 的 Bearer /v1/models，不调用会产生费用的 POST /v1/videos。"""
+    ok, result = await probe_openai_models_endpoint(client, megabyai.megabyai_api_root(base_url), api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], MEGABYAI_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "all": ids,
+        })
+    result["protocol"] = MEGABYAI_PROTOCOL
+    if ok:
+        result["message"] = f"MegabyAI 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
+    else:
+        result["message"] = f"MegabyAI 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
     if task_ok:
@@ -13717,6 +13745,7 @@ def parse_upstream_models(raw, protocol="openai"):
         or is_cangyuan_video_protocol(protocol)
         or is_zexi_protocol(protocol)
         or is_pidoi_protocol(protocol)
+        or is_megabyai_protocol(protocol)
     )
     if uses_metadata:
         for it in items:
@@ -13729,6 +13758,8 @@ def parse_upstream_models(raw, protocol="openai"):
             kind = zexi.classify_zexi_model_entry(metadata_by_id.get(mid), mid)
         elif is_pidoi_protocol(protocol):
             kind = pidoi.classify_pidoi_model_entry(metadata_by_id.get(mid), mid)
+        elif is_megabyai_protocol(protocol):
+            kind = megabyai.classify_megabyai_model_entry(metadata_by_id.get(mid), mid)
         elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
@@ -13958,6 +13989,24 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "protocol": protocol,
                 "status_code": probe.get("status") or 0,
                 "message": probe.get("message") or "Pidoi 视频协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_megabyai_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_megabyai_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "MegabyAI 视频协议验证完成",
                 "model_count": probe.get("model_count") or 0,
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
@@ -14795,12 +14844,21 @@ def is_pidoi_provider(provider):
 def is_pidoi_route(provider, model=""):
     return is_pidoi_protocol(effective_protocol(provider, model))
 
+def is_megabyai_provider(provider):
+    """是否选择了 MegabyAI 视频协议。"""
+    return is_megabyai_protocol(provider_protocol(provider))
+
+def is_megabyai_route(provider, model=""):
+    return is_megabyai_protocol(effective_protocol(provider, model))
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
     if is_zexi_route(provider, model):
         return "泽西同学视频"
     if is_pidoi_route(provider, model):
         return "Pidoi 视频"
+    if is_megabyai_route(provider, model):
+        return "MegabyAI 视频"
     if is_cangyuan_video_route(provider, model):
         return "苍元视频"
     if is_chre3_video_route(provider, model):
@@ -14822,6 +14880,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
         return [zexi.zexi_video_submit_url(base_url)]
     if is_pidoi_route(provider, model):
         return [pidoi.pidoi_video_submit_url(base_url)]
+    if is_megabyai_route(provider, model):
+        return [megabyai.megabyai_video_submit_url(base_url)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         # 该合同的 POST 可能产生真实计费任务，不能用旧候选地址重试造成重复提交。
         return [f"{sd2_video_api_root(base_url)}/v1/videos"]
@@ -14847,6 +14907,8 @@ def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=
         return [zexi.zexi_video_task_url(base_url, task_id)]
     if is_pidoi_route(provider, model):
         return [pidoi.pidoi_video_task_url(base_url, task_id)]
+    if is_megabyai_route(provider, model):
+        return [megabyai.megabyai_video_task_url(base_url, task_id)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         quoted_id = urllib.parse.quote(str(task_id), safe="")
         return [f"{sd2_video_api_root(base_url)}/v1/videos/{quoted_id}"]
@@ -15508,6 +15570,158 @@ async def generate_pidoi_video(client, payload, provider, base_url, requested_mo
             detail=(
                 f"Pidoi 任务 {task_id} 已完成但成片下载失败。该任务已经提交并可能计费，"
                 "请尽快使用任务号在 Pidoi 侧重试下载或联系客服。"
+            ),
+        )
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
+
+# ---- MegabyAI：POST /v1/videos，GET /v1/videos/{task_id}，/content 取片 ----
+def megabyai_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+def make_megabyai_resolver():
+    async def public_url_of(value, kind, index):
+        return await sd2_public_reference_url(value, kind, index, label="MegabyAI 视频")
+    return public_url_of
+
+def megabyai_response_error_text(response):
+    text = str(getattr(response, "text", "") or "").strip()
+    try:
+        raw = response.json()
+    except Exception:
+        return text[:500]
+    return megabyai.megabyai_error_text(raw, text)
+
+MEGABYAI_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=20.0)
+MEGABYAI_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+MEGABYAI_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+
+async def wait_for_megabyai_video_task(client, provider, base_url, task_id, model):
+    """按 MegabyAI 文档每 8 秒查询一次，单次网络请求不占用整体等待时限。"""
+    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    delay = 8.0
+    last_payload = {}
+    while time.monotonic() < deadline:
+        await asyncio.sleep(delay)
+        url = megabyai.megabyai_video_task_url(base_url, task_id)
+        try:
+            response = await client.get(
+                url,
+                headers=api_headers(json_body=False, provider=provider, model=model),
+                timeout=MEGABYAI_POLL_REQUEST_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            print(f"[megabyai] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        try:
+            raw = response.json() if response.text else {}
+        except Exception:
+            raw = {}
+        if response.status_code >= 500 or response.status_code == 429:
+            print(f"[megabyai] 轮询暂时失败 http={response.status_code}，保留任务号继续重试")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        if response.status_code == 404:
+            detail = megabyai.megabyai_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"MegabyAI 视频任务不存在：{detail}")
+        if response.status_code >= 400:
+            detail = megabyai.megabyai_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"MegabyAI 视频任务查询失败：{detail}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="MegabyAI 视频任务查询返回了无法识别的响应。")
+        last_payload = raw
+        state, _ = megabyai.megabyai_task_state(raw)
+        if state == "success":
+            return raw
+        if state == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail=f"MegabyAI 视频生成任务失败：{megabyai.megabyai_error_text(raw)}",
+            )
+        delay = min(delay + 0.5, 10.0)
+    raise HTTPException(status_code=504, detail=f"MegabyAI 视频生成任务超时：{last_payload or task_id}")
+
+async def generate_megabyai_video(client, payload, provider, base_url, requested_model):
+    api_key = megabyai_api_key(provider)
+    body = await megabyai.build_megabyai_video_request(
+        payload,
+        requested_model,
+        resolve_ref=make_megabyai_resolver(),
+    )
+    submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
+    response = await client.post(
+        submit_url,
+        headers=api_headers(provider=provider, model=requested_model),
+        json=body,
+        timeout=MEGABYAI_SUBMIT_REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        detail = megabyai_response_error_text(response)
+        print(f"[video] MegabyAI 上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
+        raise HTTPException(status_code=response.status_code, detail=f"MegabyAI 视频接口错误：{detail}")
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or "")[:500]
+        if looks_like_html_response(resp_text):
+            detail = "MegabyAI 视频接口返回了网页 HTML，请确认 Base URL 是 https://newapi.megabyai.cc 这类 API 根地址。"
+        else:
+            detail = f"MegabyAI 视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"MegabyAI 视频接口返回了无法识别的响应：{str(raw)[:500]}")
+
+    task_id = megabyai.megabyai_task_id(raw)
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f"MegabyAI 视频接口没有返回任务号：{str(raw)[:500]}")
+    print(f"[megabyai] 视频任务已创建（已计费）task={task_id} model={body.get('model')}")
+    state, _ = megabyai.megabyai_task_state(raw)
+    if state == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail=f"MegabyAI 视频生成任务失败：{megabyai.megabyai_error_text(raw)}",
+        )
+    result = raw if state == "success" else await wait_for_megabyai_video_task(
+        client, provider, base_url, task_id, requested_model
+    )
+
+    def _saved_ok(value):
+        return str(value or "").startswith(("/output/", "/assets/"))
+
+    base_host = urllib.parse.urlsplit(megabyai.megabyai_api_root(base_url)).netloc.lower()
+    local_url = ""
+    for candidate in megabyai.megabyai_video_result_urls(result):
+        candidate_host = urllib.parse.urlsplit(str(candidate)).netloc.lower()
+        extra_headers = {"Authorization": bearer_auth_value(api_key)} if candidate_host == base_host else None
+        saved = await save_remote_video_to_output(
+            candidate,
+            prefix="megabyai_video_",
+            extra_headers=extra_headers,
+            timeout=MEGABYAI_DOWNLOAD_REQUEST_TIMEOUT,
+        )
+        if _saved_ok(saved):
+            local_url = saved
+            break
+    if not _saved_ok(local_url):
+        local_url = await save_remote_video_to_output(
+            megabyai.megabyai_video_content_url(base_url, task_id),
+            prefix="megabyai_video_",
+            extra_headers={"Authorization": bearer_auth_value(api_key)},
+            timeout=MEGABYAI_DOWNLOAD_REQUEST_TIMEOUT,
+        )
+    if not _saved_ok(local_url):
+        print(f"[megabyai] 成片下载失败 task={task_id} model={requested_model}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"MegabyAI 任务 {task_id} 已完成但成片下载失败。该任务已经提交并可能计费，"
+                "请尽快使用任务号在 MegabyAI 侧重试下载。"
             ),
         )
     return {"videos": [local_url], "task_id": task_id, "raw": result}
@@ -16413,7 +16627,7 @@ async def canvas_video(payload: CanvasVideoRequest):
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip("/"))
-    if is_chre3_video_provider(provider) or is_zexi_provider(provider):
+    if is_chre3_video_provider(provider) or is_zexi_provider(provider) or is_megabyai_provider(provider):
         # 纯中转站不写死默认模型名，取用户已保存的第一个视频模型。
         default_video_model = provider_first_video_model(provider)
     elif is_cangyuan_video_provider(provider):
@@ -16501,6 +16715,15 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(Pidoi) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 Pidoi 视频接口失败：{str(exc) or type(exc).__name__}") from exc
+    if is_megabyai_route(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as megabyai_client:
+                return await generate_megabyai_video(megabyai_client, payload, provider, base_url, requested_model)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(MegabyAI) 网络/TLS错误 model={requested_model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求 MegabyAI 视频接口失败：{str(exc) or type(exc).__name__}") from exc
     if is_zexi_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as zexi_client:

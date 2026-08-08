@@ -131,6 +131,13 @@
                                     <span class="ms-line"><span class="inline-code">tejiasd</span>：固定推荐 <span class="inline-code">720P</span>，提示词 ≤2500；参考图/视频/音频上限为 9/3/3，可选 <span class="inline-code">size</span>（像素尺寸）或 <span class="inline-code">seed</span>。</span>
                                     <span class="ms-line">参考素材必须是上游可访问的公网 HTTP(S) URL；本地音频开关、首尾帧、未登记模型和未在文档中的字段会在提交前拦截，不会静默降级。</span>
                                 </div>
+                                <div class="megabyai-hint">
+                                    <span class="ms-line">MegabyAI 地址：<span class="inline-code">https://newapi.megabyai.cc</span>，免费验证只请求 <span class="inline-code">GET /v1/models</span>。</span>
+                                    <span class="ms-line">视频 <span class="inline-code">POST /v1/videos</span> → <span class="inline-code">GET /v1/videos/{task_id}</span>，完成后由后端带 Bearer Key 下载 <span class="inline-code">/content</span> 并落盘。</span>
+                                    <span class="ms-line">文档模型的 <span class="inline-code">duration</span> 为 4–15 秒；动态视频模型可用 3–15 秒。<span class="inline-code">ratio</span> 支持 16:9 / 9:16 / 1:1，<span class="inline-code">resolution</span> 支持 480p / 720p。</span>
+                                    <span class="ms-line">参考字段为 <span class="inline-code">referenceImages</span> / <span class="inline-code">referenceVideos</span> / <span class="inline-code">referenceAudios</span>（上限 9/3/3）。模型列表只是可选目录，模型名称不做发送白名单；改名或新增模型会原样发送。</span>
+                                    <span class="ms-line">模型分类优先读取上游 <span class="inline-code">supported_endpoint_types</span>，也识别档案中的 <span class="inline-code">owned_by=video-api</span> / <span class="inline-code">/v1/videos</span> 描述；首尾帧和 <span class="inline-code">generate_audio</span> 不支持。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -308,6 +315,7 @@
                                         <option value="cangyuan" data-i18n="api.protocolCangyuanVideo">视频：苍元协议</option>
                                         <option value="zexi" data-i18n="api.protocolZexi">泽西同学协议（视频+图片）</option>
                                         <option value="pidoi" data-i18n="api.protocolPidoi">视频：Pidoi 协议</option>
+                                        <option value="megabyai" data-i18n="api.protocolMegabyai">视频：MegabyAI 协议</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

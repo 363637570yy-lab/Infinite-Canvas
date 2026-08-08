@@ -358,6 +358,8 @@ body.show-cangyuan-video .cangyuan-video-hint { display:block; }
 body.show-zexi .zexi-hint { display:block; }
 .pidoi-hint { display:none; margin-top:8px; color:var(--muted); font-size:11.5px; line-height:1.65; font-weight:600; }
 body.show-pidoi .pidoi-hint { display:block; }
+.megabyai-hint { display:none; margin-top:8px; color:var(--muted); font-size:11.5px; line-height:1.65; font-weight:600; }
+body.show-megabyai .megabyai-hint { display:block; }
 .rh-key-stack { display:none; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 body.show-runninghub .rh-key-stack { display:grid; }
 .volcengine-key-stack { display:none; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
@@ -657,12 +659,14 @@ html.studio-theme-dark body .image-edit-route-wrap select:hover { background:var
 .runninghub-hint .ms-line,
 .apimart-hint .ms-line,
 .volcengine-hint .ms-line,
-.pidoi-hint .ms-line { display:block; }
+.pidoi-hint .ms-line,
+.megabyai-hint .ms-line { display:block; }
 .ms-hint .inline-code,
 .runninghub-hint .inline-code,
 .apimart-hint .inline-code,
 .volcengine-hint .inline-code,
-.pidoi-hint .inline-code { display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:6px; background:var(--panel); color:var(--text); border:1px solid var(--line); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700; vertical-align:middle; }
+.pidoi-hint .inline-code,
+.megabyai-hint .inline-code { display:inline-flex; align-items:center; min-height:20px; padding:0 7px; border-radius:6px; background:var(--panel); color:var(--text); border:1px solid var(--line); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700; vertical-align:middle; }
 .empty { padding:18px; border:1px dashed var(--line); border-radius:11px; color:var(--faint); text-align:center; font-size:11.5px; font-weight:700; }
 
 /* API 设置页视觉精修：保留原有功能结构，降低工业感并增强层次 */
