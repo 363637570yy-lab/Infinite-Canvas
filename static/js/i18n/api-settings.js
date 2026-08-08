@@ -25,6 +25,7 @@
         "api.protocolChre3VideoReal": { zh: "视频：chre3真人协议", en: "Video: chre3 Real-person Protocol" },
         "api.protocolCangyuanVideo": { zh: "视频：苍元协议", en: "Video: Cangyuan Protocol" },
         "api.protocolZexi": { zh: "泽西同学协议（视频+图片）", en: "Zexi Protocol (Video + Image)" },
+        "api.protocolPidoi": { zh: "视频：Pidoi 协议", en: "Video: Pidoi Protocol" },
         "api.protocolVolcengine": { zh: "火山引擎协议", en: "Volcengine Protocol" },
         "api.key": { zh: "API Key", en: "API Key" },
         "api.msNotes": { zh: "ModelScope 使用提示", en: "ModelScope Notes" },

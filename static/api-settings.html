@@ -124,6 +124,13 @@
                                     <span class="ms-line">图片目前只支持<b>单张参考图</b>：站点未公开多图字段名，附 2 张以上会直接报错而不是静默丢弃。</span>
                                     <span class="ms-line">站点会按（模型 + 提示词 + 参数）去重，完全相同的请求会返回同一个任务和同一张结果图。</span>
                                 </div>
+                                <div class="pidoi-hint">
+                                    <span class="ms-line">Pidoi 地址：<span class="inline-code">https://pidoi.com</span>，视频统一走 <span class="inline-code">POST /v1/videos</span> → <span class="inline-code">GET /v1/videos/{task_id}</span>。</span>
+                                    <span class="ms-line"><span class="inline-code">omni-flash-720p</span>：5/10 秒、固定 <span class="inline-code">720P</span>，比例放在 <span class="inline-code">metadata.aspect_ratio</span>，参考图/视频/音频上限为 4/3/3。</span>
+                                    <span class="ms-line"><span class="inline-code">sora-v3-933-pro</span>：<span class="inline-code">720p</span>；文档参数表列 15 秒但音频示例列 5 秒，当前只接受 5 或 15 秒，支持 21:9 和总素材上限 12。</span>
+                                    <span class="ms-line"><span class="inline-code">tejiasd</span>：固定推荐 <span class="inline-code">720P</span>，提示词 ≤2500；参考图/视频/音频上限为 9/3/3，可选 <span class="inline-code">size</span>（像素尺寸）或 <span class="inline-code">seed</span>。</span>
+                                    <span class="ms-line">参考素材必须是上游可访问的公网 HTTP(S) URL；本地音频开关、首尾帧、未登记模型和未在文档中的字段会在提交前拦截，不会静默降级。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -300,6 +307,7 @@
                                         <option value="chre3-video-real" data-i18n="api.protocolChre3VideoReal">视频：chre3真人协议</option>
                                         <option value="cangyuan" data-i18n="api.protocolCangyuanVideo">视频：苍元协议</option>
                                         <option value="zexi" data-i18n="api.protocolZexi">泽西同学协议（视频+图片）</option>
+                                        <option value="pidoi" data-i18n="api.protocolPidoi">视频：Pidoi 协议</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

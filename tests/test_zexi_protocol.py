@@ -725,12 +725,14 @@ class _StubResponse:
 
 
 class _StubClient:
-    """只喂预设响应，不触网。"""
+    """只喂预设响应，不触网。记录每次请求的超时，便于断言未继承整体时限。"""
 
     def __init__(self, responses):
         self._responses = list(responses)
+        self.timeouts = []
 
-    async def get(self, url, headers=None):
+    async def get(self, url, headers=None, timeout=None, **kwargs):
+        self.timeouts.append(timeout)
         return self._responses.pop(0)
 
 
@@ -749,6 +751,21 @@ class ZexiPollTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             run(zexi.poll_zexi_task(client, "https://zexitongxue.com/v1/videos/task_x", "k", poll_interval=0.5, timeout=60))
         self.assertIn("任务不存在", ctx.exception.detail)
+
+    def test_poll_requests_use_a_short_timeout_not_the_overall_deadline(self):
+        """单次请求超时必须与整体等待时限分开。
+
+        生成流程那条 client 的默认超时是按整体时限设的（1800 秒）。轮询请求若继承它，
+        一次卡住的连接就能独占整个 30 分钟窗口——实测服务器到本站约 5% 连不上、
+        最大延迟 14 秒，这个风险是真实的。
+        """
+        done = {"task_id": "task_x", "status": "success", "progress": 100}
+        client = _StubClient([_StubResponse(200, done)])
+        run(zexi.poll_zexi_task(client, "https://zexitongxue.com/v1/videos/task_x", "k",
+                                poll_interval=0.5, timeout=1800))
+        self.assertEqual(client.timeouts, [zexi.ZEXI_POLL_TIMEOUT])
+        self.assertLessEqual(zexi.ZEXI_POLL_TIMEOUT.connect, 30.0)
+        self.assertLessEqual(zexi.ZEXI_POLL_TIMEOUT.read, 120.0)
 
     def test_genuine_failure_still_reports_as_failed(self):
         failed = {"success": False, "pending": False, "task_id": "aiimg_x", "status": "failed", "error": "boom"}

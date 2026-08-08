@@ -1037,6 +1037,14 @@ def zexi_is_public_http_url(value):
 
 ZEXI_UPLOAD_ATTEMPTS = 3
 
+# 单次请求超时必须与"整体等待时限"分开。生成流程那条 client 的默认超时是按整体
+# 时限设的（1800 秒），若轮询请求继承它，一次卡住的连接就能独占整个 30 分钟窗口——
+# 实测服务器到本站有约 5% 连不上、最大延迟 14 秒，这个风险是真实的。
+# 这里给每类请求各自的短超时，整体时限仍由 poll_zexi_task 的 deadline 控制。
+ZEXI_SUBMIT_TIMEOUT = httpx.Timeout(connect=20.0, read=120.0, write=120.0, pool=20.0)
+ZEXI_POLL_TIMEOUT = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=15.0)
+ZEXI_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+
 
 def zexi_exception_text(exc):
     """httpx 的连接类异常常常 str() 为空（ReadError / BrokenPipeError 都是）。
@@ -1210,7 +1218,8 @@ async def submit_zexi_video(client, base_url, api_key, body):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    response = await client.post(zexi_video_submit_url(base_url), headers=headers, json=body)
+    response = await client.post(zexi_video_submit_url(base_url), headers=headers, json=body,
+                                 timeout=ZEXI_SUBMIT_TIMEOUT)
     try:
         raw = response.json()
     except Exception as exc:
@@ -1230,6 +1239,10 @@ async def submit_zexi_video(client, base_url, api_key, body):
     task_id = zexi_task_id(raw)
     if not task_id:
         raise HTTPException(status_code=502, detail=f"泽西同学视频接口没有返回任务号：{str(raw)[:300]}")
+    # 提交成功即已计费。task_id 必须立刻落到服务端日志：后面的轮询、下载都可能失败，
+    # 没有这一行的话，用户付了钱而我们连去站点找回成片的凭据都没有。
+    print(f"[zexi] 视频任务已创建（已计费）task={task_id} model={body.get('model')} "
+          f"duration={body.get('duration') or body.get('seconds')} refs=img{len(body.get('images') or ([body['image_url']] if body.get('image_url') else []))}")
     return task_id, raw
 
 
@@ -1251,13 +1264,21 @@ async def poll_zexi_task(client, task_url, api_key, poll_interval=5.0, timeout=1
         delay = 0.0
     delay = max(0.5, delay if delay > 0 else 5.0)
     last_raw = {}
+    net_fails = 0
     while time.monotonic() < deadline:
-        await asyncio.sleep(delay)
+        # 网络连续抖动时逐步拉长间隔，避免在明显不可达时高频重试刷满日志。
+        await asyncio.sleep(min(delay * (1 + net_fails), 30.0) if net_fails else delay)
         try:
-            response = await client.get(task_url, headers=headers)
+            # 显式短超时：不继承生成流程 client 的整体时限，卡住的连接最多占用
+            # ZEXI_POLL_TIMEOUT，之后照常进入下一轮重试，直到 deadline 用尽。
+            response = await client.get(task_url, headers=headers, timeout=ZEXI_POLL_TIMEOUT)
         except httpx.HTTPError as exc:
-            print(f"[zexi] 轮询网络错误，继续重试：{exc}")
+            net_fails += 1
+            remain = int(max(0, deadline - time.monotonic()))
+            print(f"[zexi] 轮询网络错误（连续第 {net_fails} 次，剩余 {remain}s）继续重试："
+                  f"{zexi_exception_text(exc)}")
             continue
+        net_fails = 0
         try:
             raw = response.json()
         except Exception:
@@ -1299,7 +1320,8 @@ async def submit_zexi_image(client, base_url, api_key, body):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    response = await client.post(zexi_image_submit_url(base_url), headers=headers, json=body)
+    response = await client.post(zexi_image_submit_url(base_url), headers=headers, json=body,
+                                 timeout=ZEXI_SUBMIT_TIMEOUT)
     try:
         raw = response.json()
     except Exception as exc:
@@ -1310,6 +1332,7 @@ async def submit_zexi_image(client, base_url, api_key, body):
     task_id = zexi_task_id(raw)
     if not task_id:
         raise HTTPException(status_code=502, detail=f"泽西同学图片接口没有返回任务号：{str(raw)[:300]}")
+    print(f"[zexi] 图片任务已创建（已计费）task={task_id} model={body.get('model')} n={body.get('n')}")
     return task_id, raw
 
 
@@ -1320,7 +1343,8 @@ async def download_zexi_content(client, url, api_key, expect="image"):
     不能把地址直接交给浏览器。视频统一走 /content，也需要同一个头。
     """
     headers = {"Accept": "*/*", "Authorization": f"Bearer {api_key}"}
-    response = await client.get(url, headers=headers, follow_redirects=True)
+    response = await client.get(url, headers=headers, follow_redirects=True,
+                                timeout=ZEXI_DOWNLOAD_TIMEOUT)
     if response.status_code >= 400:
         try:
             detail = zexi_error_text(response.json(), response.text)

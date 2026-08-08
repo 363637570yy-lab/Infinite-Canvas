@@ -41,6 +41,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # 泽西同学（zexitongxue.com）协议：请求体构造、能力目录与提交轮询都在独立模块，
 # 这里只做路由接线。模块不反向 import main.py。
 import zexi_protocol as zexi
+# Pidoi 同站多模型使用三套不同视频请求体，纯逻辑独立于主路由模块。
+import pidoi_protocol as pidoi
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -380,7 +382,9 @@ CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS = 2
 # 上限按模型读能力目录而不是常量，且没有 audio 开关字段），所以单独成一个协议；
 # 它还带一条 cangyuan 没有的图片异步链路 /v1/images/generations/async。
 ZEXI_PROTOCOL = zexi.ZEXI_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+# Pidoi 同站的 omni / 933 / tejiasd 请求字段互不通用，单独注册为协议。
+PIDOI_PROTOCOL = pidoi.PIDOI_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -390,6 +394,9 @@ def is_cangyuan_video_protocol(value):
 
 def is_zexi_protocol(value):
     return str(value or "").strip().lower() == ZEXI_PROTOCOL
+
+def is_pidoi_protocol(value):
+    return str(value or "").strip().lower() == PIDOI_PROTOCOL
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -9520,7 +9527,7 @@ def image_output_meta(url, source_item=None):
             pass
     return meta
 
-async def save_remote_video_to_output(url, prefix="video_", category="output", extra_headers=None):
+async def save_remote_video_to_output(url, prefix="video_", category="output", extra_headers=None, timeout=None):
     """下载上游成片并落盘。
 
     extra_headers 只给需要鉴权取片的站点用（如泽西同学的站内 /content）。httpx 在
@@ -9540,14 +9547,14 @@ async def save_remote_video_to_output(url, prefix="video_", category="output", e
     filename = f"{stem}{clean_ext if clean_ext in video_exts else '.mp4'}"
     path = output_path_for(filename, category)
     try:
-        timeout = httpx.Timeout(connect=20.0, read=VIDEO_POLL_TIMEOUT, write=60.0, pool=20.0)
+        request_timeout = timeout or httpx.Timeout(connect=20.0, read=VIDEO_POLL_TIMEOUT, write=60.0, pool=20.0)
         headers = {
             "User-Agent": "ComfyUI-API-Modelscope/1.0",
             "Accept": "video/*,application/octet-stream,*/*;q=0.8",
         }
         if extra_headers:
             headers.update({str(k): str(v) for k, v in extra_headers.items() if k and v})
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True, headers=headers) as client:
             response = await client.get(url)
             response.raise_for_status()
             content_type = (response.headers.get("Content-Type") or "").lower()
@@ -11265,6 +11272,8 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             prompt, size, quality, model, reference_images, provider,
             aspect_ratio=aspect_ratio, resolution=resolution,
         )
+    if is_pidoi_route(provider, model):
+        raise HTTPException(status_code=400, detail="Pidoi 协议当前只支持视频模型，不支持图片生成。")
     is_apimart = is_apimart_provider(provider)
     if effective_protocol(provider, model) == "gemini" and not is_apimart:
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider)
@@ -13586,6 +13595,27 @@ async def probe_zexi_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"泽西同学协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_pidoi_endpoint(client, base_url: str, api_key: str):
+    """验证 Pidoi 的 Bearer /v1/models，不调用会产生费用的 POST /v1/videos。"""
+    ok, result = await probe_openai_models_endpoint(client, pidoi.pidoi_api_root(base_url), api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], PIDOI_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "all": ids,
+        })
+    result["protocol"] = PIDOI_PROTOCOL
+    if ok:
+        result["message"] = f"Pidoi 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
+    else:
+        result["message"] = f"Pidoi 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
     if task_ok:
@@ -13682,7 +13712,12 @@ def parse_upstream_models(raw, protocol="openai"):
     ids = sorted(set(ids))
     grouped = {"image": [], "chat": [], "video": []}
     metadata_by_id = {}
-    uses_metadata = is_chre3_video_protocol(protocol) or is_cangyuan_video_protocol(protocol) or is_zexi_protocol(protocol)
+    uses_metadata = (
+        is_chre3_video_protocol(protocol)
+        or is_cangyuan_video_protocol(protocol)
+        or is_zexi_protocol(protocol)
+        or is_pidoi_protocol(protocol)
+    )
     if uses_metadata:
         for it in items:
             if isinstance(it, dict):
@@ -13692,6 +13727,8 @@ def parse_upstream_models(raw, protocol="openai"):
     for mid in ids:
         if is_zexi_protocol(protocol):
             kind = zexi.classify_zexi_model_entry(metadata_by_id.get(mid), mid)
+        elif is_pidoi_protocol(protocol):
+            kind = pidoi.classify_pidoi_model_entry(metadata_by_id.get(mid), mid)
         elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
@@ -13903,6 +13940,24 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "protocol": protocol,
                 "status_code": probe.get("status") or 0,
                 "message": probe.get("message") or "泽西同学协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_pidoi_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_pidoi_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "Pidoi 视频协议验证完成",
                 "model_count": probe.get("model_count") or 0,
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
@@ -14733,10 +14788,19 @@ def is_zexi_provider(provider):
 def is_zexi_route(provider, model=""):
     return is_zexi_protocol(effective_protocol(provider, model))
 
+def is_pidoi_provider(provider):
+    """是否选择了 Pidoi 视频协议。"""
+    return is_pidoi_protocol(provider_protocol(provider))
+
+def is_pidoi_route(provider, model=""):
+    return is_pidoi_protocol(effective_protocol(provider, model))
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
     if is_zexi_route(provider, model):
         return "泽西同学视频"
+    if is_pidoi_route(provider, model):
+        return "Pidoi 视频"
     if is_cangyuan_video_route(provider, model):
         return "苍元视频"
     if is_chre3_video_route(provider, model):
@@ -14756,6 +14820,8 @@ def looks_like_html_response(text: str) -> bool:
 def video_submit_url_candidates(provider, base_url, model=""):
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_submit_url(base_url)]
+    if is_pidoi_route(provider, model):
+        return [pidoi.pidoi_video_submit_url(base_url)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         # 该合同的 POST 可能产生真实计费任务，不能用旧候选地址重试造成重复提交。
         return [f"{sd2_video_api_root(base_url)}/v1/videos"]
@@ -14779,6 +14845,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
 def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=""):
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_task_url(base_url, task_id)]
+    if is_pidoi_route(provider, model):
+        return [pidoi.pidoi_video_task_url(base_url, task_id)]
     if is_chre3_video_route(provider, model) or is_cangyuan_video_route(provider, model):
         quoted_id = urllib.parse.quote(str(task_id), safe="")
         return [f"{sd2_video_api_root(base_url)}/v1/videos/{quoted_id}"]
@@ -15288,6 +15356,161 @@ async def generate_cangyuan_video(client, payload, provider, base_url, requested
         raise HTTPException(status_code=502, detail=f"苍元视频接口{detail}")
     local_urls = [await save_remote_video_to_output(url) for url in urls]
     return {"videos": local_urls, "task_id": task_id, "raw": result}
+
+# ---- Pidoi：按模型家族构造 POST /v1/videos，GET /v1/videos/{id} ----
+def pidoi_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+def make_pidoi_resolver():
+    async def public_url_of(value, kind, index):
+        return await sd2_public_reference_url(value, kind, index, label="Pidoi 视频")
+    return public_url_of
+
+def pidoi_response_error_text(response):
+    text = str(getattr(response, "text", "") or "").strip()
+    try:
+        raw = response.json()
+    except Exception:
+        return text[:500]
+    return pidoi.pidoi_error_text(raw, text)
+
+PIDOI_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=20.0)
+PIDOI_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+PIDOI_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+
+async def wait_for_pidoi_video_task(client, provider, base_url, task_id, model):
+    """按 Pidoi 文档每 10～15 秒查询一次，单次请求不占用整体 30 分钟时限。"""
+    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    delay = 10.0
+    last_payload = {}
+    while time.monotonic() < deadline:
+        await asyncio.sleep(delay)
+        url = pidoi.pidoi_video_task_url(base_url, task_id)
+        try:
+            response = await client.get(
+                url,
+                headers=api_headers(provider=provider, model=model),
+                timeout=PIDOI_POLL_REQUEST_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            print(f"[pidoi] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
+            delay = min(delay + 1.0, 15.0)
+            continue
+        try:
+            raw = response.json() if response.text else {}
+        except Exception:
+            raw = {}
+        if response.status_code >= 500 or response.status_code == 429:
+            print(f"[pidoi] 轮询暂时失败 http={response.status_code}，保留任务号继续重试")
+            delay = min(delay + 1.0, 15.0)
+            continue
+        if response.status_code == 404:
+            detail = pidoi.pidoi_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"Pidoi 视频任务不存在：{detail}")
+        if response.status_code >= 400:
+            detail = pidoi.pidoi_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"Pidoi 视频任务查询失败：{detail}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="Pidoi 视频任务查询返回了无法识别的响应。")
+        last_payload = raw
+        state, _ = pidoi.pidoi_task_state(raw)
+        if state == "success":
+            return raw
+        if state == "failed":
+            raise HTTPException(status_code=502, detail=f"Pidoi 视频生成任务失败：{pidoi.pidoi_error_text(raw)}")
+        delay = min(delay + 1.0, 15.0)
+    raise HTTPException(status_code=504, detail=f"Pidoi 视频生成任务超时：{last_payload or task_id}")
+
+async def generate_pidoi_video(client, payload, provider, base_url, requested_model):
+    api_key = pidoi_api_key(provider)
+    body = await pidoi.build_pidoi_video_request(
+        payload,
+        requested_model,
+        resolve_ref=make_pidoi_resolver(),
+    )
+    submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
+    response = await client.post(
+        submit_url,
+        headers=api_headers(provider=provider, model=requested_model),
+        json=body,
+        timeout=PIDOI_SUBMIT_REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        detail = pidoi_response_error_text(response)
+        print(f"[video] Pidoi 上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
+        raise HTTPException(status_code=response.status_code, detail=f"Pidoi 视频接口错误：{detail}")
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or "")[:500]
+        if looks_like_html_response(resp_text):
+            detail = "Pidoi 视频接口返回了网页 HTML，请确认 Base URL 是 https://pidoi.com 这类 API 根地址。"
+        else:
+            detail = f"Pidoi 视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"Pidoi 视频接口返回了无法识别的响应：{str(raw)[:500]}")
+
+    task_id = pidoi.pidoi_task_id(raw)
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f"Pidoi 视频接口没有返回任务号：{str(raw)[:500]}")
+    print(f"[pidoi] 视频任务已创建（已计费）task={task_id} model={body.get('model')}")
+    state, _ = pidoi.pidoi_task_state(raw)
+    if state == "failed":
+        raise HTTPException(status_code=502, detail=f"Pidoi 视频生成任务失败：{pidoi.pidoi_error_text(raw)}")
+
+    family = pidoi.pidoi_model_family(requested_model)
+    result = raw
+    result_urls = []
+    if state != "success":
+        result = await wait_for_pidoi_video_task(client, provider, base_url, task_id, requested_model)
+    result_urls = pidoi.pidoi_video_result_urls(result, family)
+
+    def _saved_ok(value):
+        return str(value or "").startswith(("/output/", "/assets/"))
+
+    base_host = urllib.parse.urlsplit(pidoi.pidoi_api_root(base_url)).netloc.lower()
+    local_url = ""
+    for candidate in result_urls:
+        candidate_host = urllib.parse.urlsplit(str(candidate)).netloc.lower()
+        extra_headers = {"Authorization": bearer_auth_value(api_key)} if candidate_host == base_host else None
+        saved = await save_remote_video_to_output(
+            candidate,
+            prefix="pidoi_video_",
+            extra_headers=extra_headers,
+            timeout=PIDOI_DOWNLOAD_REQUEST_TIMEOUT,
+        )
+        if _saved_ok(saved):
+            local_url = saved
+            break
+
+    if not _saved_ok(local_url) and family in {
+        pidoi.PIDOI_FAMILY_OMNI_FLASH_720P,
+        pidoi.PIDOI_FAMILY_SORA_V3_933_PRO,
+    }:
+        content_url = pidoi.pidoi_video_content_url(base_url, task_id)
+        local_url = await save_remote_video_to_output(
+            content_url,
+            prefix="pidoi_video_",
+            extra_headers={"Authorization": bearer_auth_value(api_key)},
+            timeout=PIDOI_DOWNLOAD_REQUEST_TIMEOUT,
+        )
+    if not _saved_ok(local_url):
+        print(f"[pidoi] 成片下载失败 task={task_id} model={requested_model}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Pidoi 任务 {task_id} 已完成但成片下载失败。该任务已经提交并可能计费，"
+                "请尽快使用任务号在 Pidoi 侧重试下载或联系客服。"
+            ),
+        )
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
 
 # ---- 泽西同学（zexitongxue.com）：POST /v1/videos，GET /v1/videos/{id}，/content 取片 ----
 def zexi_api_key(provider):
@@ -16269,6 +16492,15 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(chre3) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 chre3 视频接口失败：{exc}") from exc
+    if is_pidoi_route(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as pidoi_client:
+                return await generate_pidoi_video(pidoi_client, payload, provider, base_url, requested_model)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(Pidoi) 网络/TLS错误 model={requested_model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求 Pidoi 视频接口失败：{str(exc) or type(exc).__name__}") from exc
     if is_zexi_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as zexi_client:

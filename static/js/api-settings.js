@@ -98,7 +98,8 @@ const CHRE3_VIDEO_REAL_PROTOCOL = 'chre3-video-real';
 const CHRE3_VIDEO_PROTOCOLS = new Set([CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL]);
 const CANGYUAN_VIDEO_PROTOCOL = 'cangyuan';
 const ZEXI_PROTOCOL = 'zexi';
-const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
+const PIDOI_PROTOCOL = 'pidoi';
+const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
     return CHRE3_VIDEO_PROTOCOLS.has(String(value || '').trim().toLowerCase());
@@ -110,6 +111,9 @@ function isCangyuanVideoProtocol(value){
 
 function isZexiProtocol(value){
     return String(value || '').trim().toLowerCase() === ZEXI_PROTOCOL;
+}
+function isPidoiProtocol(value){
+    return String(value || '').trim().toLowerCase() === PIDOI_PROTOCOL;
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -873,6 +877,7 @@ function updateProtocolFromInput(){
     document.body.classList.toggle('show-chre3-video', isChre3VideoProtocol(item.protocol));
     document.body.classList.toggle('show-cangyuan-video', isCangyuanVideoProtocol(item.protocol));
     document.body.classList.toggle('show-zexi', isZexiProtocol(item.protocol));
+    document.body.classList.toggle('show-pidoi', isPidoiProtocol(item.protocol));
     clearVerifyResult();
     // 协议会改变整个表单（如即梦 CLI 账户面板、默认模型、Key 占位）。renderEditor 是唯一切换这些的入口，
     // 这里复跑一次让面板立即出现；保存并恢复 Key 输入框，避免推荐流程里先填的 Key 被 renderEditor 清空。
@@ -2407,6 +2412,8 @@ function renderProviderList(){
             ? 'CHRE3 真人'
             : itemProtocol === CHRE3_VIDEO_PROTOCOL
             ? 'CHRE3'
+            : itemProtocol === PIDOI_PROTOCOL
+            ? 'Pidoi'
             : String(item.protocol || 'openai').toUpperCase();
         if(item.id === 'modelscope'){
             return `
@@ -2546,6 +2553,7 @@ function renderEditor(){
     const isChre3Video = isChre3VideoProtocol(currentProtocolValue);
     const isCangyuanVideo = isCangyuanVideoProtocol(currentProtocolValue);
     const isZexi = isZexiProtocol(currentProtocolValue);
+    const isPidoi = isPidoiProtocol(currentProtocolValue);
     if(isRunningHub){
         ensureRunningHubLists(item);
         if(rhFreeKeyInput){
@@ -2608,6 +2616,7 @@ function renderEditor(){
     document.body.classList.toggle('show-chre3-video', isChre3Video);
     document.body.classList.toggle('show-cangyuan-video', isCangyuanVideo);
     document.body.classList.toggle('show-zexi', isZexi);
+    document.body.classList.toggle('show-pidoi', isPidoi);
     updateApimartDomesticHint(item);
     renderProviderOnboarding(item);
     renderRecommendApi();
@@ -3048,7 +3057,7 @@ async function probeAsync(){
         const detectedProtocol = String(data.protocol || '').toLowerCase();
         const isAsync = data.ok === true && detectedProtocol === 'apimart';
         const isOpenAiCompat = data.ok === true && detectedProtocol === 'openai';
-        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(currentProtocol);
+        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(currentProtocol);
         if(protocolInput && !keepManualProtocol){
             applyDetectedProtocol(detectedProtocol || (isAsync ? 'apimart' : 'openai'));
         }
@@ -3065,7 +3074,7 @@ async function probeAsync(){
                 : detectedProtocol === 'openai'
                     ? 'OpenAI 兼容'
                     : keepManualProtocol
-                    ? (currentProtocol === 'gemini' ? 'Gemini' : currentProtocol === 'grok' ? 'Grok' : currentProtocol === CHRE3_VIDEO_REAL_PROTOCOL ? '视频：chre3 真人' : currentProtocol === CHRE3_VIDEO_PROTOCOL ? '视频：chre3' : currentProtocol === CANGYUAN_VIDEO_PROTOCOL ? '视频：苍元' : currentProtocol.toUpperCase())
+                    ? (currentProtocol === 'gemini' ? 'Gemini' : currentProtocol === 'grok' ? 'Grok' : currentProtocol === CHRE3_VIDEO_REAL_PROTOCOL ? '视频：chre3 真人' : currentProtocol === CHRE3_VIDEO_PROTOCOL ? '视频：chre3' : currentProtocol === CANGYUAN_VIDEO_PROTOCOL ? '视频：苍元' : currentProtocol === ZEXI_PROTOCOL ? '泽西同学' : currentProtocol === PIDOI_PROTOCOL ? '视频：Pidoi' : currentProtocol.toUpperCase())
                     : 'OpenAI 兼容';
         showVerifyResult(`
             ${hideTasksEndpointTip ? '' : `<div style="font-size:11px;font-weight:800;color:${color}">${icon} ${escapeHtml(probeMessage)}</div>`}
@@ -3075,7 +3084,7 @@ async function probeAsync(){
                 <pre style="margin-top:6px;padding:10px 12px;border-radius:10px;background:var(--soft);border:1px solid var(--line-2);font-size:10.5px;font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text);max-height:200px;overflow:auto">${escapeHtml(rawJson)}</pre>
             </details>`);
     } catch(e){
-        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
+        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
         if(protocolInput && !keepManualProtocol){ protocolInput.value = 'openai'; protocolInput.dispatchEvent(new Event('change')); }
         const suffix = keepManualProtocol ? '，已保留当前手动选择的协议' : '，协议已设为 OpenAI 兼容';
         showVerifyResult(`<div style="font-size:11px;font-weight:800;color:#b45309">⚠ ${escapeHtml(e.message || String(e))}${suffix}</div>`);
