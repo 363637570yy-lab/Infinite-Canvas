@@ -249,6 +249,67 @@ class PidoiFamilyTests(unittest.TestCase):
             run(pidoi.build_pidoi_video_request(payload, "tejiasd", fake_resolve))
         self.assertIn("2500", ctx.exception.detail)
 
+    def test_tejiasd_normalizes_bound_asset_names_to_documented_mentions(self):
+        payload = video_payload(
+            model="tejiasd",
+            prompt="@character-a.png 是女主角，@character-b.png 是男主角",
+            images=[
+                {"url": "https://example.com/a.jpg", "name": "character-a.png"},
+                {"url": "https://example.com/b.jpg", "name": "character-b.png"},
+            ],
+        )
+        body = run(pidoi.build_pidoi_video_request(payload, "tejiasd", fake_resolve))
+        self.assertEqual(body["prompt"], "@图片1 是女主角，@图片2 是男主角")
+
+    def test_tejiasd_strips_unbound_filename_mentions_without_touching_other_words(self):
+        payload = video_payload(
+            model="tejiasd",
+            prompt="@storyboard.png 为九宫格参考图，@阿川_L_ref.png 为角色参考形象",
+            images=[
+                {"url": "https://example.com/storyboard.png", "name": "storyboard.png"},
+            ],
+        )
+        body = run(pidoi.build_pidoi_video_request(payload, "tejiasd", fake_resolve))
+        self.assertEqual(body["prompt"], "@图片1 为九宫格参考图，阿川_L_ref.png 为角色参考形象")
+
+    def test_tejiasd_converts_english_canonical_mentions_and_rejects_out_of_range(self):
+        valid = video_payload(
+            model="tejiasd",
+            prompt="@Image1 保持身份一致",
+            images=[{"url": "https://example.com/character.jpg"}],
+        )
+        body = run(pidoi.build_pidoi_video_request(valid, "tejiasd", fake_resolve))
+        self.assertEqual(body["prompt"], "@图片1 保持身份一致")
+
+        invalid = video_payload(
+            model="tejiasd",
+            prompt="@图片2 保持身份一致",
+            images=[{"url": "https://example.com/character.jpg"}],
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            run(pidoi.build_pidoi_video_request(invalid, "tejiasd", fake_resolve))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("@图片2", ctx.exception.detail)
+
+        zero = video_payload(
+            model="tejiasd",
+            prompt="@图片0 保持身份一致",
+            images=[{"url": "https://example.com/character.jpg"}],
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            run(pidoi.build_pidoi_video_request(zero, "tejiasd", fake_resolve))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("@图片0", ctx.exception.detail)
+
+    def test_tejiasd_mention_normalization_does_not_change_other_pidoi_families(self):
+        payload = video_payload(
+            model="omni-flash-720p",
+            prompt="@storyboard.png 保持参考图一致",
+            images=[{"url": "https://example.com/storyboard.png", "name": "storyboard.png"}],
+        )
+        body = run(pidoi.build_pidoi_video_request(payload, "omni-flash-720p", fake_resolve))
+        self.assertEqual(body["prompt"], "@storyboard.png 保持参考图一致")
+
     def test_explicit_audio_switch_is_rejected_instead_of_silently_ignored(self):
         payload = video_payload(generate_audio=True)
         with self.assertRaises(HTTPException) as ctx:

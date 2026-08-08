@@ -64,6 +64,15 @@ PIDOI_TERMINAL_FAILURE_STATUSES = {
     "REJECTED",
 }
 
+PIDOI_MENTION_PATTERN = re.compile(
+    r"@((?:图片|视频|音频|image|video|audio)\d+|[^\s,，。！？；;：:、（）()\[\]{}<>\"'“”‘’]+)",
+    re.IGNORECASE,
+)
+PIDOI_CANONICAL_MENTION_PATTERN = re.compile(
+    r"^(图片|视频|音频|image|video|audio)(\d+)$",
+    re.IGNORECASE,
+)
+
 
 def pidoi_api_root(base_url=""):
     value = str(base_url or PIDOI_DEFAULT_BASE_URL).strip().rstrip("/")
@@ -120,6 +129,12 @@ def _reference_role(ref):
     return str(getattr(ref, "role", "") or "").strip().lower()
 
 
+def _reference_name(ref):
+    if isinstance(ref, dict):
+        return str(ref.get("name") or "").strip()
+    return str(getattr(ref, "name", "") or "").strip()
+
+
 def _reference_values(refs):
     return [_reference_value(ref) for ref in refs or [] if _reference_value(ref)]
 
@@ -131,6 +146,68 @@ def _prompt(payload, max_length=0):
     if max_length and len(value) > max_length:
         raise HTTPException(status_code=400, detail=f"Pidoi 视频提示词最多 {max_length} 个字符。")
     return value
+
+
+def _mention_alias(value):
+    text = str(value or "").strip().lstrip("@")
+    if not text:
+        return ""
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme and parsed.netloc:
+        text = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+    elif "/" in text or "\\" in text:
+        text = urllib.parse.unquote(text.replace("\\", "/").rsplit("/", 1)[-1])
+    return text.strip().casefold()
+
+
+def _reference_aliases(ref):
+    aliases = []
+    for candidate in (_reference_name(ref), _reference_value(ref)):
+        alias = _mention_alias(candidate)
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases
+
+
+def _tejiasd_prompt(payload, max_length=0):
+    """把画布素材名转换为 tejiasd 文档规定的有序 mention。"""
+    value = _prompt(payload, max_length)
+    references = {
+        kind: [ref for ref in (getattr(payload, field, []) or []) if _reference_value(ref)]
+        for kind, field in (("图片", "images"), ("视频", "videos"), ("音频", "audios"))
+    }
+    english_kinds = {"image": "图片", "video": "视频", "audio": "音频"}
+    aliases = {}
+    for kind, refs in references.items():
+        for index, ref in enumerate(refs, 1):
+            canonical = f"@{kind}{index}"
+            for alias in _reference_aliases(ref):
+                if alias in aliases:
+                    if aliases[alias] != canonical:
+                        aliases[alias] = None
+                    continue
+                aliases[alias] = canonical
+
+    def replace(match):
+        token = match.group(1)
+        canonical_match = PIDOI_CANONICAL_MENTION_PATTERN.fullmatch(token)
+        if canonical_match:
+            raw_kind, raw_index = canonical_match.groups()
+            kind = english_kinds.get(raw_kind.casefold(), raw_kind)
+            index = int(raw_index)
+            if index < 1 or index > len(references[kind]):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Pidoi tejiasd 提示词引用 @{raw_kind}{index} 超出范围："
+                        f"当前只有 {len(references[kind])} 个{kind}参考素材，请按数组顺序使用 @{kind}1、@{kind}2 等编号。"
+                    ),
+                )
+            return f"@{kind}{index}"
+        mapped = aliases.get(token.casefold())
+        return mapped or token
+
+    return PIDOI_MENTION_PATTERN.sub(replace, value)
 
 
 def _aspect_ratio(payload, allowed, required=True):
@@ -322,7 +399,7 @@ async def _build_tejiasd_request(payload, model, resolve_ref):
     seed = _seed(payload)
     body = {
         "model": model,
-        "prompt": _prompt(payload, 2500),
+        "prompt": _tejiasd_prompt(payload, 2500),
         "duration": duration,
         "n": 1,
     }
