@@ -735,6 +735,11 @@ function videoApiProviders(){
         .filter(p => p.id !== 'modelscope' && p.enabled !== false && (p.video_models || []).length);
     return providers.length ? providers : defaultApiProviders();
 }
+function isGrok2apiVideoProvider(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
+    return String(provider?.protocol || '').trim().toLowerCase() === 'grok2api';
+}
 function resolveVideoProviderId(id){
     const providers = videoApiProviders();
     return providers.find(p => p.id === id)?.id || providers[0]?.id || 'comfly';
@@ -8566,6 +8571,14 @@ function renderVideoBody(node){
     const promptInputs = ordered.filter(src => src.prompt && !src.refs?.length);
     sanitizeVideoNodeProviderModel(node);
     node.model = node.model || 'veo3-fast';
+    const grok2api = isGrok2apiVideoProvider(node.apiProvider);
+    const durationMax = grok2api ? 15 : 60;
+    const aspectOptions = grok2api
+        ? ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
+        : ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', 'keep_ratio', 'adaptive'];
+    const resolutionOptions = grok2api
+        ? [['', 'Auto'], ['480p', '480p'], ['720p', '720p'], ['1080p', '1080p']]
+        : [['', 'Auto'], ['480p', '480p'], ['720p', '720p'], ['1080p', '1080p'], ['780P', '780P']];
     wrap.innerHTML = `
         <div class="prompt-list mb-3"></div>
         <div class="video-input-head">
@@ -8584,41 +8597,30 @@ function renderVideoBody(node){
             <div class="gen-settings-row">
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoDuration')}</div>
-                    <input class="setting-input video-duration" type="number" min="1" max="60" step="1" value="${Number(node.duration || 5)}">
+                    <input class="setting-input video-duration" type="number" min="1" max="${durationMax}" step="1" value="${Number(node.duration || 5)}">
                 </label>
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoAspect')}</div>
                     <select class="select-lite video-aspect compact-select">
-                        <option value="16:9">16:9</option>
-                        <option value="9:16">9:16</option>
-                        <option value="1:1">1:1</option>
-                        <option value="4:3">4:3</option>
-                        <option value="3:4">3:4</option>
-                        <option value="21:9">21:9</option>
-                        <option value="9:21">9:21</option>
-                        <option value="keep_ratio">keep</option>
-                        <option value="adaptive">adapt</option>
+                        ${aspectOptions.map(value => `<option value="${value}">${value === 'keep_ratio' ? 'keep' : value === 'adaptive' ? 'adapt' : value}</option>`).join('')}
                     </select>
                 </label>
                 <label class="field" style="flex:1">
                     <div class="setting-title">${tr('canvas.videoResolution')}</div>
                     <select class="select-lite video-resolution compact-select">
-                        <option value="">Auto</option>
-                        <option value="480p">480p</option>
-                        <option value="720p">720p</option>
-                        <option value="1080p">1080p</option>
-                        <option value="780P">780P</option>
+                        ${resolutionOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
                     </select>
                 </label>
             </div>
             <div class="gen-settings-row" style="flex-wrap:wrap">
+                ${grok2api ? '' : `
                 <button type="button" class="setting-check ${node.enhancePrompt ? 'active' : ''}" data-video-toggle="enhancePrompt"><span class="check-dot"></span>${tr('canvas.videoEnhancePrompt')}</button>
                 <button type="button" class="setting-check ${node.enableUpsample ? 'active' : ''}" data-video-toggle="enableUpsample"><span class="check-dot"></span>${tr('canvas.videoUpsample')}</button>
                 <button type="button" class="setting-check ${node.watermark ? 'active' : ''}" data-video-toggle="watermark"><span class="check-dot"></span>${tr('canvas.videoWatermark')}</button>
                 <button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>
                 <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
-                <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>
+                <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
         </div>
         <div class="gen-run-row">
@@ -8645,12 +8647,12 @@ function renderVideoBody(node){
         node.apiProvider = e.target.value;
         const models = providerVideoModels(node.apiProvider);
         if(!models.includes(node.model)) node.model = models[0] || node.model;
-        modelSelect.innerHTML = videoModelOptions(node.model, node.apiProvider);
+        render();
         scheduleSave();
     };
     modelSelect.onchange = e => { e.stopPropagation(); node.model = e.target.value; scheduleSave(); };
-    durationSelect.oninput = e => { e.stopPropagation(); node.duration = Math.max(1, Math.min(60, Number(e.target.value || 5))); scheduleSave(); };
-    durationSelect.onblur = e => { e.target.value = String(Math.max(1, Math.min(60, Number(node.duration || 5)))); };
+    durationSelect.oninput = e => { e.stopPropagation(); node.duration = Math.max(1, Math.min(durationMax, Number(e.target.value || 5))); scheduleSave(); };
+    durationSelect.onblur = e => { e.target.value = String(Math.max(1, Math.min(durationMax, Number(node.duration || 5)))); };
     aspectSelect.onchange = e => { e.stopPropagation(); node.aspectRatio = e.target.value; scheduleSave(); };
     resolutionSelect.onchange = e => { e.stopPropagation(); node.resolution = e.target.value; scheduleSave(); };
     wrap.querySelectorAll('[data-video-toggle]').forEach(btn => {
@@ -10620,9 +10622,10 @@ async function runVideoNode(nodeId, opts={}){
     const refs = imageRefsOnly(mediaRefs);
     const videoRefs = videoRefsOnly(mediaRefs);
     const audioRefs = audioRefsOnly(mediaRefs);
-    if(node.useFrameRoles && refs[0]) refs[0] = {...refs[0], role:'first_frame'};
-    if(node.useFrameRoles && refs[1]) refs[1] = {...refs[1], role:'last_frame'};
-    if(!prompt){ alert(tr('canvas.videoNeedsPrompt')); return; }
+    const grok2api = isGrok2apiVideoProvider(node.apiProvider);
+    if(!grok2api && node.useFrameRoles && refs[0]) refs[0] = {...refs[0], role:'first_frame'};
+    if(!grok2api && node.useFrameRoles && refs[1]) refs[1] = {...refs[1], role:'last_frame'};
+    if(!prompt && !refs.length){ alert(tr('canvas.needPromptOrImage')); return; }
     let out = outputForNode(node, 460);
     const pendingId = uid('p');
     const run = runSnapshot(node, prompt, refs);
@@ -10637,7 +10640,7 @@ async function runVideoNode(nodeId, opts={}){
     }
     else refreshRunNodes(node, out);
     try {
-        const result = await cascadeFetch('/api/canvas-video', {
+        let result = await cascadeFetch('/api/canvas-video', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
@@ -10652,14 +10655,17 @@ async function runVideoNode(nodeId, opts={}){
                     ? [manualVideoUrlForNode(node)]
                     : videoRefs.map(ref => tempShUploadedUrlForNode(node, ref.url)),
                 audios:audioRefs.map(ref => ref.url).filter(Boolean),
-                enhance_prompt:Boolean(node.enhancePrompt),
-                enable_upsample:Boolean(node.enableUpsample),
-                watermark:Boolean(node.watermark),
-                camerafixed:Boolean(node.cameraFixed),
-                generate_audio:Boolean(node.generateAudio),
-                multimodal:Boolean(node.multimodal)
+                enhance_prompt:grok2api ? false : Boolean(node.enhancePrompt),
+                enable_upsample:grok2api ? false : Boolean(node.enableUpsample),
+                watermark:grok2api ? false : Boolean(node.watermark),
+                camerafixed:grok2api ? false : Boolean(node.cameraFixed),
+                generate_audio:grok2api ? false : Boolean(node.generateAudio),
+                multimodal:grok2api ? false : Boolean(node.multimodal)
             })
         }, {cascadeTargetId}).then(async r => { if(!r.ok) throw new Error(await responseErrorMessage(r, tr('canvas.videoFailed'))); return r.json(); });
+        if(result?.grok2api_pending){
+            result = await waitCanvasVideoTaskResult(result.task_id, {cascadeTargetId});
+        }
         const meta = collectRunMeta(out, pendingId);
         if(out) out._pending = (out._pending || []).filter(p => p.id !== pendingId);
         const outputUrls = resultMediaUrls(result).map(item => {
@@ -12392,6 +12398,22 @@ async function createCanvasComfyTask(payload, options={}){
     }, options);
     if(!res.ok) throw new Error(await responseErrorMessage(res, actionFailed('canvas.comfyGenerate')));
     return res.json();
+}
+async function waitCanvasVideoTaskResult(taskId, options={}){
+    if(!taskId) throw new Error(tr('canvas.videoFailed'));
+    while(true){
+        const cascadeTargetId = cascadeTargetIdFromOptions(options);
+        if(cascadeTargetId) ensureCascadeActive(cascadeTargetId);
+        const res = await cascadeFetch(`/api/canvas-video-tasks/${encodeURIComponent(taskId)}`, {}, {cascadeTargetId});
+        if(!res.ok){
+            if(res.status === 404) throw new Error(cascadeBackendRestartMessage());
+            throw new Error(await responseErrorMessage(res, tr('canvas.videoFailed')));
+        }
+        const data = await res.json();
+        if(data.status === 'succeeded') return data.result || {};
+        if(data.status === 'failed') throw new Error(data.error || tr('canvas.videoFailed'));
+        await sleep(1800);
+    }
 }
 async function waitCanvasComfyTaskResult(taskId, options={}){
     if(!taskId) throw new Error(actionFailed('canvas.comfyGenerate'));

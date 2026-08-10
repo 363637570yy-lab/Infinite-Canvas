@@ -45,6 +45,8 @@ import zexi_protocol as zexi
 import pidoi_protocol as pidoi
 # MegabyAI 的 /v1/videos 请求体、模型能力与任务响应归一化独立维护。
 import megabyai_protocol as megabyai
+# Grok2API 的 JSON 视频合同与现有 grok multipart 合同不同，纯逻辑独立维护。
+import grok2api_protocol as grok2api
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -388,7 +390,9 @@ ZEXI_PROTOCOL = zexi.ZEXI_PROTOCOL
 PIDOI_PROTOCOL = pidoi.PIDOI_PROTOCOL
 # MegabyAI 的 referenceImages/referenceVideos/referenceAudios 与现有协议不同，单独注册。
 MEGABYAI_PROTOCOL = megabyai.MEGABYAI_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+# Grok2API 使用严格 JSON 的 /v1/videos/generations，与 grok multipart 合同单独注册。
+GROK2API_PROTOCOL = grok2api.GROK2API_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, GROK2API_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -404,6 +408,9 @@ def is_pidoi_protocol(value):
 
 def is_megabyai_protocol(value):
     return str(value or "").strip().lower() == MEGABYAI_PROTOCOL
+
+def is_grok2api_protocol(value):
+    return str(value or "").strip().lower() == GROK2API_PROTOCOL
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -2619,6 +2626,8 @@ class CloudPollRequest(BaseModel):
 
 class AIReference(BaseModel):
     url: str = ""
+    # Grok2API 也接受其媒体上传端点签发的 input_* file_id；其他协议继续只使用 url。
+    file_id: str = ""
     name: str = ""
     role: str = ""
     kind: str = ""
@@ -2647,9 +2656,12 @@ class ImageTaskQueryRequest(BaseModel):
 
 CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
 CANVAS_TASK_LOCK = Lock()
+# asyncio 任务只由事件循环弱引用；保留强引用直到完成，避免长视频轮询被提前回收。
+GROK2API_CANVAS_TASK_HANDLES: Dict[str, Any] = {}
 
 class CanvasVideoRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
+    # Grok2API 支持只提交参考图的图生视频；路由层仍会拒绝无 prompt 且无参考图的请求。
+    prompt: str = Field(default="", max_length=VIDEO_PROMPT_MAX_LENGTH)
     provider_id: str = "comfly"
     model: str = "veo3-fast"
     duration: int = 5
@@ -9562,29 +9574,31 @@ async def save_remote_video_to_output(url, prefix="video_", category="output", e
         if extra_headers:
             headers.update({str(k): str(v) for k, v in extra_headers.items() if k and v})
         async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True, headers=headers) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if "text/html" in content_type or "application/json" in content_type:
-                raise RuntimeError(f"unexpected video content type: {content_type}")
-            ext = clean_ext
-            if ext in video_exts:
-                filename = f"{stem}{ext}"
-                path = output_path_for(filename, category)
-            elif "webm" in content_type:
-                filename = f"{stem}.webm"
-                path = output_path_for(filename, category)
-            elif "quicktime" in content_type or "mov" in content_type:
-                filename = f"{stem}.mov"
-                path = output_path_for(filename, category)
-            elif "x-matroska" in content_type or "mkv" in content_type:
-                filename = f"{stem}.mkv"
-                path = output_path_for(filename, category)
-            elif "x-flv" in content_type or "flv" in content_type:
-                filename = f"{stem}.flv"
-                path = output_path_for(filename, category)
-            with open(path, "wb") as f:
-                f.write(response.content)
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if "text/html" in content_type or "application/json" in content_type:
+                    raise RuntimeError(f"unexpected video content type: {content_type}")
+                ext = clean_ext
+                if ext in video_exts:
+                    filename = f"{stem}{ext}"
+                    path = output_path_for(filename, category)
+                elif "webm" in content_type:
+                    filename = f"{stem}.webm"
+                    path = output_path_for(filename, category)
+                elif "quicktime" in content_type or "mov" in content_type:
+                    filename = f"{stem}.mov"
+                    path = output_path_for(filename, category)
+                elif "x-matroska" in content_type or "mkv" in content_type:
+                    filename = f"{stem}.mkv"
+                    path = output_path_for(filename, category)
+                elif "x-flv" in content_type or "flv" in content_type:
+                    filename = f"{stem}.flv"
+                    path = output_path_for(filename, category)
+                with open(path, "wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
             if os.path.getsize(path) <= 0:
                 raise RuntimeError("empty video response")
             return output_url_for(filename, category)
@@ -13644,6 +13658,30 @@ async def probe_megabyai_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"MegabyAI 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_grok2api_endpoint(client, base_url: str, api_key: str):
+    """验证 Grok2API 的 Bearer /v1/models，不调用会产生费用的视频 POST。"""
+    ok, result = await probe_openai_models_endpoint(client, grok2api.grok2api_api_root(base_url), api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], GROK2API_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "all": ids,
+        })
+    result["protocol"] = GROK2API_PROTOCOL
+    if ok:
+        result["message"] = (
+            f"Grok2API 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型；"
+            "若上游未返回视频能力字段，请手动把视频模型加入视频模型列表"
+        )
+    else:
+        result["message"] = f"Grok2API 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
     if task_ok:
@@ -13746,6 +13784,7 @@ def parse_upstream_models(raw, protocol="openai"):
         or is_zexi_protocol(protocol)
         or is_pidoi_protocol(protocol)
         or is_megabyai_protocol(protocol)
+        or is_grok2api_protocol(protocol)
     )
     if uses_metadata:
         for it in items:
@@ -13760,6 +13799,8 @@ def parse_upstream_models(raw, protocol="openai"):
             kind = pidoi.classify_pidoi_model_entry(metadata_by_id.get(mid), mid)
         elif is_megabyai_protocol(protocol):
             kind = megabyai.classify_megabyai_model_entry(metadata_by_id.get(mid), mid)
+        elif is_grok2api_protocol(protocol):
+            kind = grok2api.classify_grok2api_model_entry(metadata_by_id.get(mid), mid)
         elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
@@ -14007,6 +14048,24 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "protocol": protocol,
                 "status_code": probe.get("status") or 0,
                 "message": probe.get("message") or "MegabyAI 视频协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_grok2api_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_grok2api_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "Grok2API 视频协议验证完成",
                 "model_count": probe.get("model_count") or 0,
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
@@ -14851,8 +14910,17 @@ def is_megabyai_provider(provider):
 def is_megabyai_route(provider, model=""):
     return is_megabyai_protocol(effective_protocol(provider, model))
 
+def is_grok2api_provider(provider):
+    """是否选择了 Grok2API 独立视频协议。"""
+    return is_grok2api_protocol(provider_protocol(provider))
+
+def is_grok2api_route(provider, model=""):
+    return is_grok2api_protocol(effective_protocol(provider, model))
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
+    if is_grok2api_route(provider, model):
+        return "Grok2API 视频"
     if is_zexi_route(provider, model):
         return "泽西同学视频"
     if is_pidoi_route(provider, model):
@@ -14876,6 +14944,8 @@ def looks_like_html_response(text: str) -> bool:
     return sample.startswith("<!doctype html") or sample.startswith("<html") or "<head" in sample
 
 def video_submit_url_candidates(provider, base_url, model=""):
+    if is_grok2api_route(provider, model):
+        return [grok2api.grok2api_video_submit_url(base_url)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_submit_url(base_url)]
     if is_pidoi_route(provider, model):
@@ -14903,6 +14973,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
     return [f"{base_url}/v1/videos/generations", f"{base_url}/v2/videos/generations"]
 
 def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=""):
+    if is_grok2api_route(provider, model):
+        return [grok2api.grok2api_video_task_url(base_url, task_id)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_task_url(base_url, task_id)]
     if is_pidoi_route(provider, model):
@@ -16482,6 +16554,281 @@ async def generate_tudou_video(client, payload, provider, base_url, requested_mo
     local_urls = [await save_remote_video_to_output(u, prefix="tudou_video_") for u in urls]
     return {"videos": local_urls, "task_id": task_id, "raw": result}
 
+def grok2api_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+def make_grok2api_resolver():
+    async def public_url_of(value, kind, index):
+        return await sd2_public_reference_url(value, kind, index, label="Grok2API 视频")
+    return public_url_of
+
+def grok2api_response_error_text(response):
+    text = str(getattr(response, "text", "") or "").strip()
+    try:
+        raw = response.json()
+    except Exception:
+        return text[:500]
+    return grok2api.grok2api_error_text(raw, text)
+
+GROK2API_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=20.0)
+GROK2API_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+GROK2API_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+try:
+    _grok2api_poll_timeout = float(os.getenv("GROK2API_VIDEO_POLL_TIMEOUT", str(2 * 60 * 60 + 5 * 60)))
+    GROK2API_VIDEO_POLL_TIMEOUT = (
+        _grok2api_poll_timeout
+        if math.isfinite(_grok2api_poll_timeout) and _grok2api_poll_timeout > 0
+        else float(2 * 60 * 60 + 5 * 60)
+    )
+except (TypeError, ValueError):
+    GROK2API_VIDEO_POLL_TIMEOUT = float(2 * 60 * 60 + 5 * 60)
+
+async def wait_for_grok2api_video_task(client, provider, base_url, task_id, model):
+    """轮询 Grok2API 的 /v1/videos/{request_id}，不回退到通用 /v1/tasks。
+
+    Grok2API 的后台视频任务最长约 2 小时；这里的超时只约束服务端后台
+    工作，不再占用浏览器到本服务的长 HTTP 请求。
+    """
+    deadline = time.monotonic() + GROK2API_VIDEO_POLL_TIMEOUT
+    delay = 5.0
+    last_payload = {}
+    while time.monotonic() < deadline:
+        await asyncio.sleep(delay)
+        url = grok2api.grok2api_video_task_url(base_url, task_id)
+        try:
+            response = await client.get(
+                url,
+                headers=api_headers(json_body=False, provider=provider, model=model),
+                timeout=GROK2API_POLL_REQUEST_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            print(f"[grok2api] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        try:
+            raw = response.json() if response.text else {}
+        except Exception:
+            raw = {}
+        if response.status_code in {408, 425, 429} or response.status_code >= 500:
+            print(f"[grok2api] 轮询暂时失败 http={response.status_code}，保留任务号继续重试")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        if response.status_code == 404:
+            detail = grok2api.grok2api_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"Grok2API 视频任务不存在：{detail}")
+        if response.status_code >= 400:
+            detail = grok2api.grok2api_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"Grok2API 视频任务查询失败：{detail}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="Grok2API 视频任务查询返回了无法识别的响应。")
+        last_payload = raw
+        state, status = grok2api.grok2api_task_state(raw)
+        if state == "success":
+            if not grok2api.grok2api_video_result_urls(raw):
+                raise HTTPException(status_code=502, detail="Grok2API 视频任务完成但没有返回 video.url。")
+            return raw
+        if state == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Grok2API 视频生成任务失败：{grok2api.grok2api_error_text(raw, status)}",
+            )
+        delay = min(delay + 0.5, 10.0)
+    raise HTTPException(status_code=504, detail=f"Grok2API 视频任务超时：{last_payload or task_id}")
+
+async def generate_grok2api_video(client, payload, provider, base_url, requested_model, on_task_id=None):
+    api_key = grok2api_api_key(provider)
+    body = await grok2api.build_grok2api_video_request(
+        payload,
+        requested_model,
+        resolve_ref=make_grok2api_resolver(),
+    )
+    submit_url = grok2api.grok2api_video_submit_url(base_url)
+    response = await client.post(
+        submit_url,
+        headers=api_headers(provider=provider, model=requested_model),
+        json=body,
+        timeout=GROK2API_SUBMIT_REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        detail = grok2api_response_error_text(response)
+        print(f"[video] Grok2API 上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
+        raise HTTPException(status_code=response.status_code, detail=f"Grok2API 视频接口错误：{detail}")
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or "")[:500]
+        if looks_like_html_response(resp_text):
+            detail = "Grok2API 视频接口返回了网页 HTML，请确认 Base URL 是 API 根地址。"
+        else:
+            detail = f"Grok2API 视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"Grok2API 视频接口返回了无法识别的响应：{str(raw)[:500]}")
+
+    task_id = grok2api.grok2api_task_id(raw)
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f"Grok2API 视频接口没有返回 request_id：{str(raw)[:500]}")
+    print(f"[grok2api] 视频任务已创建（已计费）task={task_id} model={body.get('model')}")
+    if on_task_id:
+        try:
+            on_task_id(task_id)
+        except Exception as exc:
+            # 状态留痕失败不能改变已经提交的上游任务结果。
+            print(f"[grok2api] 本地任务号留痕失败 task={task_id}: {exc}")
+    state, status = grok2api.grok2api_task_state(raw)
+    if state == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail=f"Grok2API 视频生成任务失败：{grok2api.grok2api_error_text(raw, status)}",
+        )
+    result = raw if state == "success" else await wait_for_grok2api_video_task(
+        client, provider, base_url, task_id, requested_model
+    )
+
+    def _saved_ok(value):
+        return str(value or "").startswith(("/output/", "/assets/"))
+
+    content_url = grok2api.grok2api_video_content_url(base_url, task_id)
+    local_url = await save_remote_video_to_output(
+        content_url,
+        prefix="grok2api_video_",
+        extra_headers={"Authorization": bearer_auth_value(api_key)},
+        timeout=GROK2API_DOWNLOAD_REQUEST_TIMEOUT,
+    )
+    if not _saved_ok(local_url):
+        result_urls = grok2api.grok2api_video_result_urls(result)
+        base_host = urllib.parse.urlsplit(grok2api.grok2api_api_root(base_url)).netloc.lower()
+        print(f"[grok2api] /content 下载失败 task={task_id}，尝试 video.url 回落")
+        for candidate in result_urls:
+            candidate_host = urllib.parse.urlsplit(str(candidate)).netloc.lower()
+            fallback = await save_remote_video_to_output(
+                candidate,
+                prefix="grok2api_video_",
+                extra_headers={"Authorization": bearer_auth_value(api_key)} if candidate_host == base_host else None,
+                timeout=GROK2API_DOWNLOAD_REQUEST_TIMEOUT,
+            )
+            if _saved_ok(fallback):
+                local_url = fallback
+                break
+    if not _saved_ok(local_url):
+        print(f"[grok2api] 成片下载失败 task={task_id} model={requested_model}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Grok2API 任务 {task_id} 已完成但成片下载失败。该任务已经提交并可能计费，"
+                "请尽快使用任务号在 Grok2API 侧重试下载。"
+            ),
+        )
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
+
+def update_grok2api_canvas_task(task_id, **updates):
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        if not task:
+            return
+        task.update(updates)
+        task["updated_at"] = time.time()
+
+async def run_grok2api_canvas_video_task(task_id, payload, provider, base_url, requested_model):
+    """在请求生命周期之外完成 Grok2API 轮询和成片下载，避免被 CF 长连接切断。"""
+    update_grok2api_canvas_task(task_id, status="running")
+
+    def mark_upstream_task(upstream_task_id):
+        update_grok2api_canvas_task(
+            task_id,
+            status="running",
+            upstream_task_id=str(upstream_task_id or ""),
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=GROK2API_POLL_REQUEST_TIMEOUT) as client:
+            result = await generate_grok2api_video(
+                client,
+                payload,
+                provider,
+                base_url,
+                requested_model,
+                on_task_id=mark_upstream_task,
+            )
+        update_grok2api_canvas_task(
+            task_id,
+            status="succeeded",
+            result=result,
+            error="",
+            status_code=200,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
+        try:
+            status_code = int(getattr(exc, "status_code", 500) or 500)
+        except (TypeError, ValueError):
+            status_code = 500
+        update_grok2api_canvas_task(
+            task_id,
+            status="failed",
+            error=str(detail),
+            status_code=status_code,
+        )
+        print(f"[grok2api] 画布后台任务失败 task={task_id}: {str(detail)[:500]}")
+
+def enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_model):
+    task_id = f"canvas_grok2api_{uuid.uuid4().hex}"
+    with CANVAS_TASK_LOCK:
+        CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "grok2api-video",
+            "status": "queued",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "result": None,
+            "error": "",
+            "status_code": 0,
+            "upstream_task_id": "",
+            "provider_id": provider.get("id") or payload.provider_id,
+            "model": requested_model,
+        }
+    task = asyncio.create_task(
+        run_grok2api_canvas_video_task(
+            task_id,
+            payload,
+            dict(provider),
+            base_url,
+            requested_model,
+        )
+    )
+    with CANVAS_TASK_LOCK:
+        GROK2API_CANVAS_TASK_HANDLES[task_id] = task
+
+    def release_task_handle(_done):
+        with CANVAS_TASK_LOCK:
+            GROK2API_CANVAS_TASK_HANDLES.pop(task_id, None)
+
+    add_done_callback = getattr(task, "add_done_callback", None)
+    if callable(add_done_callback):
+        add_done_callback(release_task_handle)
+    return {
+        "grok2api_pending": True,
+        "task_id": task_id,
+        "status": "queued",
+        "message": "Grok2API 视频任务已提交，正在后台生成。",
+    }
+
+@app.get("/api/canvas-video-tasks/{task_id}")
+async def get_canvas_grok2api_video_task(task_id: str):
+    with CANVAS_TASK_LOCK:
+        task = dict(CANVAS_TASKS.get(task_id) or {})
+    if not task or task.get("type") != "grok2api-video":
+        raise HTTPException(status_code=404, detail="Grok2API 画布视频任务不存在，可能服务已重启或任务已过期")
+    return task
+
 async def generate_grok_video(client, payload, provider, base_url, requested_model):
     submit_url = f"{base_url}/v1/videos"
     model = selected_model(requested_model, "grok-imagine-video")
@@ -16600,6 +16947,8 @@ def log_video_request_entry(provider, payload):
 async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
     log_video_request_entry(provider, payload)
+    if not str(payload.prompt or "").strip() and not (is_grok2api_provider(provider) and payload.images):
+        raise HTTPException(status_code=400, detail="文本生视频必须提供 prompt；Grok2API 图生视频可以只提供参考图。")
     if is_jimeng_provider(provider):
         return await generate_jimeng_video(payload, provider)
     if is_runninghub_provider(provider):
@@ -16627,7 +16976,7 @@ async def canvas_video(payload: CanvasVideoRequest):
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip("/"))
-    if is_chre3_video_provider(provider) or is_zexi_provider(provider) or is_megabyai_provider(provider):
+    if is_chre3_video_provider(provider) or is_zexi_provider(provider) or is_megabyai_provider(provider) or is_grok2api_provider(provider):
         # 纯中转站不写死默认模型名，取用户已保存的第一个视频模型。
         default_video_model = provider_first_video_model(provider)
     elif is_cangyuan_video_provider(provider):
@@ -16648,6 +16997,8 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(Grok) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 Grok 视频接口失败：{exc}") from exc
+    if is_grok2api_route(provider, requested_model):
+        return enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_model)
     # 土豆 API 的 JSON 视频四件套（Sora2 / Veo3.1 / Kling v3·omni / Pixverse v6）——
     # Grok 视频已在上面拦截，这里只接管走 /v1/videos/generations + /v1/tasks 的模型。
     if is_tudou_base_url(base_url) and is_tudou_video_model(requested_model):

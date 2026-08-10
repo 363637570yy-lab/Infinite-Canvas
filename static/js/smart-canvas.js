@@ -2414,6 +2414,11 @@ function videoProviderPlatform(providerId){
     if(proto === 'volcengine' || providerId === 'volcengine') return 'volcengine';
     return '';
 }
+function isGrok2apiProviderId(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = (apiProviders || []).find(p => String(p.id || '').trim().toLowerCase() === id);
+    return String(provider?.protocol || '').trim().toLowerCase() === 'grok2api';
+}
 function providerImageModels(providerId){
     if(providerId === 'volcengine') return volcengineProvider().image_models || [];
     return (apiProviders || []).find(p => p.id === providerId)?.image_models || [];
@@ -2578,6 +2583,8 @@ function renderVideoModelControl(models){
     </div>`;
 }
 function renderVideoDurationControl(){
+    const grok2api = isGrok2apiProviderId(settings.videoProvider);
+    const max = grok2api ? 15 : 60;
     const v = Math.max(1, Math.min(60, Number(settings.videoDuration) || 5));
     const quick = [3, 4, 5, 6, 8, 10, 12, 15];
     return `<div class="smart-control duration-control" title="${escapeHtml(tr('smart.videoDurationTip'))}">
@@ -2589,16 +2596,19 @@ function renderVideoDurationControl(){
             </div>
             <label class="duration-custom">
                 <span>${escapeHtml(tr('smart.custom'))}</span>
-                <input type="number" min="1" max="60" step="1" data-param="videoDuration" value="${v}">
+                <input type="number" min="1" max="${max}" step="1" data-param="videoDuration" value="${v}">
             </label>
         </div>
     </div>`;
 }
 function renderVideoAspectControl(){
-    const options = [
+    const allOptions = [
         ['16:9','16:9'], ['9:16','9:16'], ['1:1','1:1'], ['4:3','4:3'], ['3:4','3:4'],
         ['21:9','21:9'], ['9:21','9:21'], ['keep_ratio', tr('smart.videoAspectKeep')], ['adaptive', tr('smart.videoAspectAdaptive')]
     ];
+    const options = isGrok2apiProviderId(settings.videoProvider)
+        ? [['1:1','1:1'], ['16:9','16:9'], ['9:16','9:16'], ['4:3','4:3'], ['3:4','3:4'], ['3:2','3:2'], ['2:3','2:3']]
+        : allOptions;
     const value = settings.videoAspect || '16:9';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control aspect-control">
@@ -2612,7 +2622,9 @@ function renderVideoAspectControl(){
     </div>`;
 }
 function renderVideoResolutionControl(){
-    const options = [['', tr('smart.videoResAuto')], ['720p','720P'], ['1080p','1080P'], ['4k','4K']];
+    const options = isGrok2apiProviderId(settings.videoProvider)
+        ? [['', tr('smart.videoResAuto')], ['480p','480P'], ['720p','720P'], ['1080p','1080P']]
+        : [['', tr('smart.videoResAuto')], ['720p','720P'], ['1080p','1080P'], ['4k','4K']];
     const value = settings.videoResolution || '';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control resolution-control">
@@ -2878,20 +2890,22 @@ function renderApiVideoParams(){
     if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || 'comfly';
     const models = filterJimengVideoModels(providerVideoModels(settings.videoProvider));
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
+    const grok2api = isGrok2apiProviderId(settings.videoProvider);
     dynamicParams.innerHTML = `
         ${renderVideoProviderControl(providers)}
         ${renderVideoModelControl(models)}
         ${renderVideoResolutionControl()}
         ${renderVideoAspectControl()}
         ${renderVideoDurationControl()}
+        ${grok2api ? '' : `
         ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
         ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
         ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
-        ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
-        ${isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
+        ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
+        ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
     `;
 }
 function renderVolcengineParams(){
@@ -15513,6 +15527,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             refAudios = kept;
         }
         if(mismatchedAsset) toast('部分认证素材属于其它平台，已回退为普通素材。切换到对应平台的视频接口才能用 asset:// 认证地址。');
+        const grok2api = isGrok2apiProviderId(runSettings.videoProvider);
         const payload = {
             prompt,
             provider_id: runSettings.videoProvider || 'comfly',
@@ -15523,23 +15538,40 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             images: refImages,
             videos: refVideos,
             audios: refAudios,
-            enhance_prompt: Boolean(runSettings.videoEnhancePrompt),
-            enable_upsample: Boolean(runSettings.videoEnableUpsample),
-            watermark: Boolean(runSettings.videoWatermark),
-            camerafixed: Boolean(runSettings.videoCameraFixed),
-            generate_audio: Boolean(runSettings.videoGenerateAudio),
-            multimodal: Boolean(runSettings.videoMultimodal),
-            trusted_asset: useAssetUris
+            enhance_prompt: grok2api ? false : Boolean(runSettings.videoEnhancePrompt),
+            enable_upsample: grok2api ? false : Boolean(runSettings.videoEnableUpsample),
+            watermark: grok2api ? false : Boolean(runSettings.videoWatermark),
+            camerafixed: grok2api ? false : Boolean(runSettings.videoCameraFixed),
+            generate_audio: grok2api ? false : Boolean(runSettings.videoGenerateAudio),
+            multimodal: grok2api ? false : Boolean(runSettings.videoMultimodal),
+            trusted_asset: grok2api ? false : useAssetUris
         };
-        const result = await fetch('/api/canvas-video', {
+        let result = await fetch('/api/canvas-video', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify(payload)
         }).then(async r => { if(!r.ok) throw new Error(await smartResponseErrorMessage(r, tr('smart.errRunFailed'))); return r.json(); });
         if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
+        if(result?.grok2api_pending){
+            result = await waitSmartCanvasVideoTaskResult(result.task_id);
+        }
         return resultMediaUrls(result);
     } finally {
         transientSmartCloudLinks = [];
+    }
+}
+async function waitSmartCanvasVideoTaskResult(taskId){
+    if(!taskId) throw new Error(tr('smart.errRunFailed'));
+    while(true){
+        const res = await fetch(`/api/canvas-video-tasks/${encodeURIComponent(taskId)}`);
+        if(!res.ok){
+            if(res.status === 404) throw new Error('后端已重启，Grok2API 视频任务状态已丢失');
+            throw new Error(await smartResponseErrorMessage(res, tr('smart.errRunFailed')));
+        }
+        const data = await res.json();
+        if(data.status === 'succeeded') return data.result || {};
+        if(data.status === 'failed') throw new Error(data.error || tr('smart.errRunFailed'));
+        await sleep(1800);
     }
 }
 async function runModelscopeGeneration(prompt, refs, runSettings=settings){

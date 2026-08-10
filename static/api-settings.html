@@ -138,6 +138,15 @@
                                     <span class="ms-line">参考字段为 <span class="inline-code">referenceImages</span> / <span class="inline-code">referenceVideos</span> / <span class="inline-code">referenceAudios</span>（上限 9/3/3）。模型列表只是可选目录，模型名称不做发送白名单；改名或新增模型会原样发送。</span>
                                     <span class="ms-line">模型分类优先读取上游 <span class="inline-code">supported_endpoint_types</span>，也识别档案中的 <span class="inline-code">owned_by=video-api</span> / <span class="inline-code">/v1/videos</span> 描述；首尾帧和 <span class="inline-code">generate_audio</span> 不支持。</span>
                                 </div>
+                                <div class="grok2api-hint">
+                                    <span class="ms-line">Grok2API 地址示例：<span class="inline-code">http://127.0.0.1:8000</span>，免费验证只请求 <span class="inline-code">GET /v1/models</span>。</span>
+                                    <span class="ms-line">视频使用严格 JSON：<span class="inline-code">POST /v1/videos/generations</span> → <span class="inline-code">GET /v1/videos/{request_id}</span>，完成后由后端带 Bearer Key 下载 <span class="inline-code">/content</span>。</span>
+                                    <span class="ms-line"><span class="inline-code">duration</span> 支持 1–15 秒；协议未传时默认 8 秒，但当前画布会显式发送 5 秒。<span class="inline-code">aspect_ratio</span> 默认 16:9，<span class="inline-code">resolution</span> 支持 480p / 720p / 1080p。</span>
+                                    <span class="ms-line">单图发送 <span class="inline-code">image.url</span>；多图发送首图加 <span class="inline-code">reference_images</span>，合计最多 8 张。本地参考图会先转换为公网 URL。</span>
+                                    <span class="ms-line">如直接使用该站上传的临时素材，<span class="inline-code">file_id</span> 必须是该站签发的 <span class="inline-code">input_*</span> ID；不能把本地路径或其它平台的素材 ID 当作 file_id。</span>
+                                    <span class="ms-line">当前 <span class="inline-code">/v1/models</span> 主要返回 id/归属字段，未声明视频能力时不会按模型名猜测；请手动把 <span class="inline-code">grok-imagine-video</span> 或 <span class="inline-code">grok-imagine-video-1.5</span> 加入视频模型列表。</span>
+                                    <span class="ms-line">不支持参考视频、参考音频、首尾帧、音频开关及未定义的视频参数；这些输入会在提交前明确拦截。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -316,6 +325,7 @@
                                         <option value="zexi" data-i18n="api.protocolZexi">泽西同学协议（视频+图片）</option>
                                         <option value="pidoi" data-i18n="api.protocolPidoi">视频：Pidoi 协议</option>
                                         <option value="megabyai" data-i18n="api.protocolMegabyai">视频：MegabyAI 协议</option>
+                                        <option value="grok2api" data-i18n="api.protocolGrok2api">视频：Grok2API 协议</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>
