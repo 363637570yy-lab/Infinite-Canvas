@@ -56,6 +56,18 @@ class Grok2ApiRoutingTests(unittest.TestCase):
             grok2api.grok2api_video_content_url("https://gateway.example/v1", "request/42"),
             "https://gateway.example/v1/videos/request%2F42/content",
         )
+        self.assertEqual(
+            grok2api.grok2api_chat_completions_url("https://gateway.example/v1"),
+            "https://gateway.example/v1/chat/completions",
+        )
+        self.assertEqual(
+            grok2api.grok2api_image_generation_url("https://gateway.example"),
+            "https://gateway.example/v1/images/generations",
+        )
+        self.assertEqual(
+            grok2api.grok2api_image_edit_url("https://gateway.example/v1"),
+            "https://gateway.example/v1/images/edits",
+        )
 
     def test_models_require_explicit_upstream_capability(self):
         raw = {
@@ -70,10 +82,11 @@ class Grok2ApiRoutingTests(unittest.TestCase):
         self.assertEqual(ids, ["gpt-vision", "grok-imagine-video", "grok-imagine-video-1.5"])
         self.assertEqual(grouped["video"], ["grok-imagine-video"])
         self.assertEqual(grouped["image"], ["gpt-vision"])
-        self.assertEqual(grouped["chat"], ["grok-imagine-video-1.5"])
+        self.assertEqual(grouped["chat"], [])
+        self.assertEqual(grouped["unknown"], ["grok-imagine-video-1.5"])
         self.assertEqual(
             grok2api.classify_grok2api_model_entry({}, "grok-imagine-video"),
-            "chat",
+            "unknown",
         )
 
 
@@ -223,6 +236,81 @@ class Grok2ApiRequestTests(unittest.TestCase):
             run(grok2api.build_grok2api_video_request(payload, "grok-imagine-video"))
         self.assertIn("最多 8", ctx.exception.detail)
 
+    def test_image_generation_request_uses_documented_json_fields(self):
+        body = run(
+            grok2api.build_grok2api_image_request(
+                "一只戴红围巾的猫",
+                "grok-imagine-image-quality",
+                size="1024x1024",
+                aspect_ratio="1:1",
+                resolution="2k",
+                quality="auto",
+            )
+        )
+
+        self.assertEqual(
+            body,
+            {
+                "model": "grok-imagine-image-quality",
+                "prompt": "一只戴红围巾的猫",
+                "n": 1,
+                "response_format": "url",
+                "size": "1024x1024",
+                "aspect_ratio": "1:1",
+                "resolution": "2k",
+            },
+        )
+        self.assertNotIn("quality", body)
+
+    def test_image_edit_request_uses_url_image_fields_and_preserves_references(self):
+        body = run(
+            grok2api.build_grok2api_image_request(
+                "把背景改成夜景",
+                "grok-imagine-image-edit",
+                size="auto",
+                aspect_ratio="16:9",
+                resolution="1k",
+                reference_images=[
+                    {"url": "https://example.com/first.png"},
+                    {"url": "https://example.com/second.png"},
+                ],
+            )
+        )
+
+        self.assertNotIn("image", body)
+        self.assertEqual(
+            body["images"],
+            [
+                {"url": "https://example.com/first.png"},
+                {"url": "https://example.com/second.png"},
+            ],
+        )
+        self.assertEqual(body["resolution"], "1k")
+
+    def test_image_edit_rejects_file_id_and_preserves_upstream_limits(self):
+        valid_file_id = "input_" + "A" * 32
+        with self.assertRaises(HTTPException) as file_ctx:
+            run(
+                grok2api.build_grok2api_image_request(
+                    "编辑",
+                    "grok-imagine-image-edit",
+                    reference_images=[{"file_id": valid_file_id}],
+                )
+            )
+        self.assertIn("image.url", file_ctx.exception.detail)
+
+        body = run(
+            grok2api.build_grok2api_image_request(
+                "编辑",
+                "grok-imagine-image-edit",
+                reference_images=[{"url": "https://example.com/ref.png"}],
+                count=2,
+                resolution="2k",
+            )
+        )
+        self.assertEqual(body["n"], 2)
+        self.assertEqual(body["resolution"], "2k")
+
 
 class Grok2ApiResponseTests(unittest.TestCase):
     def test_task_and_result_are_normalized(self):
@@ -362,6 +450,10 @@ class _FakeResponse:
     def json(self):
         return self._payload
 
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
 
 class _FakeVideoClient:
     def __init__(self, response):
@@ -389,7 +481,100 @@ class _FakePollingVideoClient:
         return self.get_responses.pop(0)
 
 
+class _FakeChatClient:
+    def __init__(self, response):
+        self.response = response
+        self.post_calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return self.response
+
+
 class Grok2ApiHttpTests(unittest.TestCase):
+    def test_chat_uses_grok2api_chat_completions_route(self):
+        client = _FakeChatClient(
+            _FakeResponse(
+                {
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "你好"}}
+                    ],
+                    "usage": {"total_tokens": 3},
+                }
+            )
+        )
+        provider = {
+            "id": "grok2api",
+            "name": "Grok2API",
+            "protocol": "grok2api",
+            "base_url": "https://gateway.example",
+            "chat_models": ["grok-chat-model"],
+        }
+        payload = main.ChatRequest(provider="grok2api", model="grok-chat-model", message="你好")
+        conversation = {"messages": [{"role": "user", "content": "你好"}]}
+
+        with patch.object(main, "get_api_provider", return_value=provider), patch.object(
+            main, "provider_env_key_value", return_value="test-token"
+        ), patch.object(main.httpx, "AsyncClient", return_value=client):
+            result = run(main.build_chat_text_reply(payload, conversation))
+
+        self.assertEqual(result["content"], "你好")
+        self.assertEqual(client.post_calls[0][0], "https://gateway.example/v1/chat/completions")
+        self.assertEqual(client.post_calls[0][1]["json"]["model"], "grok-chat-model")
+        self.assertEqual(client.post_calls[0][1]["headers"]["Authorization"], "Bearer test-token")
+
+    def test_image_generation_and_edit_use_separate_documented_routes(self):
+        client = _FakeVideoClient(
+            _FakeResponse(
+                {"data": [{"url": "https://gateway.example/v1/media/images/result.png"}]}
+            )
+        )
+        provider = {
+            "id": "grok2api",
+            "name": "Grok2API",
+            "protocol": "grok2api",
+            "base_url": "https://gateway.example/v1",
+        }
+
+        with patch.object(main, "provider_env_key_value", return_value="test-token"):
+            generated, _ = run(
+                main.generate_grok2api_image(
+                    "一只猫",
+                    "1024x1024",
+                    "auto",
+                    "grok-imagine-image-quality",
+                    [],
+                    provider,
+                    resolution="2k",
+                    client=client,
+                )
+            )
+            edited, _ = run(
+                main.generate_grok2api_image(
+                    "改成夜景",
+                    "auto",
+                    "auto",
+                    "grok-imagine-image-edit",
+                    [{"url": "https://example.com/ref.png"}],
+                    provider,
+                    resolution="1k",
+                    client=client,
+                )
+            )
+
+        self.assertEqual(generated["type"], "url")
+        self.assertEqual(edited["type"], "url")
+        self.assertEqual(client.post_calls[0][0], "https://gateway.example/v1/images/generations")
+        self.assertEqual(client.post_calls[1][0], "https://gateway.example/v1/images/edits")
+        self.assertEqual(client.post_calls[1][1]["json"]["image"], {"url": "https://example.com/ref.png"})
+        self.assertEqual(client.post_calls[0][1]["headers"]["Content-Type"], "application/json")
+
     def test_submit_uses_documented_url_json_and_bearer_header(self):
         client = _FakeVideoClient(
             _FakeResponse(

@@ -27,7 +27,7 @@
         "api.protocolZexi": { zh: "泽西同学协议（视频+图片）", en: "Zexi Protocol (Video + Image)" },
         "api.protocolPidoi": { zh: "视频：Pidoi 协议", en: "Video: Pidoi Protocol" },
         "api.protocolMegabyai": { zh: "视频：MegabyAI 协议", en: "Video: MegabyAI Protocol" },
-        "api.protocolGrok2api": { zh: "视频：Grok2API 协议", en: "Video: Grok2API Protocol" },
+        "api.protocolGrok2api": { zh: "聊天 / 图片 / 视频：Grok2API 协议", en: "Chat / Image / Video: Grok2API Protocol" },
         "api.protocolVolcengine": { zh: "火山引擎协议", en: "Volcengine Protocol" },
         "api.key": { zh: "API Key", en: "API Key" },
         "api.msNotes": { zh: "ModelScope 使用提示", en: "ModelScope Notes" },

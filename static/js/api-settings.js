@@ -473,7 +473,7 @@ function visibleProviders(){
 function isFixedProvider(itemOrId){
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
     // 即梦 CLI 不再是固定平台：可删除、可排序，未添加则不存在。
-    return id === 'modelscope' || id === 'runninghub' || id === 'volcengine';
+    return id === 'modelscope' || id === 'runninghub' || id === 'volcengine' || id === 'grok2api';
 }
 function unique(values){
     const seen = new Set();
@@ -2557,7 +2557,7 @@ function renderEditor(){
     if(lockedApi) applyLockedRecommendedProtocol(item);
     if(protocolInput){
         protocolInput.value = item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : (item.protocol || 'openai');
-        protocolInput.disabled = FIXED_PROTOCOL_PROVIDER_IDS.has(item.id) || Boolean(lockedApi);
+        protocolInput.disabled = FIXED_PROTOCOL_PROVIDER_IDS.has(item.id) || isGrok2apiProtocol(item.protocol) || Boolean(lockedApi);
         protocolInput.title = lockedApi ? '推荐平台使用固定协议' : (protocolInput.disabled ? '内置平台使用固定协议' : '');
     }
     if(imageRequestModeInput){
@@ -3166,6 +3166,7 @@ async function testConnection(){
                 image: new Set(data.image_models || []),
                 chat: new Set(data.chat_models || []),
                 video: new Set(data.video_models || []),
+                unknown: new Set(data.unknown_models || []),
             };
             const openBtn = document.getElementById('openPickerBtn');
             if(openBtn){ openBtn.disabled = false; openBtn.style.opacity = '1'; }
@@ -3203,6 +3204,7 @@ function setFetchedModelState(data){
         image: new Set(data?.image_models || []),
         chat: new Set(data?.chat_models || []),
         video: new Set(data?.video_models || []),
+        unknown: new Set(data?.unknown_models || []),
     };
     lastFetchedModelNames = (data?.model_names && typeof data.model_names === 'object') ? {...data.model_names} : {};
 }
@@ -3336,24 +3338,31 @@ async function fetchModels(){
 }
 
 // —— 模型选择器浮层 ——
-// 每个模型只归一类（根据用户已配置 或 关键字猜测）；勾选 = 纳入该分类
+// 上游已声明的能力优先；没有能力字段的模型保持未知，必须由用户确认分类。
 let pickerState = { category: {}, selected: {} };
 let pickerVisibleIds = [];
 function openModelPicker(){
     const item = provider();
     if(!item || !lastFetchedAll.length){ alert('没有拉取到模型'); return; }
     const existing = { image: new Set(item.image_models||[]), chat: new Set(item.chat_models||[]), video: new Set(item.video_models||[]) };
-    const allIds = new Set([...lastFetchedAll, ...(item.image_models||[]), ...(item.chat_models||[]), ...(item.video_models||[])]);
+    const allIds = new Set([
+        ...lastFetchedAll,
+        ...(lastFetchedSuggestion?.unknown || []),
+        ...(item.image_models||[]),
+        ...(item.chat_models||[]),
+        ...(item.video_models||[]),
+    ]);
     pickerState = { category: {}, selected: {} };
     allIds.forEach(id => {
-        // 类别归属：用户已配置 > 关键字建议 > 默认 chat
+        // 类别归属：用户已配置 > 上游显式能力 > 未知；不按模型名称猜测。
         let cat;
         if(existing.image.has(id)) cat = 'image';
         else if(existing.video.has(id)) cat = 'video';
         else if(existing.chat.has(id)) cat = 'chat';
         else if(lastFetchedSuggestion?.image?.has(id)) cat = 'image';
+        else if(lastFetchedSuggestion?.chat?.has(id)) cat = 'chat';
         else if(lastFetchedSuggestion?.video?.has(id)) cat = 'video';
-        else cat = 'chat';
+        else cat = 'unknown';
         pickerState.category[id] = cat;
         // 默认勾选状态：已在用户配置里的 = 勾选；新拉的 = 不勾选（让用户主动选）
         pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id);
@@ -3370,10 +3379,10 @@ function renderModelPicker(){
     const currentTab = document.querySelector('.picker-cat-tab.active')?.dataset.cat || 'all';
     const ids = Object.keys(pickerState.category).sort();
     // 各分类总数 / 已选数
-    const totals = { all: ids.length, image:0, chat:0, video:0 };
-    const selecteds = { all:0, image:0, chat:0, video:0 };
+    const totals = { all: ids.length, image:0, chat:0, video:0, unknown:0 };
+    const selecteds = { all:0, image:0, chat:0, video:0, unknown:0 };
     ids.forEach(id => {
-        const cat = pickerState.category[id];
+        const cat = pickerState.category[id] || 'unknown';
         totals[cat]++;
         if(pickerState.selected[id]){ selecteds[cat]++; selecteds.all++; }
     });
@@ -3395,6 +3404,15 @@ function renderModelPicker(){
         const checked = pickerState.selected[id];
         const label = modelDisplayName(id, item);
         const badge = providerModelBadge(id, label);
+        const category = pickerState.category[id] || 'unknown';
+        const categoryControl = category === 'unknown'
+            ? `<select class="picker-category-select" title="手动确认模型能力" onclick="event.stopPropagation()" onchange="setPickerCategoryByIndex(${index}, this.value)">
+                <option value="unknown" selected>未知</option>
+                <option value="chat">聊天</option>
+                <option value="image">生图</option>
+                <option value="video">视频</option>
+            </select>`
+            : `<span class="picker-category-label">${category === 'image' ? '生图' : category === 'chat' ? '聊天' : '视频'}</span>`;
         return `
             <div class="picker-row ${checked?'has-sel':''}" onclick="togglePickerRowByIndex(${index})">
                 <div class="picker-checkbox ${checked?'checked':''}">
@@ -3405,6 +3423,7 @@ function renderModelPicker(){
                     <div class="picker-model-label">${escapeHtml(label || id)}</div>
                     ${label && label !== id ? `<div class="picker-model-id">${escapeHtml(id)}</div>` : ''}
                 </div>
+                <div class="picker-model-category">${categoryControl}</div>
             </div>
         `;
     }).join('');
@@ -3413,13 +3432,16 @@ function renderModelPicker(){
     const sumImage = document.getElementById('sumImage');
     const sumChat = document.getElementById('sumChat');
     const sumVideo = document.getElementById('sumVideo');
+    const sumUnknown = document.getElementById('sumUnknown');
     const sumUnsel = document.getElementById('sumUnsel');
     if(sumImage){ sumImage.textContent = `生图 ${selecteds.image}`; sumImage.classList.toggle('picker-sum-chip-empty', selecteds.image === 0); }
     if(sumChat){ sumChat.textContent = `LLM ${selecteds.chat}`; sumChat.classList.toggle('picker-sum-chip-empty', selecteds.chat === 0); }
     if(sumVideo){ sumVideo.textContent = `视频 ${selecteds.video}`; sumVideo.classList.toggle('picker-sum-chip-empty', selecteds.video === 0); }
+    if(sumUnknown){ sumUnknown.textContent = `未知 ${totals.unknown}`; sumUnknown.classList.toggle('picker-sum-chip-empty', totals.unknown === 0); }
     if(sumUnsel){ sumUnsel.textContent = `未选 ${totals.all - selecteds.all}`; }
 }
 function togglePickerRow(id){
+    if(pickerState.category[id] === 'unknown') return;
     pickerState.selected[id] = !pickerState.selected[id];
     renderModelPicker();
 }
@@ -3432,16 +3454,24 @@ function selectPickerCat(cat){
     document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === cat));
     renderModelPicker();
 }
+function setPickerCategoryByIndex(index, category){
+    const id = pickerVisibleIds[index];
+    const next = String(category || '').toLowerCase();
+    if(typeof id !== 'string' || !['image', 'chat', 'video', 'unknown'].includes(next)) return;
+    pickerState.category[id] = next;
+    pickerState.selected[id] = next !== 'unknown';
+    renderModelPicker();
+}
 function applyModelPicker(){
     const item = provider(); if(!item) return;
     const image = [], chat = [], video = [];
     const modelNames = {};
     Object.entries(pickerState.selected).forEach(([id, sel]) => {
         if(!sel) return;
-        const cat = pickerState.category[id];
+        const cat = pickerState.category[id] || 'unknown';
         if(cat === 'image') image.push(id);
         else if(cat === 'video') video.push(id);
-        else chat.push(id);
+        else if(cat === 'chat') chat.push(id);
         const label = modelDisplayName(id, item);
         if(label && label !== id) modelNames[id] = label;
     });
@@ -3472,9 +3502,9 @@ async function clearKeyOnly(){
     const ok = await saveProviders();
     if(ok) keyInput.value = '';
 }
-const FIXED_PROTOCOL_PROVIDER_IDS = new Set(['modelscope', 'volcengine', 'runninghub']);
+const FIXED_PROTOCOL_PROVIDER_IDS = new Set(['modelscope', 'volcengine', 'runninghub', 'grok2api']);
 function providerSupportsModelProtocol(item){
-    return Boolean(item) && !FIXED_PROTOCOL_PROVIDER_IDS.has(item.id);
+    return Boolean(item) && !FIXED_PROTOCOL_PROVIDER_IDS.has(item.id) && !isGrok2apiProtocol(item.protocol);
 }
 function modelProtocolSelectHtml(kind, index, model, item){
     if(!providerSupportsModelProtocol(item)) return '';

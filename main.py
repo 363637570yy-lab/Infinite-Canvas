@@ -3718,6 +3718,11 @@ def display_title(text):
     title = re.sub(r"\s+", " ", text or "").strip()
     return title[:24] or "新对话"
 
+def chat_completion_endpoint(base_url):
+    value = str(base_url or "").strip().rstrip("/")
+    return value if value.endswith("/chat/completions") else f"{value}/chat/completions"
+
+
 def resolve_chat_provider(provider: str, model: str, ms_model: str):
     if provider == "modelscope":
         clean_token = modelscope_api_key()
@@ -3735,6 +3740,12 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
     base_root = (api_provider.get("base_url") or AI_BASE_URL).rstrip("/")
     if not base_root:
         raise HTTPException(status_code=400, detail=f"{api_provider.get('name') or api_provider['id']} 未配置 Base URL")
+    requested_model = str(model or "").strip()
+    if is_grok2api_provider(api_provider) and not requested_model and not (api_provider.get("chat_models") or []):
+        raise HTTPException(
+            status_code=400,
+            detail="Grok2API 尚未配置聊天模型；请先在模型选择器中把上游明确声明为聊天的模型导入，或手动填写模型 ID。",
+        )
     default_model = preferred_chat_model(api_provider)
     mdl = selected_model(model, default_model)
     protocol = effective_protocol(api_provider, mdl)
@@ -3746,6 +3757,8 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
         base = base_root if base_root.endswith("/api/v3") else base_root + "/api/v3"
     elif protocol == "runninghub":
         base = RUNNINGHUB_LLM_BASE_URL
+    elif protocol == GROK2API_PROTOCOL:
+        base = grok2api.grok2api_chat_completions_url(base_root)
     else:
         base = base_root if base_root.endswith("/v1") else base_root + "/v1"
     hdrs = api_headers(provider=api_provider, model=mdl)
@@ -4504,7 +4517,7 @@ def provider_protocol(provider):
 # 单模型可覆盖的协议（可共用同一站点的 Base URL + Key）
 PER_MODEL_PROTOCOL_OPTIONS = {"openai", "gemini", "grok"}
 # 协议固定、不支持单模型覆盖的内置平台
-FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub"}
+FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub", "grok2api"}
 
 def normalize_model_protocols(value):
     """规整 {模型名: 协议} 覆盖表，仅保留允许的单模型协议。"""
@@ -4532,7 +4545,7 @@ def effective_protocol(provider, model=""):
     """返回某模型实际生效的协议：优先单模型覆盖，否则用平台全局协议。"""
     base = provider_protocol(provider)
     pid = str((provider or {}).get("id") or "").strip().lower()
-    if pid in FIXED_PROTOCOL_PROVIDER_IDS:
+    if pid in FIXED_PROTOCOL_PROVIDER_IDS or is_grok2api_protocol(base):
         return base
     overrides = (provider or {}).get("model_protocols")
     if isinstance(overrides, dict):
@@ -9490,7 +9503,7 @@ def _ai_image_ext(raw, declared_type=""):
         return ".webp"
     return ".png"
 
-async def save_ai_image_to_output(image_data, prefix="online_", category="output"):
+async def save_ai_image_to_output(image_data, prefix="online_", category="output", extra_headers=None):
     stem = f"{prefix}{uuid.uuid4().hex[:10]}"
     if image_data["type"] == "b64":
         raw = base64.b64decode(image_data["value"])
@@ -9505,7 +9518,7 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
     try:
         timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(value)
+            response = await client.get(value, headers=extra_headers or {})
             response.raise_for_status()
             filename = f"{stem}{_ai_image_ext(response.content, response.headers.get('Content-Type', ''))}"
             with open(output_path_for(filename, category), "wb") as f:
@@ -11300,6 +11313,17 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider)
     if is_volcengine_provider(provider):
         return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider)
+    if is_grok2api_provider(provider):
+        return await generate_grok2api_image(
+            prompt,
+            size,
+            quality,
+            model,
+            reference_images,
+            provider,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+        )
     # Grok 图像：protocol=grok 或（土豆站点 + grok-imagine-image* 模型名）都路由到专用处理器。
     # 后者按模型名兜底，避免依赖会被前端设置页覆盖的 model_protocols 配置。
     if is_grok_provider(provider, model) or (
@@ -11735,7 +11759,7 @@ async def decide_chat_agent_action(payload, conversation, refs):
             if is_apimart_provider(provider_cfg):
                 req_body["stream"] = False
             response = await client.post(
-                f"{chat_base}/chat/completions",
+                chat_completion_endpoint(chat_base),
                 headers=chat_hdrs,
                 json=req_body,
             )
@@ -11789,7 +11813,7 @@ async def build_chat_text_reply(payload, conversation):
             req_body = {"model": model, "messages": upstream_messages}
             if is_apimart:
                 req_body["stream"] = False
-            response = await client.post(f"{chat_base}/chat/completions", headers=chat_hdrs, json=req_body)
+            response = await client.post(chat_completion_endpoint(chat_base), headers=chat_hdrs, json=req_body)
             response.raise_for_status()
             raw = response.json()
     except httpx.HTTPStatusError as exc:
@@ -13523,7 +13547,7 @@ async def probe_openai_models_endpoint(client, base_url: str, api_key: str):
     if looks_like_html_response(response.text):
         return False, {"status": response.status_code, "message": "OpenAI /v1/models 返回网页 HTML，请检查请求地址是否为 API Base URL", "raw": raw}
     if response.status_code < 300:
-        grouped, ids = parse_upstream_models(raw, "openai") if isinstance(raw, dict) else ({"image": [], "chat": [], "video": []}, [])
+        grouped, ids = parse_upstream_models(raw, "openai") if isinstance(raw, dict) else ({"image": [], "chat": [], "video": [], "unknown": []}, [])
         grouped, ids = apply_agnes_model_defaults(base_url, grouped, ids)
         grouped = apply_locked_recommended_model_rules(base_url, grouped)
         return True, {
@@ -13534,6 +13558,7 @@ async def probe_openai_models_endpoint(client, base_url: str, api_key: str):
             "image_models": grouped["image"],
             "chat_models": grouped["chat"],
             "video_models": grouped["video"],
+            "unknown_models": grouped.get("unknown", []),
             "all": ids,
         }
     if 400 <= response.status_code < 500:
@@ -13628,6 +13653,7 @@ async def probe_pidoi_endpoint(client, base_url: str, api_key: str):
             "image_models": grouped["image"],
             "chat_models": grouped["chat"],
             "video_models": grouped["video"],
+            "unknown_models": grouped.get("unknown", []),
             "all": ids,
         })
     result["protocol"] = PIDOI_PROTOCOL
@@ -13649,6 +13675,7 @@ async def probe_megabyai_endpoint(client, base_url: str, api_key: str):
             "image_models": grouped["image"],
             "chat_models": grouped["chat"],
             "video_models": grouped["video"],
+            "unknown_models": grouped.get("unknown", []),
             "all": ids,
         })
     result["protocol"] = MEGABYAI_PROTOCOL
@@ -13659,7 +13686,7 @@ async def probe_megabyai_endpoint(client, base_url: str, api_key: str):
     return result
 
 async def probe_grok2api_endpoint(client, base_url: str, api_key: str):
-    """验证 Grok2API 的 Bearer /v1/models，不调用会产生费用的视频 POST。"""
+    """验证 Grok2API 的 Bearer /v1/models，不调用会产生费用的生成 POST。"""
     ok, result = await probe_openai_models_endpoint(client, grok2api.grok2api_api_root(base_url), api_key)
     result = dict(result or {})
     result["ok"] = bool(ok)
@@ -13670,16 +13697,17 @@ async def probe_grok2api_endpoint(client, base_url: str, api_key: str):
             "image_models": grouped["image"],
             "chat_models": grouped["chat"],
             "video_models": grouped["video"],
+            "unknown_models": grouped.get("unknown", []),
             "all": ids,
         })
     result["protocol"] = GROK2API_PROTOCOL
     if ok:
         result["message"] = (
-            f"Grok2API 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型；"
-            "若上游未返回视频能力字段，请手动把视频模型加入视频模型列表"
+            f"Grok2API 聊天 / 图片 / 图片编辑 / 视频协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型；"
+            "若上游未返回能力字段，模型会显示为未知，请手动确认分类"
         )
     else:
-        result["message"] = f"Grok2API 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+        result["message"] = f"Grok2API 协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
 async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
@@ -13776,7 +13804,7 @@ def parse_upstream_models(raw, protocol="openai"):
                 mid = mid[len("models/"):]
             ids.append(mid)
     ids = sorted(set(ids))
-    grouped = {"image": [], "chat": [], "video": []}
+    grouped = {"image": [], "chat": [], "video": [], "unknown": []}
     metadata_by_id = {}
     uses_metadata = (
         is_chre3_video_protocol(protocol)
@@ -13923,6 +13951,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
                 "image_models": grouped["image"],
                 "chat_models": grouped["chat"],
                 "video_models": grouped["video"],
+                "unknown_models": grouped.get("unknown", []),
                 "all": ids,
                 "image_request_mode": detect_image_request_mode(base_url, ids) or normalize_image_request_mode(getattr(payload, "image_request_mode", "")),
             }
@@ -14065,11 +14094,12 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "ok": bool(probe.get("ok")),
                 "protocol": protocol,
                 "status_code": probe.get("status") or 0,
-                "message": probe.get("message") or "Grok2API 视频协议验证完成",
+                "message": probe.get("message") or "Grok2API 聊天 / 图片 / 图片编辑 / 视频协议验证完成",
                 "model_count": probe.get("model_count") or 0,
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
                 "video_models": probe.get("video_models") or [],
+                "unknown_models": probe.get("unknown_models") or [],
                 "all": probe.get("all") or [],
                 "raw": probe.get("raw"),
             }
@@ -14186,6 +14216,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "image_models": openai_probe.get("image_models") or [],
                 "chat_models": openai_probe.get("chat_models") or [],
                 "video_models": openai_probe.get("video_models") or [],
+                "unknown_models": openai_probe.get("unknown_models") or [],
                 "all": openai_probe.get("all") or [],
                 "image_request_mode": detect_image_request_mode(base_url, openai_probe.get("all") or []) or normalize_image_request_mode(getattr(payload, "image_request_mode", "")),
             }
@@ -14193,7 +14224,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
         raise HTTPException(status_code=502, detail=str(e)[:300])
 
 async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str = "openai", image_request_mode: str = "openai"):
-    """从上游模型列表端点拉取模型，并按名称做轻量分类。"""
+    """从上游模型列表端点拉取模型；能力字段明确时分类，否则保留 unknown。"""
     protocol = protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else "openai"
     if protocol == "codex":
         status = await codex_status()
@@ -14319,6 +14350,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         "image_models": grouped["image"],
         "chat_models": grouped["chat"],
         "video_models": grouped["video"],
+        "unknown_models": grouped.get("unknown", []),
         "all": ids,
         "image_request_mode": detect_image_request_mode(base_url, ids) or normalize_image_request_mode(image_request_mode),
     }
@@ -14347,11 +14379,21 @@ async def fetch_upstream_models(provider_id: str):
 
 async def build_online_image_result(payload: OnlineImageRequest):
     provider = get_api_provider(payload.provider_id)
+    requested_model = str(payload.model or "").strip()
+    if is_grok2api_provider(provider) and not requested_model and not (provider.get("image_models") or []):
+        raise HTTPException(
+            status_code=400,
+            detail="Grok2API 尚未配置生图模型；请先在模型选择器中把上游明确声明为生图模型，或手动填写模型 ID。",
+        )
     default_model = (provider.get("image_models") or [IMAGE_MODEL])[0]
     model = selected_model(payload.model, default_model)
     request_size = snap_size_to_multiple(payload.size, 16)
-    refs = [ref.dict() for ref in payload.reference_images if ref.url]
-    image_refs = image_references(refs)
+    refs = [
+        ref.dict()
+        for ref in payload.reference_images
+        if str(ref.url or "").strip() or str(ref.file_id or "").strip()
+    ]
+    image_refs = refs if is_grok2api_provider(provider) else image_references(refs)
     count = max(1, min(8, int(payload.n or 1)))
     operation = str(getattr(payload, "operation", "") or "").strip().lower()
     if operation == "upscale":
@@ -14388,7 +14430,8 @@ async def build_online_image_result(payload: OnlineImageRequest):
         local_urls = []
         local_items = []
         for item in image_items:
-            local_url = await save_ai_image_to_output(item, prefix="online_")
+            download_headers = grok2api_image_download_headers(provider, item) if is_grok2api_provider(provider) else None
+            local_url = await save_ai_image_to_output(item, prefix="online_", extra_headers=download_headers)
             if local_url:
                 local_urls.append(local_url)
                 local_items.append(image_output_meta(local_url, item))
@@ -16563,10 +16606,22 @@ def grok2api_api_key(provider):
         )
     return api_key
 
-def make_grok2api_resolver():
+def make_grok2api_resolver(label="Grok2API 视频"):
     async def public_url_of(value, kind, index):
-        return await sd2_public_reference_url(value, kind, index, label="Grok2API 视频")
+        return await sd2_public_reference_url(value, kind, index, label=label)
     return public_url_of
+
+
+def grok2api_image_download_headers(provider, image_data):
+    """只给同一 Grok2API 主机的图片下载附加鉴权，避免把 Key 发给外部 CDN。"""
+    if not isinstance(image_data, dict) or image_data.get("type") != "url":
+        return {}
+    image_url = str(image_data.get("value") or "").strip()
+    image_host = urllib.parse.urlsplit(image_url).netloc.lower()
+    base_host = urllib.parse.urlsplit(grok2api.grok2api_api_root(provider.get("base_url"))).netloc.lower()
+    if not image_host or image_host != base_host:
+        return {}
+    return {"Authorization": bearer_auth_value(grok2api_api_key(provider))}
 
 def grok2api_response_error_text(response):
     text = str(getattr(response, "text", "") or "").strip()
@@ -16577,6 +16632,7 @@ def grok2api_response_error_text(response):
     return grok2api.grok2api_error_text(raw, text)
 
 GROK2API_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=20.0)
+GROK2API_IMAGE_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)
 GROK2API_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
 GROK2API_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
 try:
@@ -16588,6 +16644,66 @@ try:
     )
 except (TypeError, ValueError):
     GROK2API_VIDEO_POLL_TIMEOUT = float(2 * 60 * 60 + 5 * 60)
+
+
+async def generate_grok2api_image(
+    prompt,
+    size,
+    quality,
+    requested_model,
+    reference_images,
+    provider,
+    aspect_ratio="",
+    resolution="",
+    client=None,
+):
+    """调用 Grok2API 的同步 OpenAI 图片 JSON 接口，参考图走 /images/edits。"""
+    grok2api_api_key(provider)
+    base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Grok2API 未配置 Base URL，请在 API 平台管理中填写。")
+    refs = list(reference_images or [])
+    body = await grok2api.build_grok2api_image_request(
+        prompt,
+        requested_model,
+        size=size,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        reference_images=refs,
+        quality=quality,
+        count=1,
+        response_format="url",
+        resolve_ref=make_grok2api_resolver("Grok2API 图片"),
+    )
+    endpoint = (
+        grok2api.grok2api_image_edit_url(base_url)
+        if refs
+        else grok2api.grok2api_image_generation_url(base_url)
+    )
+
+    async def submit(active_client):
+        response = await active_client.post(
+            endpoint,
+            headers=api_headers(provider=provider, model=requested_model),
+            json=body,
+            timeout=GROK2API_IMAGE_REQUEST_TIMEOUT,
+        )
+        if response.status_code >= 400:
+            detail = grok2api_response_error_text(response)
+            raise HTTPException(status_code=response.status_code, detail=f"Grok2API 图片接口错误：{detail}")
+        try:
+            raw = response.json()
+        except Exception as exc:
+            text = str(getattr(response, "text", "") or "")[:500]
+            raise HTTPException(status_code=502, detail=f"Grok2API 图片接口返回非 JSON 响应：{text}") from exc
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail=f"Grok2API 图片接口返回了无法识别的响应：{str(raw)[:500]}")
+        return extract_image(raw), raw
+
+    if client is not None:
+        return await submit(client)
+    async with httpx.AsyncClient(timeout=GROK2API_IMAGE_REQUEST_TIMEOUT) as active_client:
+        return await submit(active_client)
 
 async def wait_for_grok2api_video_task(client, provider, base_url, task_id, model):
     """轮询 Grok2API 的 /v1/videos/{request_id}，不回退到通用 /v1/tasks。
@@ -17563,7 +17679,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
             if _is_apimart:
                 req_body["stream"] = False   # APIMart 默认流式，强制关闭
             response = await client.post(
-                f"{chat_base}/chat/completions",
+                chat_completion_endpoint(chat_base),
                 headers=chat_hdrs,
                 json=req_body,
             )
@@ -18587,7 +18703,7 @@ async def caption_image_with_provider(abs_path, prompt, provider_id, model, ms_m
             if is_apimart:
                 req_body["stream"] = False
             response = await client.post(
-                f"{chat_base}/chat/completions",
+                chat_completion_endpoint(chat_base),
                 headers=chat_hdrs,
                 json=req_body,
             )
@@ -19141,7 +19257,7 @@ async def chat(payload: ChatRequest, request: Request, x_user_id: str = Header(d
                 if _conv_is_apimart:
                     conv_req_body["stream"] = False
                 response = await client.post(
-                    f"{chat_base}/chat/completions",
+                    chat_completion_endpoint(chat_base),
                     headers=chat_hdrs,
                     json=conv_req_body,
                 )
@@ -19371,7 +19487,7 @@ async def chat_agent_stream(payload: ChatRequest, request: Request, x_user_id: s
             async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                 async with client.stream(
                     "POST",
-                    f"{chat_base}/chat/completions",
+                    chat_completion_endpoint(chat_base),
                     headers=chat_hdrs,
                     json={"model": model, "messages": upstream_messages, "stream": True},
                 ) as response:
@@ -19520,7 +19636,7 @@ async def chat_stream(payload: ChatRequest, request: Request, x_user_id: str = H
             async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                 async with client.stream(
                     "POST",
-                    f"{chat_base}/chat/completions",
+                    chat_completion_endpoint(chat_base),
                     headers=chat_hdrs,
                     json={"model": model, "messages": upstream_messages, "stream": True},
                 ) as response:

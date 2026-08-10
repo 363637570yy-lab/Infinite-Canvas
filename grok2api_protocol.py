@@ -1,8 +1,7 @@
-"""Grok2API 视频协议的纯逻辑。
+"""Grok2API 的纯协议逻辑。
 
-Grok2API 使用严格的 JSON 视频合同：POST /v1/videos/generations 创建任务，
-GET /v1/videos/{request_id} 查询，GET /v1/videos/{request_id}/content 取片。
-本模块只负责字段映射、能力分类、URL 构造和响应归一化，不反向导入 main.py。
+Grok2API 的视频、图片和聊天接口都使用独立的 JSON 合同。本模块只负责
+字段映射、能力分类、URL 构造和响应归一化，不反向导入 main.py。
 """
 
 import base64
@@ -22,6 +21,26 @@ GROK2API_DEFAULT_DURATION = 8
 GROK2API_MIN_DURATION = 1
 GROK2API_MAX_DURATION = 15
 GROK2API_MAX_IMAGE_REFS = 8
+GROK2API_IMAGE_ASPECT_RATIOS = {
+    "auto",
+    "1:1",
+    "16:9",
+    "9:16",
+    "4:3",
+    "3:4",
+    "3:2",
+    "2:3",
+    "2:1",
+    "1:2",
+    "19.5:9",
+    "9:19.5",
+    "20:9",
+    "9:20",
+}
+GROK2API_IMAGE_EDIT_SIZES = {"auto", "1024x1024", "1024x1536", "1536x1024"}
+GROK2API_IMAGE_RESOLUTIONS = {"1k", "2k"}
+GROK2API_IMAGE_EDIT_RESOLUTIONS = {"1k", "2k"}
+GROK2API_IMAGE_RESPONSE_FORMATS = {"url", "b64_json"}
 GROK2API_INPUT_ASSET_PREFIX = "input_"
 GROK2API_INPUT_ASSET_BYTES = 24
 
@@ -62,10 +81,27 @@ def grok2api_video_content_url(base_url, request_id):
     return f"{grok2api_api_root(base_url)}/v1/videos/{quoted}/content"
 
 
+def grok2api_chat_completions_url(base_url=""):
+    return f"{grok2api_api_root(base_url)}/v1/chat/completions"
+
+
+def grok2api_image_generation_url(base_url=""):
+    return f"{grok2api_api_root(base_url)}/v1/images/generations"
+
+
+def grok2api_image_edit_url(base_url=""):
+    return f"{grok2api_api_root(base_url)}/v1/images/edits"
+
+
 def classify_grok2api_model_entry(item, model_id=""):
-    """只按上游能力字段分类；没有能力字段时保持未知/聊天，不按名称猜视频。"""
+    """只按上游明确的能力字段分类；缺失能力字段时返回 unknown。
+
+    Grok2API 当前公开的 /v1/models 通常只有模型 ID，不能据模型名推断
+    图片、视频或聊天能力。保留 unknown 能让调用方显式处理，而不是静默
+    把模型放进错误的请求链路。
+    """
     if not isinstance(item, dict):
-        return "chat"
+        return "unknown"
 
     values = []
     for key in (
@@ -73,6 +109,9 @@ def classify_grok2api_model_entry(item, model_id=""):
         "capabilities",
         "supported_modalities",
         "modalities",
+        "output_modalities",
+        "supported_operations",
+        "operations",
     ):
         value = item.get(key)
         if isinstance(value, dict):
@@ -82,16 +121,26 @@ def classify_grok2api_model_entry(item, model_id=""):
         elif isinstance(value, str):
             values.append(value.strip().lower())
 
-    for key in ("type", "model_type", "modelType", "capability"):
+    for key in ("type", "model_type", "modelType", "capability", "endpoint_type", "endpointType"):
         value = item.get(key)
-        if isinstance(value, (str, int, float)):
+        if isinstance(value, dict):
+            values.extend(str(name).strip().lower() for name, enabled in value.items() if enabled)
+        elif isinstance(value, (str, int, float)):
             values.append(str(value).strip().lower())
+        elif isinstance(value, list):
+            values.extend(str(part).strip().lower() for part in value)
 
     if any("video" in value or value in {"t2v", "i2v", "s2v"} for value in values):
         return "video"
-    if any("image" in value for value in values):
+    if any("image" in value or value in {"t2i", "iti", "edit_image", "image_edit"} for value in values):
         return "image"
-    return "chat"
+    if any(
+        "chat" in value
+        or value in {"llm", "text", "completion", "completions", "response", "responses", "text_generation"}
+        for value in values
+    ):
+        return "chat"
+    return "unknown"
 
 
 def _reference_locator(ref):
@@ -263,6 +312,161 @@ async def build_grok2api_video_request(payload, requested_model, resolve_ref=Non
         body["image"] = image_inputs[0]
         if len(image_inputs) > 1:
             body["reference_images"] = image_inputs[1:]
+    return body
+
+
+def _image_count(value):
+    if value in (None, ""):
+        return 1
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Grok2API 图片数量 n 必须是整数。")
+    if not 1 <= count <= 10:
+        raise HTTPException(status_code=400, detail="Grok2API 图片数量 n 必须在 1-10 之间。")
+    return count
+
+
+def _image_response_format(value):
+    result = str(value or "url").strip().lower() or "url"
+    if result not in GROK2API_IMAGE_RESPONSE_FORMATS:
+        choices = ", ".join(sorted(GROK2API_IMAGE_RESPONSE_FORMATS))
+        raise HTTPException(status_code=400, detail=f"Grok2API 图片 response_format 不支持「{result}」；可选值：{choices}。")
+    return result
+
+
+def _image_aspect_ratio(value, size=""):
+    result = str(value or "").strip().lower()
+    aliases = {
+        "square": "1:1",
+        "portrait": "2:3",
+        "landscape": "3:2",
+        "portrait43": "3:4",
+        "landscape43": "4:3",
+        "story": "9:16",
+        "wide": "16:9",
+    }
+    result = aliases.get(result, result)
+    if not result and str(size or "").strip():
+        size_aliases = {
+            "auto": "auto",
+            "1024x1024": "1:1",
+            "1280x720": "16:9",
+            "720x1280": "9:16",
+            "1536x1024": "3:2",
+            "1792x1024": "3:2",
+            "1024x1536": "2:3",
+            "1024x1792": "2:3",
+        }
+        result = size_aliases.get(str(size).strip().lower(), "")
+        if not result:
+            raise HTTPException(
+                status_code=400,
+                detail="Grok2API 图片 size 不能单独使用该尺寸；请同时提供受支持的 aspect_ratio。",
+            )
+    if result and result not in GROK2API_IMAGE_ASPECT_RATIOS:
+        choices = ", ".join(sorted(GROK2API_IMAGE_ASPECT_RATIOS))
+        raise HTTPException(status_code=400, detail=f"Grok2API 图片不支持画幅「{result}」；可选值：{choices}。")
+    return result
+
+
+def _image_resolution(value, editing=False):
+    result = str(value or "1k").strip().lower() or "1k"
+    choices_set = GROK2API_IMAGE_EDIT_RESOLUTIONS if editing else GROK2API_IMAGE_RESOLUTIONS
+    if result not in choices_set:
+        choices = ", ".join(sorted(choices_set))
+        raise HTTPException(status_code=400, detail=f"Grok2API 图片不支持清晰度「{result}」；可选值：{choices}。")
+    return result
+
+
+def _image_size(value, editing):
+    result = str(value or "").strip().lower().replace("*", "x").replace("×", "x")
+    if editing and result and result not in GROK2API_IMAGE_EDIT_SIZES:
+        choices = ", ".join(sorted(GROK2API_IMAGE_EDIT_SIZES))
+        raise HTTPException(status_code=400, detail=f"Grok2API 图片编辑 size 不支持「{result}」；可选值：{choices}。")
+    return result
+
+
+def _reject_unsupported_image_options(quality):
+    value = str(quality or "").strip().lower()
+    if value and value != "auto":
+        raise HTTPException(
+            status_code=400,
+            detail="Grok2API 图片合同未提供 quality 参数；请将质量设为自动，避免静默改变上游默认值。",
+        )
+
+
+async def _resolve_image_reference(resolve_ref, value, index):
+    resolved = await resolve_ref(value, "图片", index) if resolve_ref else value
+    text = str(resolved or "").strip()
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Grok2API 第 {index} 个图片参考素材没有得到有效的公网 http(s) URL。",
+        )
+    return text
+
+
+async def build_grok2api_image_request(
+    prompt,
+    requested_model,
+    size="",
+    aspect_ratio="",
+    resolution="",
+    reference_images=None,
+    quality="",
+    count=1,
+    response_format="url",
+    resolve_ref=None,
+):
+    """构造 Grok2API /images/generations 或 /images/edits 的 JSON 请求体。"""
+    model = str(requested_model or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="Grok2API 图片模型名称不能为空。")
+    text_prompt = str(prompt or "").strip()
+    if not text_prompt:
+        raise HTTPException(status_code=400, detail="Grok2API 图片 prompt 不能为空。")
+
+    _reject_unsupported_image_options(quality)
+    refs = [ref for ref in (reference_images or []) if ref is not None]
+    if len(refs) > GROK2API_MAX_IMAGE_REFS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Grok2API 图片参考素材最多 {GROK2API_MAX_IMAGE_REFS} 张，当前为 {len(refs)} 张；不会静默截断。",
+        )
+    image_inputs = []
+    for index, ref in enumerate(refs, 1):
+        kind, value = _reference_locator(ref)
+        if kind != "url":
+            raise HTTPException(
+                status_code=400,
+                detail="Grok2API 图片编辑当前只接受 image.url，不接受 file_id；请使用公网图片 URL。",
+            )
+        image_inputs.append({"url": await _resolve_image_reference(resolve_ref, value, index)})
+
+    editing = bool(image_inputs)
+    normalized_count = _image_count(count)
+    body = {
+        "model": model,
+        "prompt": text_prompt,
+        "n": normalized_count,
+        "response_format": _image_response_format(response_format),
+    }
+    normalized_size = _image_size(size, editing)
+    normalized_aspect = _image_aspect_ratio(aspect_ratio, size)
+    normalized_resolution = _image_resolution(resolution, editing)
+    if normalized_size:
+        body["size"] = normalized_size
+    if normalized_aspect:
+        body["aspect_ratio"] = normalized_aspect
+    if normalized_resolution:
+        body["resolution"] = normalized_resolution
+    if editing:
+        if len(image_inputs) == 1:
+            body["image"] = image_inputs[0]
+        else:
+            body["images"] = image_inputs
     return body
 
 

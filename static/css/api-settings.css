@@ -318,6 +318,11 @@ body.studio-theme-dark .picker-model-badge { background:var(--panel); border-col
 .picker-model-label { font-size:13px; line-height:1.25; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .picker-model-id { margin-top:2px; color:var(--faint); font-size:10.5px; line-height:1.25; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 .picker-row.has-sel .picker-model-name { font-weight:850; }
+.picker-model-category { flex:0 0 auto; min-width:76px; text-align:right; }
+.picker-category-label { color:var(--muted); font-size:10px; font-weight:850; white-space:nowrap; }
+.picker-category-select { width:76px; height:28px; padding:0 6px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); font-size:10px; font-weight:800; outline:none; }
+.picker-category-select:focus { border-color:var(--text); }
+body.studio-theme-dark .picker-category-select { border-color:var(--line-strong); background:var(--panel); color:var(--text); }
 /* 当前模型在其他类别中也被选中时，右侧显示提示标签 */
 .picker-other-cats { display:flex; gap:4px; flex:0 0 auto; }
 .picker-other-tag { font-size:9.5px; font-weight:800; padding:2px 6px; border-radius:5px; letter-spacing:.04em; }

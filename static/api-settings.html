@@ -140,11 +140,13 @@
                                 </div>
                                 <div class="grok2api-hint">
                                     <span class="ms-line">Grok2API 地址示例：<span class="inline-code">http://127.0.0.1:8000</span>，免费验证只请求 <span class="inline-code">GET /v1/models</span>。</span>
+                                    <span class="ms-line">聊天使用 <span class="inline-code">POST /v1/chat/completions</span>；图片使用 <span class="inline-code">POST /v1/images/generations</span>，图片编辑使用 <span class="inline-code">POST /v1/images/edits</span>。</span>
+                                    <span class="ms-line">生图与图片编辑都支持 <span class="inline-code">aspect_ratio</span>、<span class="inline-code">resolution=1k/2k</span>；图片编辑 JSON 参考图使用 <span class="inline-code">image.url</span> 或 <span class="inline-code">images[].url</span>，最多 8 张。</span>
                                     <span class="ms-line">视频使用严格 JSON：<span class="inline-code">POST /v1/videos/generations</span> → <span class="inline-code">GET /v1/videos/{request_id}</span>，完成后由后端带 Bearer Key 下载 <span class="inline-code">/content</span>。</span>
                                     <span class="ms-line"><span class="inline-code">duration</span> 支持 1–15 秒；协议未传时默认 8 秒，但当前画布会显式发送 5 秒。<span class="inline-code">aspect_ratio</span> 默认 16:9，<span class="inline-code">resolution</span> 支持 480p / 720p / 1080p。</span>
                                     <span class="ms-line">单图发送 <span class="inline-code">image.url</span>；多图发送首图加 <span class="inline-code">reference_images</span>，合计最多 8 张。本地参考图会先转换为公网 URL。</span>
-                                    <span class="ms-line">如直接使用该站上传的临时素材，<span class="inline-code">file_id</span> 必须是该站签发的 <span class="inline-code">input_*</span> ID；不能把本地路径或其它平台的素材 ID 当作 file_id。</span>
-                                    <span class="ms-line">当前 <span class="inline-code">/v1/models</span> 主要返回 id/归属字段，未声明视频能力时不会按模型名猜测；请手动把 <span class="inline-code">grok-imagine-video</span> 或 <span class="inline-code">grok-imagine-video-1.5</span> 加入视频模型列表。</span>
+                                    <span class="ms-line">视频参考图可用公网 <span class="inline-code">image.url</span> 或该站签发的 <span class="inline-code">input_*</span> <span class="inline-code">file_id</span>；图片编辑当前不接受 <span class="inline-code">file_id</span>。</span>
+                                    <span class="ms-line"><span class="inline-code">/v1/models</span> 通常只有 id/归属字段，能力不明确的模型会进入“未知”；请在模型选择器中手动归类为聊天、生图或视频，不按名称猜测。</span>
                                     <span class="ms-line">不支持参考视频、参考音频、首尾帧、音频开关及未定义的视频参数；这些输入会在提交前明确拦截。</span>
                                 </div>
                             </label>
@@ -325,7 +327,7 @@
                                         <option value="zexi" data-i18n="api.protocolZexi">泽西同学协议（视频+图片）</option>
                                         <option value="pidoi" data-i18n="api.protocolPidoi">视频：Pidoi 协议</option>
                                         <option value="megabyai" data-i18n="api.protocolMegabyai">视频：MegabyAI 协议</option>
-                                        <option value="grok2api" data-i18n="api.protocolGrok2api">视频：Grok2API 协议</option>
+                                         <option value="grok2api" data-i18n="api.protocolGrok2api">聊天 / 图片 / 视频：Grok2API 协议</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>
@@ -486,6 +488,7 @@
                     <button class="picker-cat-tab" data-cat="image" onclick="selectPickerCat('image')">生图 <span class="cat-count">0</span></button>
                     <button class="picker-cat-tab" data-cat="chat" onclick="selectPickerCat('chat')">LLM <span class="cat-count">0</span></button>
                     <button class="picker-cat-tab" data-cat="video" onclick="selectPickerCat('video')">视频 <span class="cat-count">0</span></button>
+                    <button class="picker-cat-tab" data-cat="unknown" onclick="selectPickerCat('unknown')">未知 <span class="cat-count">0</span></button>
                 </div>
             </div>
             <div id="pickerList" class="picker-body"></div>
@@ -494,6 +497,7 @@
                 <span id="sumImage" class="picker-sum-chip picker-sum-chip-empty">生图 0</span>
                 <span id="sumChat" class="picker-sum-chip picker-sum-chip-empty">聊天 0</span>
                 <span id="sumVideo" class="picker-sum-chip picker-sum-chip-empty">视频 0</span>
+                <span id="sumUnknown" class="picker-sum-chip picker-sum-chip-empty">未知 0</span>
                 <span id="sumUnsel" style="margin-left:auto;color:var(--faint)">未选 0</span>
             </div>
             <div class="picker-foot">
