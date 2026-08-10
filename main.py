@@ -16948,7 +16948,7 @@ async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
     log_video_request_entry(provider, payload)
     if not str(payload.prompt or "").strip() and not (is_grok2api_provider(provider) and payload.images):
-        raise HTTPException(status_code=400, detail="文本生视频必须提供 prompt；Grok2API 图生视频可以只提供参考图。")
+        raise HTTPException(status_code=422, detail="文本生视频必须提供 prompt；Grok2API 图生视频可以只提供参考图。")
     if is_jimeng_provider(provider):
         return await generate_jimeng_video(payload, provider)
     if is_runninghub_provider(provider):

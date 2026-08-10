@@ -251,6 +251,18 @@ class Grok2ApiResponseTests(unittest.TestCase):
 
 
 class Grok2ApiCanvasTaskTests(unittest.TestCase):
+    def test_empty_video_request_returns_422(self):
+        provider = {
+            "id": "grok2api",
+            "name": "Grok2API",
+            "protocol": "grok2api",
+        }
+        with patch.object(main, "get_api_provider", return_value=provider):
+            with self.assertRaises(HTTPException) as raised:
+                run(main.canvas_video(main.CanvasVideoRequest(provider_id="grok2api")))
+
+        self.assertEqual(raised.exception.status_code, 422)
+
     def test_canvas_route_returns_a_short_lived_pending_response(self):
         provider = {
             "id": "grok2api",
