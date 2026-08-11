@@ -11864,6 +11864,7 @@ def view_image(filename: str, type: str = "input", subfolder: str = ""):
 @app.get("/api/download-output")
 def download_output(request: Request, url: str, name: str = "", inline: bool = False):
     url = rewrite_runninghub_file_url(url)
+    url = rewrite_grok2api_loopback_download_url(url)
     path = output_file_from_url(url)
     if not path:
         path = local_media_file_by_basename(filename_from_media_url(url, ""))
@@ -11879,6 +11880,17 @@ def download_output(request: Request, url: str, name: str = "", inline: bool = F
         range_header = request.headers.get("range")
         if range_header:
             upstream_headers["Range"] = range_header
+        # Grok2API 归档媒体通常公开可读；若仍落在配置的 base 主机上则补 Bearer。
+        for provider in load_api_providers():
+            if not is_grok2api_provider(provider):
+                continue
+            base_host = urllib.parse.urlsplit(grok2api.grok2api_api_root(provider.get("base_url"))).netloc.lower()
+            if base_host and base_host == parsed.netloc.lower():
+                try:
+                    upstream_headers["Authorization"] = bearer_auth_value(grok2api_api_key(provider))
+                except HTTPException:
+                    pass
+                break
         upstream = requests.get(
             url, stream=True, timeout=(10, 60),
             headers=upstream_headers,
@@ -14430,8 +14442,16 @@ async def build_online_image_result(payload: OnlineImageRequest):
         local_urls = []
         local_items = []
         for item in image_items:
-            download_headers = grok2api_image_download_headers(provider, item) if is_grok2api_provider(provider) else None
+            if is_grok2api_provider(provider):
+                item = normalize_grok2api_image_item(item, provider)
+                download_headers = grok2api_image_download_headers(provider, item)
+            else:
+                download_headers = None
             local_url = await save_ai_image_to_output(item, prefix="online_", extra_headers=download_headers)
+            # 上游 loopback 地址若仍未落盘成功，禁止把 127.0.0.1 当成功结果回给前端。
+            if local_url and str(local_url).startswith(("http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")):
+                print(f"[grok2api] 拒绝把 loopback 图片 URL 当作成功结果: {local_url}")
+                local_url = ""
             if local_url:
                 local_urls.append(local_url)
                 local_items.append(image_output_meta(local_url, item))
@@ -16612,16 +16632,53 @@ def make_grok2api_resolver(label="Grok2API 视频"):
     return public_url_of
 
 
+def normalize_grok2api_image_item(item, provider):
+    """回写 loopback 媒体 URL，避免把 127.0.0.1:8000 原样落盘到画布。"""
+    if not isinstance(item, dict) or item.get("type") != "url":
+        return item
+    raw = str(item.get("value") or "").strip()
+    rewritten = grok2api.rewrite_grok2api_media_url(raw, provider.get("base_url"))
+    if rewritten == raw:
+        return item
+    fixed = dict(item)
+    fixed["value"] = rewritten
+    return fixed
+
+
 def grok2api_image_download_headers(provider, image_data):
     """只给同一 Grok2API 主机的图片下载附加鉴权，避免把 Key 发给外部 CDN。"""
     if not isinstance(image_data, dict) or image_data.get("type") != "url":
         return {}
-    image_url = str(image_data.get("value") or "").strip()
+    image_url = grok2api.rewrite_grok2api_media_url(
+        str(image_data.get("value") or "").strip(),
+        provider.get("base_url"),
+    )
     image_host = urllib.parse.urlsplit(image_url).netloc.lower()
     base_host = urllib.parse.urlsplit(grok2api.grok2api_api_root(provider.get("base_url"))).netloc.lower()
     if not image_host or image_host != base_host:
         return {}
     return {"Authorization": bearer_auth_value(grok2api_api_key(provider))}
+
+
+def rewrite_grok2api_loopback_download_url(url: str) -> str:
+    """下载代理：把历史画布里误存的 loopback Grok2API 媒体地址改到已配置的 provider base。"""
+    text = str(url or "").strip()
+    if not grok2api.grok2api_media_path(text):
+        return text
+    parsed = urllib.parse.urlsplit(text)
+    host = (parsed.hostname or "").strip().lower()
+    if host and host not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+        return text
+    for provider in load_api_providers():
+        if not is_grok2api_provider(provider):
+            continue
+        base = str(provider.get("base_url") or "").strip()
+        if not base:
+            continue
+        rewritten = grok2api.rewrite_grok2api_media_url(text, base)
+        if rewritten != text:
+            return rewritten
+    return text
 
 def grok2api_response_error_text(response):
     text = str(getattr(response, "text", "") or "").strip()
@@ -16818,7 +16875,10 @@ async def generate_grok2api_video(client, payload, provider, base_url, requested
         timeout=GROK2API_DOWNLOAD_REQUEST_TIMEOUT,
     )
     if not _saved_ok(local_url):
-        result_urls = grok2api.grok2api_video_result_urls(result)
+        result_urls = [
+            grok2api.rewrite_grok2api_media_url(candidate, base_url)
+            for candidate in grok2api.grok2api_video_result_urls(result)
+        ]
         base_host = urllib.parse.urlsplit(grok2api.grok2api_api_root(base_url)).netloc.lower()
         print(f"[grok2api] /content 下载失败 task={task_id}，尝试 video.url 回落")
         for candidate in result_urls:

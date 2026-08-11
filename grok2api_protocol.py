@@ -124,6 +124,50 @@ def grok2api_api_root(base_url=""):
     return value
 
 
+_GROK2API_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+
+def grok2api_media_path(url=""):
+    """返回 Grok2API 媒体路径（/v1/media/... 或 /v1/videos/.../content），否则空串。"""
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    parsed = urllib.parse.urlsplit(text)
+    path = parsed.path or ""
+    if not path and text.startswith("/"):
+        path = text.split("?", 1)[0]
+    if path.startswith("/v1/media/images/") or path.startswith("/v1/media/videos/"):
+        return path
+    if path.startswith("/v1/videos/") and path.endswith("/content"):
+        return path
+    return ""
+
+
+def rewrite_grok2api_media_url(url, provider_base_url=""):
+    """把上游误写成 loopback / 相对路径的媒体 URL 回写到配置的 API 根。
+
+    Grok2API 若未配置 public API base，常返回 http://127.0.0.1:8000/v1/media/images/...
+    画布服务在容器内访问该地址会失败；浏览器端也无法加载用户本机的 127.0.0.1:8000。
+    只改写 loopback 或无主机的媒体路径，不改写其它公网 CDN。
+    """
+    text = str(url or "").strip()
+    if not text:
+        return text
+    media_path = grok2api_media_path(text)
+    if not media_path:
+        return text
+    parsed = urllib.parse.urlsplit(text)
+    host = (parsed.hostname or "").strip().lower()
+    needs_rewrite = (not host) or (host in _GROK2API_LOOPBACK_HOSTS) or (not parsed.scheme)
+    if not needs_rewrite:
+        return text
+    root = grok2api_api_root(provider_base_url)
+    if not root:
+        return text
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{root}{media_path}{query}"
+
+
 def grok2api_video_submit_url(base_url=""):
     return f"{grok2api_api_root(base_url)}/v1/videos/generations"
 

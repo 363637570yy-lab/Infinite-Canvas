@@ -31,6 +31,27 @@ async def fake_resolve(value, kind, index):
 
 
 class Grok2ApiRoutingTests(unittest.TestCase):
+    def test_loopback_media_urls_are_rewritten_to_provider_base(self):
+        loopback = "http://127.0.0.1:8000/v1/media/images/img_abc"
+        rewritten = grok2api.rewrite_grok2api_media_url(loopback, "https://gateway.example/v1")
+        self.assertEqual(rewritten, "https://gateway.example/v1/media/images/img_abc")
+        # 已是公网主机时不改写。
+        public = "https://cdn.example/v1/media/images/img_abc"
+        self.assertEqual(
+            grok2api.rewrite_grok2api_media_url(public, "https://gateway.example"),
+            public,
+        )
+        # 非媒体路径不改写。
+        self.assertEqual(
+            grok2api.rewrite_grok2api_media_url("http://127.0.0.1:8000/healthz", "https://gateway.example"),
+            "http://127.0.0.1:8000/healthz",
+        )
+        item = main.normalize_grok2api_image_item(
+            {"type": "url", "value": loopback},
+            {"base_url": "https://gateway.example"},
+        )
+        self.assertEqual(item["value"], "https://gateway.example/v1/media/images/img_abc")
+
     def test_protocol_and_urls_are_registered(self):
         provider = {"id": "grok2api", "protocol": main.GROK2API_PROTOCOL}
 
