@@ -2,6 +2,25 @@
 
 Grok2API 的视频、图片和聊天接口都使用独立的 JSON 合同。本模块只负责
 字段映射、能力分类、URL 构造和响应归一化，不反向导入 main.py。
+
+产品已接入的客户端表面（Bearer 客户端 Key）：
+  - GET  /v1/models
+  - POST /v1/chat/completions
+  - POST /v1/images/generations
+  - POST /v1/images/edits
+  - POST /v1/videos/generations
+  - GET  /v1/videos/{request_id}
+  - GET  /v1/videos/{request_id}/content
+
+有意不接的表面（上游有、本产品路径不依赖）：
+  - POST /v1/responses、/v1/responses/compact、stored response
+  - POST /v1/messages（Anthropic）
+  - 图片 stream / partial_images
+  - 管理端 /api/admin/v1/media/inputs/*（签发 input_* file_id 的入口）
+
+参考图：客户端视频/图片编辑以公网 image.url 为主路径。本地素材由后端先转
+成公网 http(s) URL。file_id 仅透传上游已签发的 input_* 临时素材 ID；
+签发接口在管理端，不在客户端 Key 合同里，本产品不会假装能本地换发 file_id。
 """
 
 import base64
@@ -44,17 +63,55 @@ GROK2API_IMAGE_RESPONSE_FORMATS = {"url", "b64_json"}
 GROK2API_INPUT_ASSET_PREFIX = "input_"
 GROK2API_INPUT_ASSET_BYTES = 24
 
-GROK2API_TERMINAL_SUCCESS_STATUSES = {"done", "completed", "succeeded", "success", "ready"}
-GROK2API_TERMINAL_FAILURE_STATUSES = {
-    "failed",
-    "failure",
-    "expired",
-    "cancelled",
-    "canceled",
-    "error",
-    "rejected",
-    "timeout",
-    "timed_out",
+# 上游公开查询 JSON 只归一成 done / failed / pending（见 inference handler
+# videoGenerationResponse）。内部 queued/in_progress/completed 不会原样出站。
+GROK2API_TERMINAL_SUCCESS_STATUSES = frozenset({"done"})
+GROK2API_TERMINAL_FAILURE_STATUSES = frozenset({"failed"})
+
+# 产品接入面。Responses / Messages / 流式出图不在此集合。
+GROK2API_SUPPORTED_CLIENT_SURFACES = frozenset(
+    {
+        "models",
+        "chat_completions",
+        "images_generations",
+        "images_edits",
+        "videos_generations",
+        "videos_get",
+        "videos_content",
+    }
+)
+GROK2API_UNSUPPORTED_CLIENT_SURFACES = frozenset(
+    {
+        "responses",
+        "responses_compact",
+        "messages",
+        "images_stream",
+        "admin_media_inputs",
+    }
+)
+
+# 官方 README 登记的固定公开模型 ID → 本系统分类（chat/image/video）。
+# 只认精确 ID，不做子串猜测；/v1/models 动态发现且未登记的 ID 仍为 unknown。
+# 来源：chenyme/grok2api README 的 Web / Console / Build 目录表。
+GROK2API_KNOWN_MODEL_CAPABILITIES = {
+    "grok-chat-fast": "chat",
+    "grok-chat-auto": "chat",
+    "grok-chat-expert": "chat",
+    "grok-chat-heavy": "chat",
+    "grok-composer-2.5-fast": "chat",
+    "grok-4.20-0309-non-reasoning": "chat",
+    "grok-4.20-0309-reasoning": "chat",
+    "grok-4.20-multi-agent-0309": "chat",
+    "grok-4.5": "chat",
+    "grok-4.3": "chat",
+    "grok-build-0.1": "chat",
+    "grok-imagine-image-lite": "image",
+    "grok-imagine-image-quality-lite": "image",
+    "grok-imagine-image-edit": "image",
+    "grok-imagine-image": "image",
+    "grok-imagine-image-quality": "image",
+    "grok-imagine-video": "video",
+    "grok-imagine-video-1.5": "video",
 }
 
 
@@ -93,43 +150,7 @@ def grok2api_image_edit_url(base_url=""):
     return f"{grok2api_api_root(base_url)}/v1/images/edits"
 
 
-def classify_grok2api_model_entry(item, model_id=""):
-    """只按上游明确的能力字段分类；缺失能力字段时返回 unknown。
-
-    Grok2API 当前公开的 /v1/models 通常只有模型 ID，不能据模型名推断
-    图片、视频或聊天能力。保留 unknown 能让调用方显式处理，而不是静默
-    把模型放进错误的请求链路。
-    """
-    if not isinstance(item, dict):
-        return "unknown"
-
-    values = []
-    for key in (
-        "supported_endpoint_types",
-        "capabilities",
-        "supported_modalities",
-        "modalities",
-        "output_modalities",
-        "supported_operations",
-        "operations",
-    ):
-        value = item.get(key)
-        if isinstance(value, dict):
-            values.extend(str(name).strip().lower() for name, enabled in value.items() if enabled)
-        elif isinstance(value, list):
-            values.extend(str(part).strip().lower() for part in value)
-        elif isinstance(value, str):
-            values.append(value.strip().lower())
-
-    for key in ("type", "model_type", "modelType", "capability", "endpoint_type", "endpointType"):
-        value = item.get(key)
-        if isinstance(value, dict):
-            values.extend(str(name).strip().lower() for name, enabled in value.items() if enabled)
-        elif isinstance(value, (str, int, float)):
-            values.append(str(value).strip().lower())
-        elif isinstance(value, list):
-            values.extend(str(part).strip().lower() for part in value)
-
+def _capability_from_field_values(values):
     if any("video" in value or value in {"t2v", "i2v", "s2v"} for value in values):
         return "video"
     if any("image" in value or value in {"t2i", "iti", "edit_image", "image_edit"} for value in values):
@@ -140,7 +161,70 @@ def classify_grok2api_model_entry(item, model_id=""):
         for value in values
     ):
         return "chat"
+    return ""
+
+
+def grok2api_catalog_capability(model_id=""):
+    """按官方固定公开模型 ID 查能力；未登记返回空串，不猜子串。"""
+    mid = str(model_id or "").strip()
+    if not mid:
+        return ""
+    if mid in GROK2API_KNOWN_MODEL_CAPABILITIES:
+        return GROK2API_KNOWN_MODEL_CAPABILITIES[mid]
+    lowered = mid.lower()
+    if lowered in GROK2API_KNOWN_MODEL_CAPABILITIES:
+        return GROK2API_KNOWN_MODEL_CAPABILITIES[lowered]
+    return ""
+
+
+def classify_grok2api_model_entry(item, model_id=""):
+    """分类优先级：上游能力字段 > 官方固定模型 ID 目录 > unknown。
+
+    不做「名字里带 video 就算视频」这类子串猜测。Build 同步出来的动态
+    对话模型若不在目录里，仍进 unknown，由设置页手分。
+    """
+    mid = str(model_id or "").strip()
+    values = []
+    if isinstance(item, dict):
+        if not mid:
+            mid = str(item.get("id") or item.get("model") or "").strip()
+        for key in (
+            "supported_endpoint_types",
+            "capabilities",
+            "supported_modalities",
+            "modalities",
+            "output_modalities",
+            "supported_operations",
+            "operations",
+        ):
+            value = item.get(key)
+            if isinstance(value, dict):
+                values.extend(str(name).strip().lower() for name, enabled in value.items() if enabled)
+            elif isinstance(value, list):
+                values.extend(str(part).strip().lower() for part in value)
+            elif isinstance(value, str):
+                values.append(value.strip().lower())
+
+        for key in ("type", "model_type", "modelType", "capability", "endpoint_type", "endpointType"):
+            value = item.get(key)
+            if isinstance(value, dict):
+                values.extend(str(name).strip().lower() for name, enabled in value.items() if enabled)
+            elif isinstance(value, (str, int, float)):
+                values.append(str(value).strip().lower())
+            elif isinstance(value, list):
+                values.extend(str(part).strip().lower() for part in value)
+
+    from_fields = _capability_from_field_values(values)
+    if from_fields:
+        return from_fields
+    from_catalog = grok2api_catalog_capability(mid)
+    if from_catalog:
+        return from_catalog
     return "unknown"
+
+
+def grok2api_client_surface_supported(surface):
+    return str(surface or "").strip().lower() in GROK2API_SUPPORTED_CLIENT_SURFACES
 
 
 def _reference_locator(ref):
@@ -485,6 +569,11 @@ def grok2api_task_id(raw):
 
 
 def grok2api_task_state(raw):
+    """只认公开查询合同：done=成功，failed=失败，其余一律 pending。
+
+    completed/succeeded 等是上游内部态，公开 handler 不会这样出站；
+    若误认会把未归一的响应提前当成功并尝试下载。
+    """
     if not isinstance(raw, dict):
         return "pending", ""
     node = raw.get("data") if isinstance(raw.get("data"), dict) else raw

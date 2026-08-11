@@ -69,25 +69,46 @@ class Grok2ApiRoutingTests(unittest.TestCase):
             "https://gateway.example/v1/images/edits",
         )
 
-    def test_models_require_explicit_upstream_capability(self):
+    def test_models_prefer_upstream_capability_then_official_catalog(self):
         raw = {
             "data": [
                 {"id": "grok-imagine-video", "supported_endpoint_types": ["openai-video"]},
                 {"id": "gpt-vision", "supported_endpoint_types": ["openai-image"]},
                 {"id": "grok-imagine-video-1.5"},
+                {"id": "grok-chat-fast"},
+                {"id": "build-dynamic-chat-xyz"},
             ]
         }
         grouped, ids = main.parse_upstream_models(raw, main.GROK2API_PROTOCOL)
 
-        self.assertEqual(ids, ["gpt-vision", "grok-imagine-video", "grok-imagine-video-1.5"])
-        self.assertEqual(grouped["video"], ["grok-imagine-video"])
+        self.assertEqual(
+            ids,
+            [
+                "build-dynamic-chat-xyz",
+                "gpt-vision",
+                "grok-chat-fast",
+                "grok-imagine-video",
+                "grok-imagine-video-1.5",
+            ],
+        )
+        self.assertEqual(grouped["video"], ["grok-imagine-video", "grok-imagine-video-1.5"])
         self.assertEqual(grouped["image"], ["gpt-vision"])
-        self.assertEqual(grouped["chat"], [])
-        self.assertEqual(grouped["unknown"], ["grok-imagine-video-1.5"])
+        self.assertEqual(grouped["chat"], ["grok-chat-fast"])
+        self.assertEqual(grouped["unknown"], ["build-dynamic-chat-xyz"])
+        # 无能力字段时，官方固定 ID 走目录，不按子串猜。
         self.assertEqual(
             grok2api.classify_grok2api_model_entry({}, "grok-imagine-video"),
+            "video",
+        )
+        self.assertEqual(
+            grok2api.classify_grok2api_model_entry({}, "custom-video-model"),
             "unknown",
         )
+        self.assertTrue(grok2api.grok2api_client_surface_supported("chat_completions"))
+        self.assertFalse(grok2api.grok2api_client_surface_supported("responses"))
+        self.assertIn("responses", grok2api.GROK2API_UNSUPPORTED_CLIENT_SURFACES)
+        self.assertIn("messages", grok2api.GROK2API_UNSUPPORTED_CLIENT_SURFACES)
+        self.assertIn("images_stream", grok2api.GROK2API_UNSUPPORTED_CLIENT_SURFACES)
 
 
 class Grok2ApiRequestTests(unittest.TestCase):
@@ -330,6 +351,17 @@ class Grok2ApiResponseTests(unittest.TestCase):
             grok2api.grok2api_task_state({"status": "failed"})[0],
             "failed",
         )
+
+    def test_public_status_contract_only_accepts_done_and_failed(self):
+        # 公开查询 JSON 只出 done/failed/pending；内部 completed 等不得当成功。
+        for status in ("completed", "succeeded", "success", "ready", "queued", "processing", "pending", ""):
+            with self.subTest(status=status):
+                self.assertEqual(grok2api.grok2api_task_state({"status": status})[0], "pending")
+        self.assertEqual(grok2api.grok2api_task_state({"status": "done"})[0], "success")
+        self.assertEqual(grok2api.grok2api_task_state({"status": "failed"})[0], "failed")
+        for status in ("failure", "expired", "cancelled", "error", "timeout"):
+            with self.subTest(legacy_failure=status):
+                self.assertEqual(grok2api.grok2api_task_state({"status": status})[0], "pending")
 
     def test_error_code_and_message_are_preserved(self):
         self.assertEqual(
@@ -574,13 +606,17 @@ class Grok2ApiHttpTests(unittest.TestCase):
         self.assertEqual(client.post_calls[1][0], "https://gateway.example/v1/images/edits")
         self.assertEqual(client.post_calls[1][1]["json"]["image"], {"url": "https://example.com/ref.png"})
         self.assertEqual(client.post_calls[0][1]["headers"]["Content-Type"], "application/json")
+        # 产品路径不做流式出图 / Responses / Messages。
+        for _, request in client.post_calls:
+            self.assertNotIn("stream", request["json"])
+            self.assertNotIn("partial_images", request["json"])
 
     def test_submit_uses_documented_url_json_and_bearer_header(self):
         client = _FakeVideoClient(
             _FakeResponse(
                 {
                     "request_id": "req_42",
-                    "status": "completed",
+                    "status": "done",
                     "video": {"url": "https://gateway.example/v1/videos/req_42.mp4"},
                 }
             )
@@ -621,19 +657,21 @@ class Grok2ApiHttpTests(unittest.TestCase):
 
     def test_pending_video_url_is_not_downloaded_before_terminal_status(self):
         client = _FakePollingVideoClient(
-            _FakeResponse({"request_id": "req_42", "status": "queued"}),
+            _FakeResponse({"request_id": "req_42", "status": "pending"}),
             [
                 _FakeResponse(
                     {
                         "request_id": "req_42",
-                        "status": "processing",
+                        "status": "pending",
+                        "progress": 40,
                         "video": {"url": "https://cdn.example/not-ready.mp4"},
                     }
                 ),
                 _FakeResponse(
                     {
                         "request_id": "req_42",
-                        "status": "completed",
+                        "status": "done",
+                        "progress": 100,
                         "video": {"url": "https://cdn.example/ready.mp4"},
                     }
                 ),
@@ -660,6 +698,22 @@ class Grok2ApiHttpTests(unittest.TestCase):
         self.assertEqual(client.get_calls[0][0], "https://gateway.example/v1/videos/req_42")
         self.assertEqual(save_result.await_count, 1)
         self.assertEqual(result["videos"], ["/output/grok2api_video_req_42.mp4"])
+
+    def test_local_reference_is_converted_to_public_url_not_file_id(self):
+        """客户端主路径是公网 URL；不会把本地素材伪造成 input_* file_id。"""
+        payload = video_payload(images=[{"url": "asset://local-image"}])
+        resolve_calls = []
+
+        async def resolve(value, kind, index):
+            resolve_calls.append((value, kind, index))
+            return f"https://cdn.example/public-{index}.png"
+
+        body = run(
+            grok2api.build_grok2api_video_request(payload, "grok-imagine-video", resolve)
+        )
+        self.assertEqual(resolve_calls, [("asset://local-image", "图片", 1)])
+        self.assertEqual(body["image"], {"url": "https://cdn.example/public-1.png"})
+        self.assertNotIn("file_id", body["image"])
 
 
 if __name__ == "__main__":
