@@ -10663,7 +10663,7 @@ async function runVideoNode(nodeId, opts={}){
                 multimodal:grok2api ? false : Boolean(node.multimodal)
             })
         }, {cascadeTargetId}).then(async r => { if(!r.ok) throw new Error(await responseErrorMessage(r, tr('canvas.videoFailed'))); return r.json(); });
-        if(result?.grok2api_pending){
+        if(result?.video_pending || result?.grok2api_pending){
             result = await waitCanvasVideoTaskResult(result.task_id, {cascadeTargetId});
         }
         const meta = collectRunMeta(out, pendingId);

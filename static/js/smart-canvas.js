@@ -15552,7 +15552,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
             body:JSON.stringify(payload)
         }).then(async r => { if(!r.ok) throw new Error(await smartResponseErrorMessage(r, tr('smart.errRunFailed'))); return r.json(); });
         if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
-        if(result?.grok2api_pending){
+        if(result?.video_pending || result?.grok2api_pending){
             result = await waitSmartCanvasVideoTaskResult(result.task_id);
         }
         return resultMediaUrls(result);
@@ -15565,7 +15565,7 @@ async function waitSmartCanvasVideoTaskResult(taskId){
     while(true){
         const res = await fetch(`/api/canvas-video-tasks/${encodeURIComponent(taskId)}`);
         if(!res.ok){
-            if(res.status === 404) throw new Error('后端已重启，Grok2API 视频任务状态已丢失');
+            if(res.status === 404) throw new Error('后端已重启，视频任务状态已丢失');
             throw new Error(await smartResponseErrorMessage(res, tr('smart.errRunFailed')));
         }
         const data = await res.json();

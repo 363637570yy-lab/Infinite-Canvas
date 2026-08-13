@@ -426,6 +426,7 @@ class Grok2ApiCanvasTaskTests(unittest.TestCase):
 
         task_id = result["task_id"]
         try:
+            self.assertTrue(result["video_pending"])
             self.assertTrue(result["grok2api_pending"])
             self.assertEqual(result["status"], "queued")
             self.assertTrue(task_id.startswith("canvas_grok2api_"))
@@ -433,7 +434,7 @@ class Grok2ApiCanvasTaskTests(unittest.TestCase):
             self.assertEqual(main.CANVAS_TASKS[task_id]["status"], "queued")
         finally:
             main.CANVAS_TASKS.pop(task_id, None)
-            main.GROK2API_CANVAS_TASK_HANDLES.pop(task_id, None)
+            main.CANVAS_VIDEO_TASK_HANDLES.pop(task_id, None)
 
     def test_background_task_has_upstream_aligned_timeout_and_terminal_success(self):
         self.assertGreaterEqual(main.GROK2API_VIDEO_POLL_TIMEOUT, 2 * 60 * 60)

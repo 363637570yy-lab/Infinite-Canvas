@@ -2657,7 +2657,13 @@ class ImageTaskQueryRequest(BaseModel):
 CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
 CANVAS_TASK_LOCK = Lock()
 # asyncio 任务只由事件循环弱引用；保留强引用直到完成，避免长视频轮询被提前回收。
-GROK2API_CANVAS_TASK_HANDLES: Dict[str, Any] = {}
+CANVAS_VIDEO_TASK_HANDLES: Dict[str, Any] = {}
+CANVAS_VIDEO_TASK_TYPES = frozenset({
+    "grok2api-video",
+    "cangyuan-video",
+    "chre3-video",
+    "pidoi-video",
+})
 
 class CanvasVideoRequest(BaseModel):
     # Grok2API 支持只提交参考图的图生视频；路由层仍会拒绝无 prompt 且无参考图的请求。
@@ -8783,8 +8789,8 @@ def upstream_safe_image_ref(local_path):
 
 async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str:
     """异步生图/视频接口的参考素材公网化。
-    不走公网隧道（暴露本机服务风险高）：本地文件上传图床（Litterbox/temp.sh，72h 短链），
-    与 RS 模式同一通道；真正的公网 URL 原样透传；若手动配置了 PUBLIC_MEDIA_BASE_URL 则作为兜底。"""
+    已配置 PUBLIC_MEDIA_BASE_URL 时优先走自有公网地址；否则回退到 Litterbox/temp.sh 图床。
+    真正的公网 URL 原样透传。"""
     raw = ref.get("url", "") if isinstance(ref, dict) else ref
     text = str(raw or "").strip()
     if not text:
@@ -8801,6 +8807,9 @@ async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str
         local_path = text
     if local_path and output_file_from_url(local_path):
         local_path = upstream_safe_image_ref(local_path)
+        public_url = local_asset_public_url(local_path)
+        if public_url:
+            return public_url
         upload_error = ""
         try:
             allowed_prefixes = ("image/", "video/", "audio/") if allow_audio else ("image/", "video/")
@@ -8810,12 +8819,13 @@ async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str
                 return url
         except HTTPException as exc:
             upload_error = str(exc.detail)
-        public_url = local_asset_public_url(local_path)
-        if public_url:
-            return public_url
         raise HTTPException(
             status_code=400,
-            detail=f"参考素材上传图床失败，无法转成公网 URL：{upload_error[:200] or '未知错误'}。请检查网络后重试。"
+            detail=(
+                "参考素材无法转成公网 URL："
+                f"{upload_error[:200] or '未知错误'}。"
+                "请配置 PUBLIC_MEDIA_BASE_URL（例如 https://hb.qnzn.top）或检查图床网络后重试。"
+            ),
         )
     raise HTTPException(status_code=400, detail=f"参考素材不是公网 URL，无法传给上游：{text[:160]}")
 
@@ -15141,12 +15151,23 @@ async def wait_for_video_task(client, provider, task_id, submit_url="", model=""
                 continue
         if raw is None:
             contract_label = videos_contract_label(provider, model)
-            if contract_label:
-                if looks_like_html_response(getattr(last_response, "text", "")):
-                    raise HTTPException(status_code=502, detail=f"{contract_label}任务查询返回了网页 HTML，请确认 Base URL 和 /v1/videos/{{id}} 接口地址正确。")
-                if last_error:
-                    raise HTTPException(status_code=502, detail=f"{contract_label}任务查询失败：{last_error}") from last_error
+            if contract_label and looks_like_html_response(getattr(last_response, "text", "")):
+                raise HTTPException(status_code=502, detail=f"{contract_label}任务查询返回了网页 HTML，请确认 Base URL 和 /v1/videos/{{id}} 接口地址正确。")
             if last_error:
+                retryable = False
+                if isinstance(last_error, httpx.HTTPStatusError):
+                    status_code = int(getattr(getattr(last_error, "response", None), "status_code", 0) or 0)
+                    retryable = status_code >= 500 or status_code == 429
+                elif isinstance(last_error, httpx.HTTPError):
+                    retryable = True
+                if retryable:
+                    label = contract_label or "视频"
+                    detail = str(last_error) or type(last_error).__name__
+                    print(f"[video] {label}轮询暂时失败，保留任务号继续重试：{detail}")
+                    delay = min(delay + 1.0, 12.0)
+                    continue
+                if contract_label:
+                    raise HTTPException(status_code=502, detail=f"{contract_label}任务查询失败：{last_error}") from last_error
                 raise last_error
             raise HTTPException(status_code=502, detail=f"视频任务查询失败：{task_id}")
         last_payload = raw
@@ -16903,7 +16924,34 @@ async def generate_grok2api_video(client, payload, provider, base_url, requested
         )
     return {"videos": [local_url], "task_id": task_id, "raw": result}
 
-def update_grok2api_canvas_task(task_id, **updates):
+def canvas_video_task_type(provider, model=""):
+    if is_grok2api_route(provider, model):
+        return "grok2api-video"
+    if is_cangyuan_video_route(provider, model):
+        return "cangyuan-video"
+    if is_chre3_video_route(provider, model):
+        return "chre3-video"
+    if is_pidoi_route(provider, model):
+        return "pidoi-video"
+    return ""
+
+def canvas_video_task_id_prefix(task_type):
+    return {
+        "grok2api-video": "canvas_grok2api_",
+        "cangyuan-video": "canvas_cangyuan_",
+        "chre3-video": "canvas_chre3_",
+        "pidoi-video": "canvas_pidoi_",
+    }.get(task_type, "canvas_video_")
+
+def canvas_video_task_label(task_type):
+    return {
+        "grok2api-video": "Grok2API",
+        "cangyuan-video": "苍元",
+        "chre3-video": "chre3",
+        "pidoi-video": "Pidoi",
+    }.get(task_type, "视频")
+
+def update_canvas_video_task(task_id, **updates):
     with CANVAS_TASK_LOCK:
         task = CANVAS_TASKS.get(task_id)
         if not task:
@@ -16911,28 +16959,51 @@ def update_grok2api_canvas_task(task_id, **updates):
         task.update(updates)
         task["updated_at"] = time.time()
 
-async def run_grok2api_canvas_video_task(task_id, payload, provider, base_url, requested_model):
-    """在请求生命周期之外完成 Grok2API 轮询和成片下载，避免被 CF 长连接切断。"""
-    update_grok2api_canvas_task(task_id, status="running")
+def update_grok2api_canvas_task(task_id, **updates):
+    update_canvas_video_task(task_id, **updates)
+
+async def generate_canvas_video_for_background_task(client, payload, provider, base_url, requested_model, task_type, on_task_id=None):
+    if task_type == "grok2api-video":
+        return await generate_grok2api_video(
+            client,
+            payload,
+            provider,
+            base_url,
+            requested_model,
+            on_task_id=on_task_id,
+        )
+    if task_type == "cangyuan-video":
+        return await generate_cangyuan_video(client, payload, provider, base_url, requested_model)
+    if task_type == "chre3-video":
+        return await generate_sd2_video(client, payload, provider, base_url, requested_model)
+    if task_type == "pidoi-video":
+        return await generate_pidoi_video(client, payload, provider, base_url, requested_model)
+    raise HTTPException(status_code=500, detail=f"不支持的后台视频任务类型：{task_type}")
+
+async def run_canvas_video_background_task(task_id, payload, provider, base_url, requested_model, task_type):
+    """在请求生命周期之外完成视频轮询和成片下载，避免被长连接/网关超时切断。"""
+    update_canvas_video_task(task_id, status="running")
 
     def mark_upstream_task(upstream_task_id):
-        update_grok2api_canvas_task(
+        update_canvas_video_task(
             task_id,
             status="running",
             upstream_task_id=str(upstream_task_id or ""),
         )
 
+    client_timeout = GROK2API_POLL_REQUEST_TIMEOUT if task_type == "grok2api-video" else VIDEO_POLL_TIMEOUT
     try:
-        async with httpx.AsyncClient(timeout=GROK2API_POLL_REQUEST_TIMEOUT) as client:
-            result = await generate_grok2api_video(
+        async with httpx.AsyncClient(timeout=client_timeout) as client:
+            result = await generate_canvas_video_for_background_task(
                 client,
                 payload,
-                provider,
+                dict(provider),
                 base_url,
                 requested_model,
-                on_task_id=mark_upstream_task,
+                task_type,
+                on_task_id=mark_upstream_task if task_type == "grok2api-video" else None,
             )
-        update_grok2api_canvas_task(
+        update_canvas_video_task(
             task_id,
             status="succeeded",
             result=result,
@@ -16947,20 +17018,26 @@ async def run_grok2api_canvas_video_task(task_id, payload, provider, base_url, r
             status_code = int(getattr(exc, "status_code", 500) or 500)
         except (TypeError, ValueError):
             status_code = 500
-        update_grok2api_canvas_task(
+        update_canvas_video_task(
             task_id,
             status="failed",
             error=str(detail),
             status_code=status_code,
         )
-        print(f"[grok2api] 画布后台任务失败 task={task_id}: {str(detail)[:500]}")
+        label = canvas_video_task_label(task_type)
+        print(f"[canvas-video] 后台任务失败 type={task_type} task={task_id}: {str(detail)[:500]}")
 
-def enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_model):
-    task_id = f"canvas_grok2api_{uuid.uuid4().hex}"
+async def run_grok2api_canvas_video_task(task_id, payload, provider, base_url, requested_model):
+    await run_canvas_video_background_task(task_id, payload, provider, base_url, requested_model, "grok2api-video")
+
+def enqueue_canvas_video_task(payload, provider, base_url, requested_model, task_type):
+    prefix = canvas_video_task_id_prefix(task_type)
+    task_id = f"{prefix}{uuid.uuid4().hex}"
+    label = canvas_video_task_label(task_type)
     with CANVAS_TASK_LOCK:
         CANVAS_TASKS[task_id] = {
             "id": task_id,
-            "type": "grok2api-video",
+            "type": task_type,
             "status": "queued",
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -16972,37 +17049,42 @@ def enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_mo
             "model": requested_model,
         }
     task = asyncio.create_task(
-        run_grok2api_canvas_video_task(
+        run_canvas_video_background_task(
             task_id,
             payload,
             dict(provider),
             base_url,
             requested_model,
+            task_type,
         )
     )
     with CANVAS_TASK_LOCK:
-        GROK2API_CANVAS_TASK_HANDLES[task_id] = task
+        CANVAS_VIDEO_TASK_HANDLES[task_id] = task
 
     def release_task_handle(_done):
         with CANVAS_TASK_LOCK:
-            GROK2API_CANVAS_TASK_HANDLES.pop(task_id, None)
+            CANVAS_VIDEO_TASK_HANDLES.pop(task_id, None)
 
     add_done_callback = getattr(task, "add_done_callback", None)
     if callable(add_done_callback):
         add_done_callback(release_task_handle)
     return {
-        "grok2api_pending": True,
+        "video_pending": True,
+        "grok2api_pending": task_type == "grok2api-video",
         "task_id": task_id,
         "status": "queued",
-        "message": "Grok2API 视频任务已提交，正在后台生成。",
+        "message": f"{label} 视频任务已提交，正在后台生成。",
     }
 
+def enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_model):
+    return enqueue_canvas_video_task(payload, provider, base_url, requested_model, "grok2api-video")
+
 @app.get("/api/canvas-video-tasks/{task_id}")
-async def get_canvas_grok2api_video_task(task_id: str):
+async def get_canvas_video_task(task_id: str):
     with CANVAS_TASK_LOCK:
         task = dict(CANVAS_TASKS.get(task_id) or {})
-    if not task or task.get("type") != "grok2api-video":
-        raise HTTPException(status_code=404, detail="Grok2API 画布视频任务不存在，可能服务已重启或任务已过期")
+    if not task or task.get("type") not in CANVAS_VIDEO_TASK_TYPES:
+        raise HTTPException(status_code=404, detail="画布视频任务不存在，可能服务已重启或任务已过期")
     return task
 
 async def generate_grok_video(client, payload, provider, base_url, requested_model):
@@ -17162,6 +17244,9 @@ async def canvas_video(payload: CanvasVideoRequest):
     else:
         default_video_model = "veo3-fast"
     requested_model = selected_model(payload.model, default_video_model)
+    async_video_task_type = canvas_video_task_type(provider, requested_model)
+    if async_video_task_type:
+        return enqueue_canvas_video_task(payload, provider, base_url, requested_model, async_video_task_type)
     if is_grok_provider(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as grok_client:
@@ -17173,8 +17258,6 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(Grok) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 Grok 视频接口失败：{exc}") from exc
-    if is_grok2api_route(provider, requested_model):
-        return enqueue_grok2api_canvas_video_task(payload, provider, base_url, requested_model)
     # 土豆 API 的 JSON 视频四件套（Sora2 / Veo3.1 / Kling v3·omni / Pixverse v6）——
     # Grok 视频已在上面拦截，这里只接管走 /v1/videos/generations + /v1/tasks 的模型。
     if is_tudou_base_url(base_url) and is_tudou_video_model(requested_model):
@@ -17224,24 +17307,6 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(玉玉) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求上游视频接口失败：{exc}") from exc
-    if is_chre3_video_route(provider, requested_model):
-        try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as sd2_client:
-                return await generate_sd2_video(sd2_client, payload, provider, base_url, requested_model)
-        except HTTPException:
-            raise
-        except httpx.HTTPError as exc:
-            log_net_error(f"视频(chre3) 网络/TLS错误 model={requested_model}", exc)
-            raise HTTPException(status_code=502, detail=f"请求 chre3 视频接口失败：{exc}") from exc
-    if is_pidoi_route(provider, requested_model):
-        try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as pidoi_client:
-                return await generate_pidoi_video(pidoi_client, payload, provider, base_url, requested_model)
-        except HTTPException:
-            raise
-        except httpx.HTTPError as exc:
-            log_net_error(f"视频(Pidoi) 网络/TLS错误 model={requested_model}", exc)
-            raise HTTPException(status_code=502, detail=f"请求 Pidoi 视频接口失败：{str(exc) or type(exc).__name__}") from exc
     if is_megabyai_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as megabyai_client:
@@ -17260,15 +17325,6 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(泽西同学) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求泽西同学视频接口失败：{zexi.zexi_exception_text(exc)}") from exc
-    if is_cangyuan_video_route(provider, requested_model):
-        try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as cangyuan_client:
-                return await generate_cangyuan_video(cangyuan_client, payload, provider, base_url, requested_model)
-        except HTTPException:
-            raise
-        except httpx.HTTPError as exc:
-            log_net_error(f"视频(苍元) 网络/TLS错误 model={requested_model}", exc)
-            raise HTTPException(status_code=502, detail=f"请求苍元视频接口失败：{exc}") from exc
     submit_urls = video_submit_url_candidates(provider, base_url, requested_model)
     submit_url = submit_urls[0]
     try:

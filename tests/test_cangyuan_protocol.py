@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest import mock
 
 import main
 
@@ -145,6 +146,72 @@ class CangyuanProtocolTests(unittest.TestCase):
         self.assertEqual(main.videos_contract_label(chre3, "sd2-c7"), "chre3 视频")
         self.assertEqual(main.videos_contract_label(cangyuan, "seedance-2.0"), "苍元视频")
         self.assertEqual(main.videos_contract_label(plain, "veo3-fast"), "")
+
+    def test_canvas_route_returns_pending_response_for_cangyuan(self):
+        provider = {
+            "id": "custom-api-9",
+            "name": "苍元算力",
+            "protocol": main.CANGYUAN_VIDEO_PROTOCOL,
+            "base_url": "https://ai.cangyuansuanli.cn",
+            "video_models": ["seedance-2.0"],
+        }
+        created_coroutines = []
+
+        def capture_task(coro):
+            created_coroutines.append(coro)
+            coro.close()
+            return object()
+
+        payload = main.CanvasVideoRequest(
+            prompt="测试后台任务",
+            provider_id="custom-api-9",
+            model="seedance-2.0",
+        )
+        with mock.patch.object(main, "get_api_provider", return_value=provider), mock.patch.object(
+            main, "provider_env_key_value", return_value="test-token"
+        ), mock.patch.object(main.asyncio, "create_task", side_effect=capture_task):
+            result = asyncio.run(main.canvas_video(payload))
+
+        task_id = result["task_id"]
+        try:
+            self.assertTrue(result["video_pending"])
+            self.assertFalse(result["grok2api_pending"])
+            self.assertEqual(result["status"], "queued")
+            self.assertTrue(task_id.startswith("canvas_cangyuan_"))
+            self.assertEqual(main.CANVAS_TASKS[task_id]["type"], "cangyuan-video")
+            self.assertEqual(len(created_coroutines), 1)
+        finally:
+            main.CANVAS_TASKS.pop(task_id, None)
+            main.CANVAS_VIDEO_TASK_HANDLES.pop(task_id, None)
+
+    def test_public_reference_url_prefers_configured_public_media_base(self):
+        with mock.patch.object(main, "output_file_from_url", return_value="/tmp/ref.png"), mock.patch.object(
+            main, "upstream_safe_image_ref", side_effect=lambda value: value
+        ), mock.patch.object(main, "local_asset_public_url", return_value="https://hb.qnzn.top/assets/input/ref.png"), mock.patch.object(
+            main, "upload_local_video_to_cloud", new=mock.AsyncMock()
+        ) as upload:
+            url = asyncio.run(main.openai_video_proxy_public_reference_url({"url": "/assets/input/ref.png"}))
+
+        self.assertEqual(url, "https://hb.qnzn.top/assets/input/ref.png")
+        upload.assert_not_awaited()
+
+    def test_wait_for_video_task_retries_transient_poll_errors(self):
+        provider = {"id": "cangyuan", "protocol": main.CANGYUAN_VIDEO_PROTOCOL, "base_url": "https://ai.cangyuansuanli.cn"}
+        client = mock.Mock()
+        success = mock.Mock()
+        success.raise_for_status.return_value = None
+        success.json.return_value = {"status": "completed", "data": {"video_url": "https://cdn.example.com/out.mp4"}}
+        client.get = mock.AsyncMock(side_effect=[main.httpx.ConnectError("reset"), success])
+
+        with mock.patch.object(main, "video_task_url_candidates", return_value=["https://ai.cangyuansuanli.cn/v1/videos/task_1"]), mock.patch.object(
+            main, "video_output_urls", return_value=["https://cdn.example.com/out.mp4"]
+        ), mock.patch.object(main, "provider_env_key_value", return_value="test-token"), mock.patch.object(
+            main, "IMAGE_POLL_INTERVAL", 0.01
+        ), mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+            raw = asyncio.run(main.wait_for_video_task(client, provider, "task_1", "", "seedance-2.0"))
+
+        self.assertEqual(raw["status"], "completed")
+        self.assertEqual(client.get.await_count, 2)
 
 
 if __name__ == "__main__":
