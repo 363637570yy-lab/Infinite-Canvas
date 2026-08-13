@@ -187,12 +187,12 @@ class CangyuanProtocolTests(unittest.TestCase):
     def test_public_reference_url_prefers_configured_public_media_base(self):
         with mock.patch.object(main, "output_file_from_url", return_value="/tmp/ref.png"), mock.patch.object(
             main, "upstream_safe_image_ref", side_effect=lambda value: value
-        ), mock.patch.object(main, "local_asset_public_url", return_value="https://hb.qnzn.top/assets/input/ref.png"), mock.patch.object(
+        ), mock.patch.object(main, "local_asset_public_url", return_value="https://hb.qnzn.top:8443/assets/input/ref.png"), mock.patch.object(
             main, "upload_local_video_to_cloud", new=mock.AsyncMock()
         ) as upload:
             url = asyncio.run(main.openai_video_proxy_public_reference_url({"url": "/assets/input/ref.png"}))
 
-        self.assertEqual(url, "https://hb.qnzn.top/assets/input/ref.png")
+        self.assertEqual(url, "https://hb.qnzn.top:8443/assets/input/ref.png")
         upload.assert_not_awaited()
 
     def test_wait_for_video_task_retries_transient_poll_errors(self):

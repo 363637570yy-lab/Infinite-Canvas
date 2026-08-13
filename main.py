@@ -8824,7 +8824,7 @@ async def openai_video_proxy_public_reference_url(ref, allow_audio=False) -> str
             detail=(
                 "参考素材无法转成公网 URL："
                 f"{upload_error[:200] or '未知错误'}。"
-                "请配置 PUBLIC_MEDIA_BASE_URL（例如 https://hb.qnzn.top）或检查图床网络后重试。"
+                "请配置 PUBLIC_MEDIA_BASE_URL（例如 https://hb.qnzn.top:8443）或检查图床网络后重试。"
             ),
         )
     raise HTTPException(status_code=400, detail=f"参考素材不是公网 URL，无法传给上游：{text[:160]}")
