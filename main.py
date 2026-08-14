@@ -13774,8 +13774,14 @@ async def probe_codelba_endpoint(client, base_url: str, api_key: str):
     if response.status_code in (401, 403):
         result["message"] = "Codelba API Key 无效或无权限"
         return result
+    if response.status_code >= 500:
+        result["message"] = (
+            f"Codelba OpenAPI 网关不可用 (HTTP {response.status_code})。"
+            "站点网页可能正常，但 /openapi/v1 后端当前没有起来，不是请求地址填错。"
+        )
+        return result
     if looks_like_html_response(response.text):
-        result["message"] = "Codelba /openapi/v1/models 返回网页 HTML，请确认请求地址是 https://codelba.cn"
+        result["message"] = "Codelba /openapi/v1/models 返回网页 HTML，请确认请求地址是 https://hz.codelba.cn，不要填网页后台 /ai_video_ui/"
         return result
     if response.status_code < 300 and isinstance(raw, dict):
         grouped, ids = parse_upstream_models(raw, CODELBA_PROTOCOL)
@@ -13802,8 +13808,14 @@ async def probe_codelba_endpoint(client, base_url: str, api_key: str):
         if probe_response.status_code in (401, 403):
             result["message"] = "Codelba API Key 无效或无权限"
             return result
+        if probe_response.status_code >= 500:
+            result["message"] = (
+                f"Codelba 任务查询入口不可用 (HTTP {probe_response.status_code})。"
+                "站点网页可能正常，但 /openapi/v1 后端当前没有起来。"
+            )
+            return result
         if looks_like_html_response(probe_response.text):
-            result["message"] = "Codelba 任务查询返回网页 HTML，请确认请求地址是 https://codelba.cn"
+            result["message"] = "Codelba 任务查询返回网页 HTML，请确认请求地址是 https://hz.codelba.cn，不要填网页后台 /ai_video_ui/"
             return result
         if probe_response.status_code < 500:
             result["ok"] = True
@@ -14049,6 +14061,24 @@ async def test_provider_connection(payload: TestConnectionPayload):
     if not api_key:
         key_name = "方舟 API Key" if protocol == "volcengine" else "API Key"
         raise HTTPException(status_code=400, detail=f"请先填写或保存 {key_name}")
+    if is_codelba_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_codelba_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": CODELBA_PROTOCOL,
+                "status": probe.get("status") or 0,
+                "message": probe.get("message") or "Codelba 视频协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "unknown_models": probe.get("unknown_models") or [],
+                "all": probe.get("all") or [],
+            }
+        except httpx.HTTPError as e:
+            return {"ok": False, "status": 0, "message": str(e)[:300]}
     url = upstream_models_url(base_url, protocol)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -16282,7 +16312,7 @@ async def generate_codelba_video(client, payload, provider, base_url, requested_
     except Exception as exc:
         resp_text = (response.text or "")[:500]
         if looks_like_html_response(resp_text):
-            detail = "Codelba 视频接口返回了网页 HTML，请确认 Base URL 是 https://codelba.cn。"
+            detail = "Codelba 视频接口返回了网页 HTML，请确认 Base URL 是 https://hz.codelba.cn。"
         else:
             detail = f"Codelba 视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}"
         raise HTTPException(status_code=502, detail=detail) from exc

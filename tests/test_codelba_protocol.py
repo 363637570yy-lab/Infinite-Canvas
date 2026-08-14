@@ -53,23 +53,41 @@ class CodelbaRoutingTests(unittest.TestCase):
         self.assertFalse(main.is_megabyai_route(provider, "sd-2-c5"))
         self.assertEqual(
             main.video_submit_url_candidates(provider, "https://codelba.cn/v1", "sd-2-c5"),
-            ["https://codelba.cn/openapi/v1/videos"],
+            ["https://hz.codelba.cn/openapi/v1/videos"],
         )
         self.assertEqual(
             main.video_submit_url_candidates(provider, "https://codelba.cn/openapi/v1", "sd-2-c5"),
-            ["https://codelba.cn/openapi/v1/videos"],
+            ["https://hz.codelba.cn/openapi/v1/videos"],
         )
         self.assertEqual(
             main.video_task_url_candidates(provider, "https://codelba.cn", "video-168", "", "sd-2-c5"),
-            ["https://codelba.cn/openapi/v1/videos/video-168"],
+            ["https://hz.codelba.cn/openapi/v1/videos/video-168"],
         )
         self.assertEqual(
             codelba.codelba_video_content_url("https://codelba.cn/v1", "video-168"),
-            "https://codelba.cn/openapi/v1/videos/video-168/content",
+            "https://hz.codelba.cn/openapi/v1/videos/video-168/content",
         )
         self.assertEqual(
             main.upstream_models_url("https://codelba.cn", main.CODELBA_PROTOCOL),
-            "https://codelba.cn/openapi/v1/models",
+            "https://hz.codelba.cn/openapi/v1/models",
+        )
+        self.assertEqual(
+            main.upstream_models_url("https://codelba.cn/openapi/v1", main.CODELBA_PROTOCOL),
+            "https://hz.codelba.cn/openapi/v1/models",
+        )
+        self.assertEqual(
+            main.upstream_models_url("https://codelba.cn/v1", main.CODELBA_PROTOCOL),
+            "https://hz.codelba.cn/openapi/v1/models",
+        )
+        self.assertEqual(
+            main.upstream_models_url("https://hz.codelba.cn/ai_video_ui/", main.CODELBA_PROTOCOL),
+            "https://hz.codelba.cn/openapi/v1/models",
+        )
+        self.assertEqual(codelba.codelba_api_root(""), "https://hz.codelba.cn")
+        self.assertEqual(codelba.codelba_api_root("https://hz.codelba.cn/ai_video_ui/"), "https://hz.codelba.cn")
+        self.assertEqual(
+            codelba.codelba_api_root("https://hz.codelba.cn/ai_video_ui/openapi/v1"),
+            "https://hz.codelba.cn",
         )
 
     def test_models_use_upstream_capabilities_not_names(self):
@@ -104,7 +122,7 @@ class CodelbaFamilyTests(unittest.TestCase):
 
 
 class CodelbaRequestTests(unittest.TestCase):
-    def test_sd2_c5_uses_pixel_size_and_snake_case_refs(self):
+    def test_sd2_c5_uses_wire_size_720p_and_snake_case_refs(self):
         payload = video_payload(
             model="sd-2-c5",
             duration=15,
@@ -121,7 +139,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "sd-2-c5",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720x1280",
+                "size": "720p",
                 "image_refs": ["https://cdn.example/图片-1.media"],
                 "video_refs": ["https://cdn.example/视频-1.media"],
                 "audio_refs": ["https://cdn.example/音频-1.media"],
@@ -145,7 +163,7 @@ class CodelbaRequestTests(unittest.TestCase):
         body = run(codelba.build_codelba_video_request(video_payload(), "sd-2-c5", fake_resolve))
         for key in ("image_refs", "video_refs", "audio_refs"):
             self.assertNotIn(key, body)
-        self.assertEqual(body["size"], "1280x720")
+        self.assertEqual(body["size"], "720p")
         self.assertEqual(body["duration"], 10)
 
     def test_sd2_c5_duration_and_ratio_are_exact_enums(self):
@@ -163,11 +181,11 @@ class CodelbaRequestTests(unittest.TestCase):
                     run(codelba.build_codelba_video_request(video_payload(**kwargs), "sd-2-c5", fake_resolve))
                 self.assertIn(message, ctx.exception.detail)
 
-    def test_sd2_c5_maps_43_and_34_to_documented_pixel_sizes(self):
+    def test_sd2_c5_maps_43_and_34_to_wire_size_720p(self):
         body_43 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="4:3"), "sd-2-c5", fake_resolve))
         body_34 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="3:4"), "sd-2-c5", fake_resolve))
-        self.assertEqual(body_43["size"], "960x720")
-        self.assertEqual(body_34["size"], "720x960")
+        self.assertEqual(body_43["size"], "720p")
+        self.assertEqual(body_34["size"], "720p")
 
     def test_sd2_c5_10_supports_11_and_rejects_15s_and_43(self):
         body = run(
@@ -179,7 +197,7 @@ class CodelbaRequestTests(unittest.TestCase):
         )
         self.assertEqual(body["model"], "sd-2-c5-10")
         self.assertEqual(body["duration"], 8)
-        self.assertEqual(body["size"], "720x720")
+        self.assertEqual(body["size"], "720p")
         with self.assertRaises(HTTPException) as ctx:
             run(codelba.build_codelba_video_request(video_payload(model="sd-2-c5-10", duration=15), "sd-2-c5-10", fake_resolve))
         self.assertIn("只支持时长", ctx.exception.detail)
@@ -206,7 +224,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "seedance2.0-14s",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720x1280",
+                "size": "720p",
                 "image_refs": ["https://cdn.example/图片-1.media"],
             },
         )
@@ -252,7 +270,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 fake_resolve,
             )
         )
-        self.assertEqual(body["size"], "1280x720")
+        self.assertEqual(body["size"], "720p")
         with self.assertRaises(HTTPException) as ctx:
             run(
                 codelba.build_codelba_video_request(
@@ -316,6 +334,46 @@ class CodelbaResponseTests(unittest.TestCase):
             codelba.codelba_error_text({"error": {"code": "generation_failed", "message": "参考素材包含真人脸部"}}),
             "generation_failed: 参考素材包含真人脸部",
         )
+
+
+class _FakeResponse:
+    def __init__(self, status_code, text, payload=None):
+        self.status_code = status_code
+        self.text = text
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+class _FakeClient:
+    def __init__(self, response):
+        self.response = response
+        self.urls = []
+
+    async def get(self, url, headers=None):
+        self.urls.append(url)
+        return self.response
+
+
+class CodelbaProbeTests(unittest.TestCase):
+    def test_gateway_502_html_is_not_reported_as_wrong_base_url(self):
+        client = _FakeClient(_FakeResponse(
+            502,
+            "<html>\n<head><title>502 Bad Gateway</title></head>\n<body><h1>502 Bad Gateway</h1></body></html>",
+        ))
+        result = run(main.probe_codelba_endpoint(client, "https://hz.codelba.cn/ai_video_ui/", "sk-test"))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], 502)
+        self.assertEqual(client.urls, ["https://hz.codelba.cn/openapi/v1/models"])
+        self.assertIn("网关不可用", result["message"])
+        self.assertIn("/openapi/v1", result["message"])
+        self.assertIn("不是请求地址填错", result["message"])
+        self.assertNotIn("返回网页 HTML", result["message"])
+        self.assertNotIn("/v1/models", result["message"])
 
 
 if __name__ == "__main__":

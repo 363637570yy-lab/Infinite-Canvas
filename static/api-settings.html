@@ -141,9 +141,9 @@
                                     <span class="ms-line">模型分类优先读取上游 <span class="inline-code">supported_endpoint_types</span>，也识别档案中的 <span class="inline-code">owned_by=video-api</span> / <span class="inline-code">/v1/videos</span> 描述；首尾帧和 <span class="inline-code">generate_audio</span> 不支持。</span>
                                 </div>
                                 <div class="codelba-hint">
-                                    <span class="ms-line">Codelba 地址：<span class="inline-code">https://codelba.cn</span>，免费验证只请求 <span class="inline-code">GET /openapi/v1/models</span>，不会提交计费任务。</span>
+                                    <span class="ms-line">Codelba 地址填 <span class="inline-code">https://hz.codelba.cn</span>。站长给的 <span class="inline-code">https://hz.codelba.cn/ai_video_ui/</span> 是网页后台，不是 API；旧站 <span class="inline-code">https://codelba.cn/openapi/v1</span> 当前 502。免费验证只请求 <span class="inline-code">GET /openapi/v1/models</span>，不会提交计费任务。</span>
                                     <span class="ms-line">视频 <span class="inline-code">POST /openapi/v1/videos</span> → <span class="inline-code">GET /openapi/v1/videos/{task_id}</span>，完成后由后端带 Bearer Key 下载 <span class="inline-code">/content</span> 并落盘。</span>
-                                    <span class="ms-line"><span class="inline-code">sd-2-c5</span>：时长 5 / 8 / 10 / 15 秒；画幅 16:9、9:16、4:3、3:4，固定 720P（<span class="inline-code">size</span> 为 1280x720 等像素尺寸）。参考图/视频/音频上限 9/3/3，传音频时必须同时带图片或视频。</span>
+                                    <span class="ms-line"><span class="inline-code">sd-2-c5</span>：时长 5 / 8 / 10 / 15 秒；画幅 16:9、9:16、4:3、3:4。文档示例 <span class="inline-code">size</span> 为 1280x720；当前按实测改为发送 <span class="inline-code">720p</span>。参考图/视频/音频上限 9/3/3，传音频时必须同时带图片或视频。</span>
                                     <span class="ms-line"><span class="inline-code">sd-2-c5-10</span>：时长 5 / 8 / 10 秒；画幅 16:9、9:16、1:1。参考字段与 <span class="inline-code">sd-2-c5</span> 相同。</span>
                                     <span class="ms-line"><span class="inline-code">seedance2.0-14s</span>：时长 5–15 秒整数；画幅仅 16:9 / 9:16；最多 9 张参考图，不支持参考视频、参考音频和 <span class="inline-code">compliance_enabled</span>。</span>
                                     <span class="ms-line">未登记模型会在提交前拦截，不会静默降级成纯文生。站点未返回能力字段的模型会进「未知」，请手动分到视频列表。</span>

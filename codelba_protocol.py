@@ -1,9 +1,12 @@
 """Codelba（codelba.cn）视频协议的纯逻辑。
 
 站点合同是 POST /openapi/v1/videos → GET /openapi/v1/videos/{task_id}
-→ GET /openapi/v1/videos/{task_id}/content。请求字段是 size（宽x高）
-与 image_refs / video_refs / audio_refs，和 chre3、苍元、MegabyAI 都不同，
-所以单独成协议。本模块不反向导入 main.py。
+→ GET /openapi/v1/videos/{task_id}/content。当前可用网关是
+https://hz.codelba.cn；https://hz.codelba.cn/ai_video_ui/ 只是网页后台。
+请求字段是 size 与 image_refs / video_refs / audio_refs。
+文档示例 size 为 1280x720 这种宽x高；生成引擎对像素串报「不支持所选分辨率」后，
+按产品要求改为发送 720p。画幅仍按模型能力表校验，但不会把像素尺寸写进请求体。
+和 chre3、苍元、MegabyAI 都不同，所以单独成协议。本模块不反向导入 main.py。
 """
 
 import re
@@ -13,7 +16,17 @@ from fastapi import HTTPException
 
 
 CODELBA_PROTOCOL = "codelba"
-CODELBA_DEFAULT_BASE_URL = "https://codelba.cn"
+CODELBA_DEFAULT_BASE_URL = "https://hz.codelba.cn"
+CODELBA_LEGACY_HOSTS = {"codelba.cn", "www.codelba.cn"}
+CODELBA_STRIP_PATH_SUFFIXES = (
+    "/ai_video_ui",
+    "/ai_video_server",
+    "/openapi/v1",
+    "/openapi/v2",
+    "/openapi",
+    "/v1",
+    "/v2",
+)
 
 CODELBA_FAMILY_SD_2_C5 = "sd-2-c5"
 CODELBA_FAMILY_SD_2_C5_10 = "sd-2-c5-10"
@@ -79,23 +92,41 @@ CODELBA_FAMILY_SPECS = {
 CODELBA_DEFAULT_DURATION = 5
 CODELBA_PROMPT_MAX_LENGTH = 32000
 CODELBA_PIXEL_SIZE_RE = re.compile(r"^(\d+)\s*[xX]\s*(\d+)$")
+# 文档示例是 1280x720；线上生成失败后按用户要求改发 720p。
+CODELBA_WIRE_SIZE = "720p"
 
 CODELBA_TERMINAL_SUCCESS_STATUSES = {"completed"}
 CODELBA_TERMINAL_FAILURE_STATUSES = {"failed"}
 
 
 def codelba_api_root(base_url=""):
-    value = str(base_url or CODELBA_DEFAULT_BASE_URL).strip().rstrip("/")
+    value = str(base_url or CODELBA_DEFAULT_BASE_URL).strip()
     if not value:
         value = CODELBA_DEFAULT_BASE_URL
-    lowered = value.lower()
-    if lowered.endswith("/openapi/v1") or lowered.endswith("/openapi/v2"):
-        value = value.rsplit("/", 2)[0]
-    elif lowered.endswith("/openapi"):
-        value = value.rsplit("/", 1)[0]
-    elif lowered.endswith("/v1") or lowered.endswith("/v2"):
-        value = value.rsplit("/", 1)[0]
-    return value
+    parsed = urllib.parse.urlparse(value if "://" in value else f"https://{value}")
+    path = (parsed.path or "").rstrip("/")
+    changed = True
+    while changed and path:
+        changed = False
+        lowered = path.lower()
+        for suffix in CODELBA_STRIP_PATH_SUFFIXES:
+            if lowered == suffix or lowered.endswith(suffix):
+                path = path[: -len(suffix)].rstrip("/")
+                changed = True
+                break
+    host = str(parsed.hostname or "").strip().lower()
+    if host in CODELBA_LEGACY_HOSTS:
+        host = urllib.parse.urlparse(CODELBA_DEFAULT_BASE_URL).hostname
+    if not host:
+        return CODELBA_DEFAULT_BASE_URL.rstrip("/")
+    scheme = parsed.scheme or "https"
+    netloc = host
+    if parsed.port and parsed.port not in (80, 443):
+        netloc = f"{host}:{parsed.port}"
+    root = f"{scheme}://{netloc}"
+    if path:
+        root = f"{root}{path if path.startswith('/') else '/' + path}"
+    return root
 
 
 def codelba_models_url(base_url=""):
@@ -221,6 +252,10 @@ def _normalize_pixel_size(value):
     return f"{int(match.group(1))}x{int(match.group(2))}"
 
 
+def _is_wire_size(value):
+    return str(value or "").strip().lower() == CODELBA_WIRE_SIZE.lower()
+
+
 def _size(payload, spec):
     raw_size = str(getattr(payload, "size", "") or "").strip()
     raw_ratio = str(getattr(payload, "aspect_ratio", "") or "").strip()
@@ -232,8 +267,10 @@ def _size(payload, spec):
                 status_code=400,
                 detail=f"Codelba 该模型不支持尺寸「{pixel}」；可选值：{choices}。",
             )
-        return pixel
+        return CODELBA_WIRE_SIZE
     ratio = raw_size if raw_size in CODELBA_SIZE_BY_RATIO else raw_ratio
+    if _is_wire_size(raw_size):
+        ratio = raw_ratio
     if ratio in {"keep_ratio", "adaptive"}:
         raise HTTPException(
             status_code=400,
@@ -247,8 +284,8 @@ def _size(payload, spec):
                 status_code=400,
                 detail=f"Codelba 该模型不支持画幅「{ratio}」；可选值：{choices}。",
             )
-        return mapped
-    return spec["default_size"]
+        return CODELBA_WIRE_SIZE
+    return CODELBA_WIRE_SIZE
 
 
 def _reject_resolution(payload):
