@@ -4,8 +4,8 @@
 → GET /openapi/v1/videos/{task_id}/content。当前可用网关是
 https://hz.codelba.cn；https://hz.codelba.cn/ai_video_ui/ 只是网页后台。
 请求字段是 size 与 image_refs / video_refs / audio_refs。
-文档示例 size 为 1280x720 这种宽x高；生成引擎对像素串报「不支持所选分辨率」后，
-按产品要求改为发送 720p。画幅仍按模型能力表校验，但不会把像素尺寸写进请求体。
+文档示例 size 为 1280x720 这种宽x高；请求体按画幅发送对应像素尺寸，
+16:9 默认 1280x720。720p 只当作清晰度别名，不会写进 size。
 和 chre3、苍元、MegabyAI 都不同，所以单独成协议。本模块不反向导入 main.py。
 """
 
@@ -92,8 +92,7 @@ CODELBA_FAMILY_SPECS = {
 CODELBA_DEFAULT_DURATION = 5
 CODELBA_PROMPT_MAX_LENGTH = 32000
 CODELBA_PIXEL_SIZE_RE = re.compile(r"^(\d+)\s*[xX]\s*(\d+)$")
-# 文档示例是 1280x720；线上生成失败后按用户要求改发 720p。
-CODELBA_WIRE_SIZE = "720p"
+CODELBA_TIER_SIZE_ALIASES = frozenset({"720p", "720"})
 
 CODELBA_TERMINAL_SUCCESS_STATUSES = {"completed"}
 CODELBA_TERMINAL_FAILURE_STATUSES = {"failed"}
@@ -252,8 +251,8 @@ def _normalize_pixel_size(value):
     return f"{int(match.group(1))}x{int(match.group(2))}"
 
 
-def _is_wire_size(value):
-    return str(value or "").strip().lower() == CODELBA_WIRE_SIZE.lower()
+def _is_tier_size_alias(value):
+    return str(value or "").strip().lower() in CODELBA_TIER_SIZE_ALIASES
 
 
 def _size(payload, spec):
@@ -267,9 +266,9 @@ def _size(payload, spec):
                 status_code=400,
                 detail=f"Codelba 该模型不支持尺寸「{pixel}」；可选值：{choices}。",
             )
-        return CODELBA_WIRE_SIZE
+        return pixel
     ratio = raw_size if raw_size in CODELBA_SIZE_BY_RATIO else raw_ratio
-    if _is_wire_size(raw_size):
+    if _is_tier_size_alias(raw_size):
         ratio = raw_ratio
     if ratio in {"keep_ratio", "adaptive"}:
         raise HTTPException(
@@ -284,8 +283,8 @@ def _size(payload, spec):
                 status_code=400,
                 detail=f"Codelba 该模型不支持画幅「{ratio}」；可选值：{choices}。",
             )
-        return CODELBA_WIRE_SIZE
-    return CODELBA_WIRE_SIZE
+        return mapped
+    return spec["default_size"]
 
 
 def _reject_resolution(payload):

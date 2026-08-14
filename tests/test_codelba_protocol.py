@@ -122,7 +122,7 @@ class CodelbaFamilyTests(unittest.TestCase):
 
 
 class CodelbaRequestTests(unittest.TestCase):
-    def test_sd2_c5_uses_wire_size_720p_and_snake_case_refs(self):
+    def test_sd2_c5_uses_pixel_size_and_snake_case_refs(self):
         payload = video_payload(
             model="sd-2-c5",
             duration=15,
@@ -139,7 +139,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "sd-2-c5",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720p",
+                "size": "720x1280",
                 "image_refs": ["https://cdn.example/图片-1.media"],
                 "video_refs": ["https://cdn.example/视频-1.media"],
                 "audio_refs": ["https://cdn.example/音频-1.media"],
@@ -163,7 +163,7 @@ class CodelbaRequestTests(unittest.TestCase):
         body = run(codelba.build_codelba_video_request(video_payload(), "sd-2-c5", fake_resolve))
         for key in ("image_refs", "video_refs", "audio_refs"):
             self.assertNotIn(key, body)
-        self.assertEqual(body["size"], "720p")
+        self.assertEqual(body["size"], "1280x720")
         self.assertEqual(body["duration"], 10)
 
     def test_sd2_c5_duration_and_ratio_are_exact_enums(self):
@@ -181,11 +181,11 @@ class CodelbaRequestTests(unittest.TestCase):
                     run(codelba.build_codelba_video_request(video_payload(**kwargs), "sd-2-c5", fake_resolve))
                 self.assertIn(message, ctx.exception.detail)
 
-    def test_sd2_c5_maps_43_and_34_to_wire_size_720p(self):
+    def test_sd2_c5_maps_43_and_34_to_pixel_sizes(self):
         body_43 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="4:3"), "sd-2-c5", fake_resolve))
         body_34 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="3:4"), "sd-2-c5", fake_resolve))
-        self.assertEqual(body_43["size"], "720p")
-        self.assertEqual(body_34["size"], "720p")
+        self.assertEqual(body_43["size"], "960x720")
+        self.assertEqual(body_34["size"], "720x960")
 
     def test_sd2_c5_10_supports_11_and_rejects_15s_and_43(self):
         body = run(
@@ -197,7 +197,7 @@ class CodelbaRequestTests(unittest.TestCase):
         )
         self.assertEqual(body["model"], "sd-2-c5-10")
         self.assertEqual(body["duration"], 8)
-        self.assertEqual(body["size"], "720p")
+        self.assertEqual(body["size"], "720x720")
         with self.assertRaises(HTTPException) as ctx:
             run(codelba.build_codelba_video_request(video_payload(model="sd-2-c5-10", duration=15), "sd-2-c5-10", fake_resolve))
         self.assertIn("只支持时长", ctx.exception.detail)
@@ -224,7 +224,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "seedance2.0-14s",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720p",
+                "size": "720x1280",
                 "image_refs": ["https://cdn.example/图片-1.media"],
             },
         )
@@ -270,7 +270,7 @@ class CodelbaRequestTests(unittest.TestCase):
                 fake_resolve,
             )
         )
-        self.assertEqual(body["size"], "720p")
+        self.assertEqual(body["size"], "1280x720")
         with self.assertRaises(HTTPException) as ctx:
             run(
                 codelba.build_codelba_video_request(
@@ -280,6 +280,16 @@ class CodelbaRequestTests(unittest.TestCase):
                 )
             )
         self.assertIn("必须同时传图片或视频", ctx.exception.detail)
+
+    def test_legacy_720p_size_alias_maps_16_9_to_1280x720(self):
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(size="720p", aspect_ratio="16:9"),
+                "sd-2-c5",
+                fake_resolve,
+            )
+        )
+        self.assertEqual(body["size"], "1280x720")
 
     def test_reference_limits_are_rejected_not_truncated(self):
         cases = (
