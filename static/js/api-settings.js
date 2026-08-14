@@ -102,7 +102,8 @@ const PIDOI_PROTOCOL = 'pidoi';
 const MEGABYAI_PROTOCOL = 'megabyai';
 const CODELBA_PROTOCOL = 'codelba';
 const GROK2API_PROTOCOL = 'grok2api';
-const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
+const H3_PROTOCOL = 'h3';
+const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
     return CHRE3_VIDEO_PROTOCOLS.has(String(value || '').trim().toLowerCase());
@@ -126,6 +127,9 @@ function isCodelbaProtocol(value){
 }
 function isGrok2apiProtocol(value){
     return String(value || '').trim().toLowerCase() === GROK2API_PROTOCOL;
+}
+function isH3Protocol(value){
+    return String(value || '').trim().toLowerCase() === H3_PROTOCOL;
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -925,6 +929,7 @@ function updateProtocolFromInput(){
     document.body.classList.toggle('show-megabyai', isMegabyaiProtocol(item.protocol));
     document.body.classList.toggle('show-codelba', isCodelbaProtocol(item.protocol));
     document.body.classList.toggle('show-grok2api', isGrok2apiProtocol(item.protocol));
+    document.body.classList.toggle('show-h3', isH3Protocol(item.protocol));
     clearVerifyResult();
     // 协议会改变整个表单（如即梦 CLI 账户面板、默认模型、Key 占位）。renderEditor 是唯一切换这些的入口，
     // 这里复跑一次让面板立即出现；保存并恢复 Key 输入框，避免推荐流程里先填的 Key 被 renderEditor 清空。
@@ -2467,6 +2472,8 @@ function renderProviderList(){
             ? 'Codelba'
             : itemProtocol === GROK2API_PROTOCOL
             ? 'Grok2API'
+            : itemProtocol === H3_PROTOCOL
+            ? 'H3兼容'
             : String(item.protocol || 'openai').toUpperCase();
         if(item.id === 'modelscope'){
             return `
@@ -2610,6 +2617,7 @@ function renderEditor(){
     const isMegabyai = isMegabyaiProtocol(currentProtocolValue);
     const isCodelba = isCodelbaProtocol(currentProtocolValue);
     const isGrok2api = isGrok2apiProtocol(currentProtocolValue);
+    const isH3 = isH3Protocol(currentProtocolValue);
     if(isRunningHub){
         ensureRunningHubLists(item);
         if(rhFreeKeyInput){
@@ -2676,6 +2684,7 @@ function renderEditor(){
     document.body.classList.toggle('show-megabyai', isMegabyai);
     document.body.classList.toggle('show-codelba', isCodelba);
     document.body.classList.toggle('show-grok2api', isGrok2api);
+    document.body.classList.toggle('show-h3', isH3);
     updateApimartDomesticHint(item);
     renderProviderOnboarding(item);
     renderRecommendApi();
@@ -3116,7 +3125,7 @@ async function probeAsync(){
         const detectedProtocol = String(data.protocol || '').toLowerCase();
         const isAsync = data.ok === true && detectedProtocol === 'apimart';
         const isOpenAiCompat = data.ok === true && detectedProtocol === 'openai';
-        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(currentProtocol);
+        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(currentProtocol);
         if(protocolInput && !keepManualProtocol){
             applyDetectedProtocol(detectedProtocol || (isAsync ? 'apimart' : 'openai'));
         }
@@ -3133,7 +3142,7 @@ async function probeAsync(){
                 : detectedProtocol === 'openai'
                     ? 'OpenAI 兼容'
                     : keepManualProtocol
-                    ? (currentProtocol === 'gemini' ? 'Gemini' : currentProtocol === 'grok' ? 'Grok' : currentProtocol === CHRE3_VIDEO_REAL_PROTOCOL ? '视频：chre3 真人' : currentProtocol === CHRE3_VIDEO_PROTOCOL ? '视频：chre3' : currentProtocol === CANGYUAN_VIDEO_PROTOCOL ? '视频：苍元' : currentProtocol === ZEXI_PROTOCOL ? '泽西同学' : currentProtocol === PIDOI_PROTOCOL ? '视频：Pidoi' : currentProtocol === MEGABYAI_PROTOCOL ? '视频：MegabyAI' : currentProtocol === CODELBA_PROTOCOL ? '视频：Codelba' : currentProtocol === GROK2API_PROTOCOL ? '视频：Grok2API' : currentProtocol.toUpperCase())
+                    ? (currentProtocol === 'gemini' ? 'Gemini' : currentProtocol === 'grok' ? 'Grok' : currentProtocol === CHRE3_VIDEO_REAL_PROTOCOL ? '视频：chre3 真人' : currentProtocol === CHRE3_VIDEO_PROTOCOL ? '视频：chre3' : currentProtocol === CANGYUAN_VIDEO_PROTOCOL ? '视频：苍元' : currentProtocol === ZEXI_PROTOCOL ? '泽西同学' : currentProtocol === PIDOI_PROTOCOL ? '视频：Pidoi' : currentProtocol === MEGABYAI_PROTOCOL ? '视频：MegabyAI' : currentProtocol === CODELBA_PROTOCOL ? '视频：Codelba' : currentProtocol === GROK2API_PROTOCOL ? '视频：Grok2API' : currentProtocol === H3_PROTOCOL ? '视频：H3兼容' : currentProtocol.toUpperCase())
                     : 'OpenAI 兼容';
         showVerifyResult(`
             ${hideTasksEndpointTip ? '' : `<div style="font-size:11px;font-weight:800;color:${color}">${icon} ${escapeHtml(probeMessage)}</div>`}
@@ -3143,7 +3152,7 @@ async function probeAsync(){
                 <pre style="margin-top:6px;padding:10px 12px;border-radius:10px;background:var(--soft);border:1px solid var(--line-2);font-size:10.5px;font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text);max-height:200px;overflow:auto">${escapeHtml(rawJson)}</pre>
             </details>`);
     } catch(e){
-        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
+        const keepManualProtocol = ['gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, 'volcengine', 'jimeng', 'codex', 'gemini-cli'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
         if(protocolInput && !keepManualProtocol){ protocolInput.value = 'openai'; protocolInput.dispatchEvent(new Event('change')); }
         const suffix = keepManualProtocol ? '，已保留当前手动选择的协议' : '，协议已设为 OpenAI 兼容';
         showVerifyResult(`<div style="font-size:11px;font-weight:800;color:#b45309">⚠ ${escapeHtml(e.message || String(e))}${suffix}</div>`);

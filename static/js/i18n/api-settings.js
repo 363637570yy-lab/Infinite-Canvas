@@ -29,6 +29,7 @@
         "api.protocolMegabyai": { zh: "视频：MegabyAI 协议", en: "Video: MegabyAI Protocol" },
         "api.protocolCodelba": { zh: "视频：Codelba 协议", en: "Video: Codelba Protocol" },
         "api.protocolGrok2api": { zh: "聊天 / 图片 / 视频：Grok2API 协议", en: "Chat / Image / Video: Grok2API Protocol" },
+        "api.protocolH3": { zh: "视频：H3兼容", en: "Video: H3 Compatible" },
         "api.protocolVolcengine": { zh: "火山引擎协议", en: "Volcengine Protocol" },
         "api.key": { zh: "API Key", en: "API Key" },
         "api.msNotes": { zh: "ModelScope 使用提示", en: "ModelScope Notes" },

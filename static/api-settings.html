@@ -158,6 +158,11 @@
                                     <span class="ms-line">模型分类：优先读上游能力字段；否则匹配官方固定模型 ID 目录（如 <span class="inline-code">grok-imagine-video</span>、<span class="inline-code">grok-chat-fast</span>）。Build 动态模型或不在目录中的 ID 仍进“未知”，需在选择器中手分，不按名称子串猜测。</span>
                                     <span class="ms-line">不支持参考视频、参考音频、首尾帧、音频开关及未定义的视频参数；这些输入会在提交前明确拦截。</span>
                                 </div>
+                                <div class="h3-hint">
+                                    <span class="ms-line">请求地址填局域网 H3 网关根地址，不要加 <span class="inline-code">/v1</span>。验证只请求 <span class="inline-code">GET /v1/models</span>。</span>
+                                    <span class="ms-line">画布仍只发时长、画质、比例。协议映射为 <span class="inline-code">seconds</span> / <span class="inline-code">size=480p|720p</span> / <span class="inline-code">aspect_ratio=16:9</span>；图生视频一张首帧走 <span class="inline-code">first_frame</span>。</span>
+                                    <span class="ms-line">步数、YCNodes 等配方在 H3 网关 <span class="inline-code">/admin</span> 调整，不出现在画布上。9:16 和其他比例会被拒绝。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -338,6 +343,7 @@
                                         <option value="megabyai" data-i18n="api.protocolMegabyai">视频：MegabyAI 协议</option>
                                         <option value="codelba" data-i18n="api.protocolCodelba">视频：Codelba 协议</option>
                                          <option value="grok2api" data-i18n="api.protocolGrok2api">聊天 / 图片 / 视频：Grok2API 协议</option>
+                                        <option value="h3" data-i18n="api.protocolH3">视频：H3兼容</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

@@ -49,6 +49,8 @@ import megabyai_protocol as megabyai
 import codelba_protocol as codelba
 # Grok2API 的 JSON 视频合同与现有 grok multipart 合同不同，纯逻辑独立维护。
 import grok2api_protocol as grok2api
+# 本地 H3 网关：画布只发时长/画质/比例，步数等配方在 H3 管理页。
+import h3_protocol as h3
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -426,7 +428,8 @@ MEGABYAI_PROTOCOL = megabyai.MEGABYAI_PROTOCOL
 CODELBA_PROTOCOL = codelba.CODELBA_PROTOCOL
 # Grok2API 使用严格 JSON 的 /v1/videos/generations，与 grok multipart 合同单独注册。
 GROK2API_PROTOCOL = grok2api.GROK2API_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+H3_PROTOCOL = h3.H3_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -448,6 +451,10 @@ def is_codelba_protocol(value):
 
 def is_grok2api_protocol(value):
     return str(value or "").strip().lower() == GROK2API_PROTOCOL
+
+def is_h3_protocol(value):
+    return str(value or "").strip().lower() == H3_PROTOCOL
+
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
@@ -13751,6 +13758,28 @@ async def probe_megabyai_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"MegabyAI 视频协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_h3_endpoint(client, base_url: str, api_key: str):
+    """验证 H3 网关 Bearer /v1/models，不提交出片任务。"""
+    ok, result = await probe_openai_models_endpoint(client, h3.h3_api_root(base_url), api_key)
+    result = dict(result or {})
+    result["ok"] = bool(ok)
+    if ok and isinstance(result.get("raw"), dict):
+        grouped, ids = parse_upstream_models(result["raw"], H3_PROTOCOL)
+        result.update({
+            "model_count": len(ids),
+            "image_models": grouped["image"],
+            "chat_models": grouped["chat"],
+            "video_models": grouped["video"],
+            "unknown_models": grouped.get("unknown", []),
+            "all": ids,
+        })
+    result["protocol"] = H3_PROTOCOL
+    if ok:
+        result["message"] = f"H3 兼容协议可用：/v1/models 可达，{result.get('model_count') or 0} 个模型"
+    else:
+        result["message"] = f"H3 兼容协议验证失败：{result.get('message') or '模型列表端点不可用'}"
+    return result
+
 async def probe_codelba_endpoint(client, base_url: str, api_key: str):
     """验证 Codelba 的 Bearer /openapi/v1/models，不调用会产生费用的 POST /openapi/v1/videos。"""
     url = codelba.codelba_models_url(base_url)
@@ -13961,6 +13990,7 @@ def parse_upstream_models(raw, protocol="openai"):
         or is_megabyai_protocol(protocol)
         or is_codelba_protocol(protocol)
         or is_grok2api_protocol(protocol)
+        or is_h3_protocol(protocol)
     )
     if uses_metadata:
         for it in items:
@@ -13979,6 +14009,8 @@ def parse_upstream_models(raw, protocol="openai"):
             kind = codelba.classify_codelba_model_entry(metadata_by_id.get(mid), mid)
         elif is_grok2api_protocol(protocol):
             kind = grok2api.classify_grok2api_model_entry(metadata_by_id.get(mid), mid)
+        elif is_h3_protocol(protocol):
+            kind = h3.classify_h3_model_entry(metadata_by_id.get(mid), mid)
         elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
@@ -14249,6 +14281,25 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "image_models": probe.get("image_models") or [],
                 "chat_models": probe.get("chat_models") or [],
                 "video_models": probe.get("video_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_h3_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_h3_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "H3 兼容协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "unknown_models": probe.get("unknown_models") or [],
                 "all": probe.get("all") or [],
                 "raw": probe.get("raw"),
             }
@@ -15184,10 +15235,18 @@ def is_grok2api_provider(provider):
 def is_grok2api_route(provider, model=""):
     return is_grok2api_protocol(effective_protocol(provider, model))
 
+def is_h3_provider(provider):
+    return is_h3_protocol(provider_protocol(provider))
+
+def is_h3_route(provider, model=""):
+    return is_h3_protocol(effective_protocol(provider, model))
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
     if is_grok2api_route(provider, model):
         return "Grok2API 视频"
+    if is_h3_route(provider, model):
+        return "H3 视频"
     if is_zexi_route(provider, model):
         return "泽西同学视频"
     if is_pidoi_route(provider, model):
@@ -15215,6 +15274,8 @@ def looks_like_html_response(text: str) -> bool:
 def video_submit_url_candidates(provider, base_url, model=""):
     if is_grok2api_route(provider, model):
         return [grok2api.grok2api_video_submit_url(base_url)]
+    if is_h3_route(provider, model):
+        return [h3.h3_video_submit_url(base_url)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_submit_url(base_url)]
     if is_pidoi_route(provider, model):
@@ -15246,6 +15307,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
 def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=""):
     if is_grok2api_route(provider, model):
         return [grok2api.grok2api_video_task_url(base_url, task_id)]
+    if is_h3_route(provider, model):
+        return [h3.h3_video_task_url(base_url, task_id)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_task_url(base_url, task_id)]
     if is_pidoi_route(provider, model):
@@ -17407,9 +17470,125 @@ async def generate_grok2api_video(client, payload, provider, base_url, requested
         )
     return {"videos": [local_url], "task_id": task_id, "raw": result}
 
+H3_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=60.0, pool=20.0)
+H3_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+H3_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+
+def h3_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+def h3_response_error_text(response):
+    text = str(getattr(response, "text", "") or "").strip()
+    try:
+        raw = response.json()
+    except Exception:
+        return text[:500]
+    return h3.h3_error_text(raw, text)
+
+async def wait_for_h3_video_task(client, provider, base_url, task_id, model):
+    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    delay = 4.0
+    last_payload = {}
+    while time.monotonic() < deadline:
+        await asyncio.sleep(delay)
+        url = h3.h3_video_task_url(base_url, task_id)
+        try:
+            response = await client.get(
+                url,
+                headers=api_headers(json_body=False, provider=provider, model=model),
+                timeout=H3_POLL_REQUEST_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            print(f"[h3] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        try:
+            raw = response.json() if response.text else {}
+        except Exception:
+            raw = {}
+        if response.status_code >= 500 or response.status_code == 429:
+            print(f"[h3] 轮询暂时失败 http={response.status_code}，保留任务号继续重试")
+            delay = min(delay + 1.0, 10.0)
+            continue
+        if response.status_code >= 400:
+            detail = h3.h3_error_text(raw, getattr(response, "text", ""))
+            raise HTTPException(status_code=502, detail=f"H3 视频任务查询失败：{detail}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="H3 视频任务查询返回了无法识别的响应。")
+        last_payload = raw
+        state, _ = h3.h3_task_state(raw)
+        if state == "success":
+            return raw
+        if state == "failed":
+            raise HTTPException(status_code=502, detail=f"H3 视频生成任务失败：{h3.h3_error_text(raw)}")
+        delay = min(delay + 0.5, 10.0)
+    raise HTTPException(status_code=504, detail=f"H3 视频生成任务超时：{last_payload or task_id}")
+
+async def generate_h3_video(client, payload, provider, base_url, requested_model):
+    api_key = h3_api_key(provider)
+    body, image_urls = h3.build_h3_video_request(payload, requested_model)
+    submit_url = h3.h3_video_submit_url(base_url)
+    headers = api_headers(json_body=not bool(image_urls), provider=provider, model=requested_model)
+    if image_urls:
+        ref_file = await yuli_fetch_reference_bytes(client, image_urls[0])
+        if not ref_file:
+            raise HTTPException(status_code=400, detail="H3 没有读到首帧图。请使用画布本地图片。")
+        files = {"first_frame": ref_file}
+        data = {key: str(value) for key, value in body.items()}
+        response = await client.post(
+            submit_url,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=H3_SUBMIT_REQUEST_TIMEOUT,
+        )
+    else:
+        response = await client.post(
+            submit_url,
+            headers=headers,
+            json=body,
+            timeout=H3_SUBMIT_REQUEST_TIMEOUT,
+        )
+    if response.status_code >= 400:
+        detail = h3_response_error_text(response)
+        raise HTTPException(status_code=response.status_code, detail=f"H3 视频接口错误：{detail}")
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or "")[:500]
+        raise HTTPException(status_code=502, detail=f"H3 视频接口返回非 JSON 响应：{resp_text}") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"H3 视频接口返回了无法识别的响应：{str(raw)[:500]}")
+    task_id = h3.h3_task_id(raw)
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f"H3 视频接口没有返回任务号：{str(raw)[:500]}")
+    state, _ = h3.h3_task_state(raw)
+    if state == "failed":
+        raise HTTPException(status_code=502, detail=f"H3 视频生成任务失败：{h3.h3_error_text(raw)}")
+    result = raw if state == "success" else await wait_for_h3_video_task(
+        client, provider, base_url, task_id, requested_model
+    )
+    local_url = await save_remote_video_to_output(
+        h3.h3_video_content_url(base_url, task_id),
+        prefix="h3_video_",
+        extra_headers={"Authorization": bearer_auth_value(api_key)},
+        timeout=H3_DOWNLOAD_REQUEST_TIMEOUT,
+    )
+    if not str(local_url or "").startswith(("/output/", "/assets/")):
+        raise HTTPException(status_code=502, detail=f"H3 任务 {task_id} 已完成但成片下载失败。")
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
+
 def canvas_video_task_type(provider, model=""):
     if is_grok2api_route(provider, model):
         return "grok2api-video"
+    if is_h3_route(provider, model):
+        return "h3-video"
     if is_cangyuan_video_route(provider, model):
         return "cangyuan-video"
     if is_chre3_video_route(provider, model):
@@ -17423,6 +17602,7 @@ def canvas_video_task_type(provider, model=""):
 def canvas_video_task_id_prefix(task_type):
     return {
         "grok2api-video": "canvas_grok2api_",
+        "h3-video": "canvas_h3_",
         "cangyuan-video": "canvas_cangyuan_",
         "chre3-video": "canvas_chre3_",
         "pidoi-video": "canvas_pidoi_",
@@ -17432,6 +17612,7 @@ def canvas_video_task_id_prefix(task_type):
 def canvas_video_task_label(task_type):
     return {
         "grok2api-video": "Grok2API",
+        "h3-video": "H3",
         "cangyuan-video": "苍元",
         "chre3-video": "chre3",
         "pidoi-video": "Pidoi",
@@ -17467,6 +17648,8 @@ async def generate_canvas_video_for_background_task(client, payload, provider, b
         return await generate_pidoi_video(client, payload, provider, base_url, requested_model)
     if task_type == "codelba-video":
         return await generate_codelba_video(client, payload, provider, base_url, requested_model)
+    if task_type == "h3-video":
+        return await generate_h3_video(client, payload, provider, base_url, requested_model)
     raise HTTPException(status_code=500, detail=f"不支持的后台视频任务类型：{task_type}")
 
 async def run_canvas_video_background_task(task_id, payload, provider, base_url, requested_model, task_type):
@@ -17726,6 +17909,8 @@ async def canvas_video(payload: CanvasVideoRequest):
     if is_chre3_video_provider(provider) or is_zexi_provider(provider) or is_megabyai_provider(provider) or is_grok2api_provider(provider) or is_codelba_provider(provider):
         # 纯中转站不写死默认模型名，取用户已保存的第一个视频模型。
         default_video_model = provider_first_video_model(provider)
+    elif is_h3_provider(provider):
+        default_video_model = provider_first_video_model(provider) or h3.H3_DEFAULT_MODEL
     elif is_cangyuan_video_provider(provider):
         default_video_model = CANGYUAN_VIDEO_DEFAULT_MODEL
     elif is_agnes:
@@ -17805,6 +17990,15 @@ async def canvas_video(payload: CanvasVideoRequest):
         except httpx.HTTPError as exc:
             log_net_error(f"视频(MegabyAI) 网络/TLS错误 model={requested_model}", exc)
             raise HTTPException(status_code=502, detail=f"请求 MegabyAI 视频接口失败：{str(exc) or type(exc).__name__}") from exc
+    if is_h3_route(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as h3_client:
+                return await generate_h3_video(h3_client, payload, provider, base_url, requested_model)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(H3) 网络/TLS错误 model={requested_model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求 H3 视频接口失败：{str(exc) or type(exc).__name__}") from exc
     if is_zexi_route(provider, requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as zexi_client:
