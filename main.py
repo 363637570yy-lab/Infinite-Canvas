@@ -363,24 +363,54 @@ CANGYUAN_VIDEO_MAX_DURATION = 15
 CANGYUAN_VIDEO_MAX_IMAGE_REFS = 4
 CANGYUAN_VIDEO_MAX_VIDEO_REFS = 3
 CANGYUAN_VIDEO_MAX_AUDIO_REFS = 1
+# sd5 全能参考：图 ≤9，视频+音频共享 3 个名额，全部素材合计 ≤12。
+CANGYUAN_SD5_MAX_IMAGE_REFS = 9
+CANGYUAN_SD5_MAX_VIDEO_REFS = 3
+CANGYUAN_SD5_MAX_AUDIO_REFS = 3
+CANGYUAN_SD5_MAX_SOURCE_REFS = 3
+CANGYUAN_SD5_MAX_TOTAL_REFS = 12
+# 站点 poll.maxAttempts=1440、delayMs=5000，合计 2 小时。只用于苍元轮询总时长，
+# 不改全局 VIDEO_POLL_TIMEOUT（chre3 / 泽西 / MegabyAI 等仍是 30 分钟）。
+CANGYUAN_VIDEO_POLL_TIMEOUT = float(os.getenv("CANGYUAN_VIDEO_POLL_TIMEOUT", str(1440 * 5)))
 # 苍元同站的视频模型分属不同的 payloadBuilder 家族，字段互不通用。/v1/models 只返回
-# id + supported_endpoint_types，不带家族信息，所以家族映射按模型 id 显式登记；未登记的
-# id 一律留在 seedance-flat（本协议最早实现、也是站点模型最多的家族），不按名称乱猜。
+# id + supported_endpoint_types，不带家族信息，所以家族映射按模型 id 显式登记。
+# seedance / sd5 / sd7 前缀留在 seedance-flat；omni / kling 走自己的家族；
+# veo / grok-video / happyhouse / minimax / gemini-omni / sora 未实现，选中即拦截，
+# 不得再落到 seedance-flat 以免带上对方文档没有的字段。
 CANGYUAN_FAMILY_SEEDANCE_FLAT = "seedance-flat"
 CANGYUAN_FAMILY_OMNI_FRAME = "omni-frame"
 CANGYUAN_FAMILY_OMNI_V2V = "omni-v2v"
+CANGYUAN_FAMILY_KLING = "kling"
+CANGYUAN_FAMILY_UNSUPPORTED = "unsupported"
 CANGYUAN_VIDEO_MODEL_FAMILIES = {
     "omni-fast": CANGYUAN_FAMILY_OMNI_FRAME,
     "omni-fast-no-water": CANGYUAN_FAMILY_OMNI_FRAME,
     "omni-v2v": CANGYUAN_FAMILY_OMNI_V2V,
     "omni-v2v-no-water": CANGYUAN_FAMILY_OMNI_V2V,
+    "kling-3.0": CANGYUAN_FAMILY_KLING,
+    "kling-3.0-omni": CANGYUAN_FAMILY_KLING,
 }
-# omni 两族的官方参数里没有 duration / resolution / audio，比例只收 16:9 和 9:16。
+CANGYUAN_UNSUPPORTED_PREFIXES = (
+    "veo-",
+    "grok-video",
+    "happyhouse-",
+    "minimax-",
+    "gemini-omni-",
+    "sora-",
+)
+# omni 两族的官方参数里没有 duration / resolution / generate_audio，比例只收 16:9 和 9:16。
 CANGYUAN_OMNI_ASPECT_RATIOS = {"16:9", "9:16"}
 CANGYUAN_OMNI_PORTRAIT_RATIOS = {"9:16", "3:4"}
-CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS = 1
+CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS = 5
 CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS = 2
 CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS = 2
+CANGYUAN_KLING_ASPECT_RATIOS = {"16:9", "9:16"}
+CANGYUAN_KLING_RESOLUTIONS = {"720p", "1080p"}
+CANGYUAN_KLING_DEFAULT_RESOLUTION = "720p"
+CANGYUAN_KLING_MIN_DURATION = 3
+CANGYUAN_KLING_MAX_DURATION = 15
+CANGYUAN_KLING_MAX_IMAGE_REFS = 2
+CANGYUAN_KLING_OMNI_MAX_IMAGE_REFS = 3
 # 泽西同学（zexitongxue.com）：同样是 POST /v1/videos + GET /v1/videos/{id}，但与
 # cangyuan 的字段和上限都不同（首尾帧用 first_frame/last_frame 而不是 first_image_url，
 # 上限按模型读能力目录而不是常量，且没有 audio 开关字段），所以单独成一个协议；
@@ -15126,12 +15156,18 @@ def humanize_video_task_failure(reason) -> str:
         )
     return f"视频生成任务失败：{text}"
 
+def video_poll_timeout_for(provider) -> float:
+    """轮询总时长按协议分开：苍元站点文档是 2 小时，其它合同仍用全局 30 分钟。"""
+    if is_cangyuan_video_provider(provider):
+        return CANGYUAN_VIDEO_POLL_TIMEOUT
+    return VIDEO_POLL_TIMEOUT
+
 async def wait_for_video_task(client, provider, task_id, submit_url="", model=""):
     base_url = video_api_root(provider)
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
     task_urls = video_task_url_candidates(provider, base_url, task_id, submit_url, model)
-    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    deadline = time.monotonic() + video_poll_timeout_for(provider)
     delay = max(2.0, IMAGE_POLL_INTERVAL)
     last_payload = {}
     while time.monotonic() < deadline:
@@ -15405,19 +15441,48 @@ async def cangyuan_reference_url(value, kind, index, allow_data_uri=False):
     return await sd2_public_reference_url(raw, kind, index, label="苍元视频")
 
 def cangyuan_video_family(model):
-    """按模型 id 判定 payloadBuilder 家族；未登记的 id 保持 seedance-flat。"""
+    """按模型 id 判定 payloadBuilder 家族。未实现的家族返回 unsupported，不得落到 seedance-flat。"""
     mid = str(model or "").strip().lower()
     if not mid:
         return CANGYUAN_FAMILY_SEEDANCE_FLAT
     family = CANGYUAN_VIDEO_MODEL_FAMILIES.get(mid)
     if family:
         return family
-    # 站点用 `-no-water` 之类的后缀派生同族新模型，前缀规则只在 omni 两族内生效。
     if mid.startswith("omni-v2v"):
         return CANGYUAN_FAMILY_OMNI_V2V
     if mid.startswith("omni-"):
         return CANGYUAN_FAMILY_OMNI_FRAME
+    if mid.startswith("kling-"):
+        return CANGYUAN_FAMILY_KLING
+    if any(mid.startswith(prefix) for prefix in CANGYUAN_UNSUPPORTED_PREFIXES):
+        return CANGYUAN_FAMILY_UNSUPPORTED
     return CANGYUAN_FAMILY_SEEDANCE_FLAT
+
+def is_cangyuan_sd5_model(model):
+    return str(model or "").strip().lower().startswith("sd5-")
+
+def cangyuan_collect_refs(refs):
+    values = []
+    for ref in refs or []:
+        value = sd2_reference_value(ref)
+        if value:
+            values.append(value)
+    return values
+
+def cangyuan_require_ref_limit(values, limit, model, kind):
+    if len(values) > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{model} 最多接受 {limit} 个{kind}参考素材，当前为 {len(values)} 个。多余素材不会静默丢弃，请先移除。",
+        )
+    return values
+
+def cangyuan_unsupported_model_detail(model):
+    return (
+        f"苍元模型 {model} 的请求体家族尚未实现，不能按 Seedance 字段提交，"
+        "否则参考图会被上游静默忽略或直接拒绝。"
+        "请改用 seedance / sd5-seedance / omni / kling 系模型。"
+    )
 
 def cangyuan_omni_aspect_ratio(aspect_ratio="", size=""):
     value = str(aspect_ratio or "").strip() or str(size or "").strip()
@@ -15426,9 +15491,29 @@ def cangyuan_omni_aspect_ratio(aspect_ratio="", size=""):
     # omni 只收 16:9 / 9:16，画布上的其它比例按取向就近落到竖屏或横屏。
     return "9:16" if value in CANGYUAN_OMNI_PORTRAIT_RATIOS else "16:9"
 
+def cangyuan_kling_aspect_ratio(aspect_ratio="", size=""):
+    return cangyuan_omni_aspect_ratio(aspect_ratio, size)
+
+def cangyuan_kling_duration(duration):
+    try:
+        value = int(duration)
+    except Exception:
+        value = 8
+    return max(CANGYUAN_KLING_MIN_DURATION, min(CANGYUAN_KLING_MAX_DURATION, value))
+
+def cangyuan_kling_resolution(resolution=""):
+    value = str(resolution or "").strip().lower()
+    return value if value in CANGYUAN_KLING_RESOLUTIONS else CANGYUAN_KLING_DEFAULT_RESOLUTION
+
+def cangyuan_kling_max_image_refs(model):
+    mid = str(model or "").strip().lower()
+    if "omni" in mid:
+        return CANGYUAN_KLING_OMNI_MAX_IMAGE_REFS
+    return CANGYUAN_KLING_MAX_IMAGE_REFS
+
 async def build_cangyuan_omni_frame_request(payload, model):
-    """omni-fast 系（图生视频）：只有 model / prompt / aspect_ratio + 单张图或成对首尾帧。"""
-    if sd2_reference_values(payload.videos, 1) or sd2_reference_values(payload.audios, 1):
+    """omni-fast 系：model / prompt / aspect_ratio + reference_image_urls（≤5）或成对首尾帧。"""
+    if cangyuan_collect_refs(payload.videos) or cangyuan_collect_refs(payload.audios):
         raise HTTPException(
             status_code=400,
             detail=f"{model} 是图生视频模型，不支持参考视频/音频。要做视频转视频请改用 omni-v2v 系模型。",
@@ -15438,35 +15523,46 @@ async def build_cangyuan_omni_frame_request(payload, model):
         "prompt": normalize_sd2_prompt(payload.prompt),
         "aspect_ratio": cangyuan_omni_aspect_ratio(payload.aspect_ratio, payload.size),
     }
-    # 首尾帧与单图互斥，成对标注的首尾帧优先。
     first_ref, last_ref = cangyuan_frame_pair(payload.images)
     if first_ref is not None:
         body["first_image_url"] = await cangyuan_reference_url(sd2_reference_value(first_ref), "首帧图片", 1, allow_data_uri=True)
         body["last_image_url"] = await cangyuan_reference_url(sd2_reference_value(last_ref), "尾帧图片", 2, allow_data_uri=True)
         return body
 
-    image_values = sd2_reference_values(payload.images, CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS + 1)
-    if len(image_values) > CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS:
-        # 多出来的图在上游会被直接丢掉，宁可在这里报错也不要静默少送素材。
-        raise HTTPException(
-            status_code=400,
-            detail=f"{model} 只接受 1 张参考图；要用首尾帧请保留两张并分别标注首帧和尾帧，其余请移除。",
-        )
+    image_values = cangyuan_require_ref_limit(
+        cangyuan_collect_refs(payload.images),
+        CANGYUAN_OMNI_FRAME_MAX_IMAGE_REFS,
+        model,
+        "图片",
+    )
     if image_values:
-        body["image_url"] = await cangyuan_reference_url(image_values[0], "图片", 1, allow_data_uri=True)
+        body["reference_image_urls"] = [
+            await cangyuan_reference_url(value, "图片", index, allow_data_uri=True)
+            for index, value in enumerate(image_values, 1)
+        ]
     return body
 
 async def build_cangyuan_omni_v2v_request(payload, model):
-    """omni-v2v 系（视频转视频）：参考视频是主输入，没有 duration / resolution / audio。"""
-    if sd2_reference_values(payload.audios, 1):
+    """omni-v2v 系（视频转视频）：参考视频是主输入，没有 duration / resolution / generate_audio。"""
+    if cangyuan_collect_refs(payload.audios):
         raise HTTPException(status_code=400, detail=f"{model} 不支持参考音频，请移除音频素材后重试。")
     body = {
         "model": model,
         "prompt": normalize_sd2_prompt(payload.prompt),
         "aspect_ratio": cangyuan_omni_aspect_ratio(payload.aspect_ratio, payload.size),
     }
-    video_values = sd2_reference_values(payload.videos, CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS)
-    image_values = sd2_reference_values(payload.images, CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS)
+    video_values = cangyuan_require_ref_limit(
+        cangyuan_collect_refs(payload.videos),
+        CANGYUAN_OMNI_V2V_MAX_VIDEO_REFS,
+        model,
+        "视频",
+    )
+    image_values = cangyuan_require_ref_limit(
+        cangyuan_collect_refs(payload.images),
+        CANGYUAN_OMNI_V2V_MAX_IMAGE_REFS,
+        model,
+        "图片",
+    )
     if video_values:
         body["reference_videos"] = [
             await cangyuan_reference_url(value, "视频", index)
@@ -15479,31 +15575,86 @@ async def build_cangyuan_omni_v2v_request(payload, model):
         ]
     return body
 
-async def build_cangyuan_video_request(payload, requested_model):
-    model = selected_model(requested_model, CANGYUAN_VIDEO_DEFAULT_MODEL)
-    family = cangyuan_video_family(model)
-    if family == CANGYUAN_FAMILY_OMNI_FRAME:
-        return await build_cangyuan_omni_frame_request(payload, model)
-    if family == CANGYUAN_FAMILY_OMNI_V2V:
-        return await build_cangyuan_omni_v2v_request(payload, model)
+async def build_cangyuan_kling_request(payload, model):
+    """kling 系：只发模型页列出的字段，不要参考视频/音频。"""
+    if cangyuan_collect_refs(payload.videos) or cangyuan_collect_refs(payload.audios):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{model} 不支持参考视频或参考音频，请只保留最多 {cangyuan_kling_max_image_refs(model)} 张参考图或成对首尾帧。",
+        )
+    body = {
+        "model": model,
+        "prompt": normalize_sd2_prompt(payload.prompt),
+        "duration": cangyuan_kling_duration(payload.duration),
+        "aspect_ratio": cangyuan_kling_aspect_ratio(payload.aspect_ratio, payload.size),
+        "resolution": cangyuan_kling_resolution(payload.resolution),
+        "generate_audio": bool(payload.generate_audio),
+    }
+    first_ref, last_ref = cangyuan_frame_pair(payload.images)
+    if first_ref is not None:
+        body["first_image_url"] = await cangyuan_reference_url(sd2_reference_value(first_ref), "首帧图片", 1, allow_data_uri=True)
+        body["last_image_url"] = await cangyuan_reference_url(sd2_reference_value(last_ref), "尾帧图片", 2, allow_data_uri=True)
+        return body
+    image_values = cangyuan_require_ref_limit(
+        cangyuan_collect_refs(payload.images),
+        cangyuan_kling_max_image_refs(model),
+        model,
+        "图片",
+    )
+    if image_values:
+        body["reference_image_urls"] = [
+            await cangyuan_reference_url(value, "图片", index, allow_data_uri=True)
+            for index, value in enumerate(image_values, 1)
+        ]
+    return body
+
+async def build_cangyuan_seedance_request(payload, model):
+    """seedance-flat：统一发 generate_audio；sd5 走 9/3/3 合计 12 的全能参考上限。"""
     body = {
         "model": model,
         "prompt": normalize_sd2_prompt(payload.prompt),
         "aspect_ratio": cangyuan_video_aspect_ratio(payload.aspect_ratio, payload.size),
         "duration": cangyuan_video_duration(payload.duration),
         "resolution": cangyuan_video_resolution(payload.resolution),
-        "audio": bool(payload.generate_audio),
+        "generate_audio": bool(payload.generate_audio),
     }
-    # 首尾帧与多模态参考素材互斥，成对标注的首尾帧优先。
+    if is_cangyuan_sd5_model(model) and payload.seed is not None:
+        try:
+            body["seed"] = int(payload.seed)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{model} 的 seed 必须是整数。") from None
     first_ref, last_ref = cangyuan_frame_pair(payload.images)
     if first_ref is not None:
         body["first_image_url"] = await cangyuan_reference_url(sd2_reference_value(first_ref), "首帧图片", 1, allow_data_uri=True)
         body["last_image_url"] = await cangyuan_reference_url(sd2_reference_value(last_ref), "尾帧图片", 2, allow_data_uri=True)
         return body
 
-    image_values = sd2_reference_values(payload.images, CANGYUAN_VIDEO_MAX_IMAGE_REFS)
-    video_values = sd2_reference_values(payload.videos, CANGYUAN_VIDEO_MAX_VIDEO_REFS)
-    audio_values = sd2_reference_values(payload.audios, CANGYUAN_VIDEO_MAX_AUDIO_REFS)
+    image_values = cangyuan_collect_refs(payload.images)
+    video_values = cangyuan_collect_refs(payload.videos)
+    audio_values = cangyuan_collect_refs(payload.audios)
+    if is_cangyuan_sd5_model(model):
+        cangyuan_require_ref_limit(image_values, CANGYUAN_SD5_MAX_IMAGE_REFS, model, "图片")
+        cangyuan_require_ref_limit(video_values, CANGYUAN_SD5_MAX_VIDEO_REFS, model, "视频")
+        cangyuan_require_ref_limit(audio_values, CANGYUAN_SD5_MAX_AUDIO_REFS, model, "音频")
+        source_count = len(video_values) + len(audio_values)
+        if source_count > CANGYUAN_SD5_MAX_SOURCE_REFS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{model} 的参考视频与参考音频合计最多 {CANGYUAN_SD5_MAX_SOURCE_REFS} 个，"
+                    f"当前为 {source_count} 个。"
+                ),
+            )
+        total_count = len(image_values) + source_count
+        if total_count > CANGYUAN_SD5_MAX_TOTAL_REFS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{model} 的参考素材合计最多 {CANGYUAN_SD5_MAX_TOTAL_REFS} 个，当前为 {total_count} 个。",
+            )
+    else:
+        cangyuan_require_ref_limit(image_values, CANGYUAN_VIDEO_MAX_IMAGE_REFS, model, "图片")
+        cangyuan_require_ref_limit(video_values, CANGYUAN_VIDEO_MAX_VIDEO_REFS, model, "视频")
+        cangyuan_require_ref_limit(audio_values, CANGYUAN_VIDEO_MAX_AUDIO_REFS, model, "音频")
     if (video_values or audio_values) and not image_values:
         raise HTTPException(status_code=400, detail="苍元视频的多模态素材需要至少 1 张参考图，请先添加图片再附加参考视频/音频。")
     if image_values:
@@ -15522,6 +15673,19 @@ async def build_cangyuan_video_request(payload, requested_model):
             for index, value in enumerate(audio_values, 1)
         ]
     return body
+
+async def build_cangyuan_video_request(payload, requested_model):
+    model = selected_model(requested_model, CANGYUAN_VIDEO_DEFAULT_MODEL)
+    family = cangyuan_video_family(model)
+    if family == CANGYUAN_FAMILY_UNSUPPORTED:
+        raise HTTPException(status_code=400, detail=cangyuan_unsupported_model_detail(model))
+    if family == CANGYUAN_FAMILY_OMNI_FRAME:
+        return await build_cangyuan_omni_frame_request(payload, model)
+    if family == CANGYUAN_FAMILY_OMNI_V2V:
+        return await build_cangyuan_omni_v2v_request(payload, model)
+    if family == CANGYUAN_FAMILY_KLING:
+        return await build_cangyuan_kling_request(payload, model)
+    return await build_cangyuan_seedance_request(payload, model)
 
 async def generate_cangyuan_video(client, payload, provider, base_url, requested_model):
     """调用苍元视频合同：POST /v1/videos，GET /v1/videos/{id}。"""

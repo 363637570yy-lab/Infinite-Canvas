@@ -104,12 +104,14 @@
                                 </div>
                                 <div class="cangyuan-video-hint">
                                     <span class="ms-line">苍元视频地址示例：<span class="inline-code">https://ai.cangyuansuanli.cn</span></span>
-                                    <span class="ms-line">视频接口固定为 <span class="inline-code">POST /v1/videos</span>，查询 <span class="inline-code">GET /v1/videos/{id}</span>。</span>
-                                    <span class="ms-line">适用于 seedance 系模型（<span class="inline-code">seedance-2.0</span> / <span class="inline-code">-fast</span> / <span class="inline-code">-mini</span> / <span class="inline-code">sd5-seedance-2.0</span>）：画幅 <span class="inline-code">aspect_ratio</span>、清晰度 <span class="inline-code">resolution</span>（480p / 720p）、时长 <span class="inline-code">duration</span> 4–15 秒。</span>
-                                    <span class="ms-line">参考图走 <span class="inline-code">reference_image_urls</span>（≤4，支持 data:image Base64 免图床），参考视频 ≤3、参考音频 ≤1，均需公网直链；首尾帧与多模态互斥。</span>
-                                    <span class="ms-line"><span class="inline-code">omni-fast</span> / <span class="inline-code">-no-water</span>（图生视频）：只收 1 张参考图（<span class="inline-code">image_url</span>）或成对首尾帧，不支持参考视频/音频，无时长和清晰度参数，画幅仅 16:9 / 9:16。</span>
+                                    <span class="ms-line">视频接口固定为 <span class="inline-code">POST /v1/videos</span>，查询 <span class="inline-code">GET /v1/videos/{id}</span>。统一 JSON，音频开关字段是 <span class="inline-code">generate_audio</span>（不勾选会显式传 false，避免上游默认有声）。</span>
+                                    <span class="ms-line">适用于 seedance 系模型（<span class="inline-code">seedance-2.0</span> / <span class="inline-code">-fast</span> / <span class="inline-code">-mini</span>）：画幅 <span class="inline-code">aspect_ratio</span>、清晰度 <span class="inline-code">resolution</span>（480p / 720p，未填仍发 720p）、时长 <span class="inline-code">duration</span> 4–15 秒；参考图 ≤4、参考视频 ≤3、参考音频 ≤1，超出直接报错。</span>
+                                    <span class="ms-line"><span class="inline-code">sd5-seedance-2.0</span> / <span class="inline-code">-fast</span>：全能参考图 ≤9，视频+音频共享 3 个名额，全部素材合计 ≤12；可选整数 <span class="inline-code">seed</span>。轮询总时长按站点文档 2 小时，不占用其它协议的 30 分钟超时。</span>
+                                    <span class="ms-line">参考图走 <span class="inline-code">reference_image_urls</span>（支持 data:image Base64），参考视频/音频须公网 HTTPS 直链；首尾帧与多模态互斥。</span>
+                                    <span class="ms-line"><span class="inline-code">omni-fast</span> / <span class="inline-code">-no-water</span>（图生视频）：参考图 ≤5（<span class="inline-code">reference_image_urls</span>）或成对首尾帧，不支持参考视频/音频，无时长和清晰度参数，画幅仅 16:9 / 9:16。</span>
                                     <span class="ms-line"><span class="inline-code">omni-v2v</span> / <span class="inline-code">-no-water</span>（视频转视频）：参考视频 ≤2 为主输入，参考图 ≤2，不支持参考音频，同样无时长和清晰度参数，画幅仅 16:9 / 9:16。</span>
-                                    <span class="ms-line"><span class="inline-code">sora-2</span> / <span class="inline-code">veo-3-1</span> 系走站点的 chat-video 家族，本协议尚未实现其参考图字段，选中后请只用纯文生。</span>
+                                    <span class="ms-line"><span class="inline-code">kling-3.0</span>：参考图 ≤2（<span class="inline-code">kling-3.0-omni</span> ≤3），可成对首尾帧，不支持参考视频/音频；时长 3–15 秒，清晰度 720p / 1080p（未填仍发 720p，不改成文档默认 1080p）。</span>
+                                    <span class="ms-line"><span class="inline-code">veo</span> / <span class="inline-code">grok-video</span> / <span class="inline-code">happyhouse</span> / <span class="inline-code">minimax</span> / <span class="inline-code">sora</span> 系尚未实现其文档字段，选中会直接拦截，不会再落到 Seedance 请求体。</span>
                                 </div>
                                 <div class="zexi-hint">
                                     <span class="ms-line">泽西同学地址：<span class="inline-code">https://zexitongxue.com</span>（同一个平台同时提供视频和图片）。</span>

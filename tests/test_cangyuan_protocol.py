@@ -70,9 +70,9 @@ class CangyuanProtocolTests(unittest.TestCase):
         self.assertEqual(body["aspect_ratio"], "9:16")
         self.assertEqual(body["duration"], 8)
         self.assertEqual(body["resolution"], "480p")
-        self.assertEqual(body["audio"], True)
+        self.assertEqual(body["generate_audio"], True)
         # chre3 的字段名一个都不能出现，否则上游会静默忽略。
-        for chre3_key in ("size", "image_refs", "video_refs", "audio_refs", "compliance_enabled", "compliance_mode"):
+        for chre3_key in ("size", "image_refs", "video_refs", "audio_refs", "compliance_enabled", "compliance_mode", "audio"):
             self.assertNotIn(chre3_key, body)
 
     def test_duration_allows_four_seconds_and_clamps_out_of_range(self):
@@ -130,13 +130,108 @@ class CangyuanProtocolTests(unittest.TestCase):
             asyncio.run(main.build_cangyuan_video_request(payload, "seedance-2.0"))
         self.assertEqual(ctx.exception.status_code, 400)
 
-    def test_reference_counts_are_capped_at_the_documented_limits(self):
+    def test_generate_audio_false_is_sent_explicitly(self):
+        payload = main.CanvasVideoRequest(prompt="无声", generate_audio=False)
+        body = asyncio.run(main.build_cangyuan_video_request(payload, "seedance-2.0"))
+        self.assertEqual(body["generate_audio"], False)
+        self.assertNotIn("audio", body)
+
+    def test_over_limit_reference_images_fail_loudly_instead_of_being_dropped(self):
         payload = main.CanvasVideoRequest(
             prompt="多模态",
             images=[main.AIReference(url=f"data:image/png;base64,IMG{i}") for i in range(6)],
         )
-        body = asyncio.run(main.build_cangyuan_video_request(payload, "seedance-2.0"))
-        self.assertEqual(len(body["reference_image_urls"]), main.CANGYUAN_VIDEO_MAX_IMAGE_REFS)
+        with self.assertRaises(main.HTTPException) as ctx:
+            asyncio.run(main.build_cangyuan_video_request(payload, "seedance-2.0"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("最多接受 4", ctx.exception.detail)
+
+    def test_sd5_allows_five_reference_images_and_keeps_generate_audio(self):
+        payload = main.CanvasVideoRequest(
+            prompt="全能参考",
+            generate_audio=False,
+            images=[main.AIReference(url=f"data:image/png;base64,IMG{i}") for i in range(5)],
+        )
+        body = asyncio.run(main.build_cangyuan_video_request(payload, "sd5-seedance-2.0-fast"))
+        self.assertEqual(len(body["reference_image_urls"]), 5)
+        self.assertEqual(body["generate_audio"], False)
+        self.assertNotIn("audio", body)
+
+    def test_sd5_rejects_shared_video_audio_quota(self):
+        payload = main.CanvasVideoRequest(
+            prompt="超额源素材",
+            images=[main.AIReference(url="data:image/png;base64,IMG")],
+            videos=["https://cdn.example.com/a.mp4", "https://cdn.example.com/b.mp4"],
+            audios=["https://cdn.example.com/a.mp3", "https://cdn.example.com/b.mp3"],
+        )
+        with self.assertRaises(main.HTTPException) as ctx:
+            asyncio.run(main.build_cangyuan_video_request(payload, "sd5-seedance-2.0"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("合计最多 3", ctx.exception.detail)
+
+    def test_sd5_sends_seed_only_when_explicit(self):
+        with_seed = asyncio.run(main.build_cangyuan_video_request(
+            main.CanvasVideoRequest(prompt="带种子", seed=0),
+            "sd5-seedance-2.0",
+        ))
+        without_seed = asyncio.run(main.build_cangyuan_video_request(
+            main.CanvasVideoRequest(prompt="无种子"),
+            "sd5-seedance-2.0",
+        ))
+        self.assertEqual(with_seed["seed"], 0)
+        self.assertNotIn("seed", without_seed)
+
+    def test_kling_family_sends_documented_fields_only(self):
+        payload = main.CanvasVideoRequest(
+            prompt="可灵",
+            duration=3,
+            aspect_ratio="1:1",
+            resolution="1080p",
+            generate_audio=False,
+            images=[main.AIReference(url="data:image/png;base64,IMG")],
+        )
+        body = asyncio.run(main.build_cangyuan_video_request(payload, "kling-3.0"))
+        self.assertEqual(main.cangyuan_video_family("kling-3.0"), main.CANGYUAN_FAMILY_KLING)
+        self.assertEqual(body["duration"], 3)
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertEqual(body["resolution"], "1080p")
+        self.assertEqual(body["generate_audio"], False)
+        self.assertEqual(body["reference_image_urls"], ["data:image/png;base64,IMG"])
+        for extra in ("audio", "reference_videos", "reference_audios", "image_url"):
+            self.assertNotIn(extra, body)
+
+    def test_kling_rejects_video_or_audio_refs(self):
+        payload = main.CanvasVideoRequest(
+            prompt="可灵",
+            videos=["https://cdn.example.com/ref.mp4"],
+        )
+        with self.assertRaises(main.HTTPException) as ctx:
+            asyncio.run(main.build_cangyuan_video_request(payload, "kling-3.0"))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_kling_omni_allows_three_images(self):
+        payload = main.CanvasVideoRequest(
+            prompt="可灵 omni",
+            images=[main.AIReference(url=f"data:image/png;base64,IMG{i}") for i in range(3)],
+        )
+        body = asyncio.run(main.build_cangyuan_video_request(payload, "kling-3.0-omni"))
+        self.assertEqual(len(body["reference_image_urls"]), 3)
+
+    def test_unimplemented_families_are_rejected_instead_of_seedance_fallback(self):
+        for model in ("veo-3.1", "grok-video", "happyhouse-1.0", "minimax-h3-2k", "sora-2", "gemini-omni-flash"):
+            self.assertEqual(main.cangyuan_video_family(model), main.CANGYUAN_FAMILY_UNSUPPORTED)
+            with self.assertRaises(main.HTTPException) as ctx:
+                asyncio.run(main.build_cangyuan_video_request(main.CanvasVideoRequest(prompt="拦截"), model))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("尚未实现", ctx.exception.detail)
+
+    def test_cangyuan_poll_timeout_is_two_hours_and_does_not_change_global(self):
+        self.assertEqual(main.CANGYUAN_VIDEO_POLL_TIMEOUT, 7200)
+        self.assertEqual(main.VIDEO_POLL_TIMEOUT, 1800)
+        cangyuan = {"id": "cangyuan", "protocol": main.CANGYUAN_VIDEO_PROTOCOL}
+        other = {"id": "chre3", "protocol": main.CHRE3_VIDEO_PROTOCOL}
+        self.assertEqual(main.video_poll_timeout_for(cangyuan), 7200)
+        self.assertEqual(main.video_poll_timeout_for(other), 1800)
 
     def test_chre3_error_wording_is_unchanged_by_the_shared_label_helper(self):
         chre3 = {"id": "chre3", "protocol": main.CHRE3_VIDEO_PROTOCOL}
