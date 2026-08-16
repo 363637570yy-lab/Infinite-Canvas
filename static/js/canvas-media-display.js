@@ -83,6 +83,13 @@
         return Math.min(OUTPUT_GRID_EAGER_COUNT, n);
     }
 
+    function outputVisibleRange(total, options) {
+        const n = Math.max(0, Number(total) || 0);
+        const eager = outputEagerMediaCount(n, options);
+        if (eager >= n) return { start: 0, end: n, hidden: 0 };
+        return { start: n - eager, end: n, hidden: n - eager };
+    }
+
     function shouldRestorePreviewSrc(src, preview) {
         return Boolean(preview && src && src !== preview);
     }
@@ -269,6 +276,7 @@
         mediaSignature,
         collectMediaSlots,
         outputEagerMediaCount,
+        outputVisibleRange,
         shouldRestorePreviewSrc,
         restorePreviewSources,
         mountPreviewImage,

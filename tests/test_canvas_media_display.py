@@ -93,6 +93,14 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertEqual(eval_module("api.outputEagerMediaCount(20, {expanded: true})"), 20)
         self.assertEqual(eval_module("api.outputEagerMediaCount(20, {gridSplit: true})"), 20)
 
+    def test_output_visible_range_prefers_newest(self):
+        self.assertEqual(eval_module("api.outputVisibleRange(9, {})"), {"start": 1, "end": 9, "hidden": 1})
+        self.assertEqual(eval_module("api.outputVisibleRange(8, {})"), {"start": 0, "end": 8, "hidden": 0})
+        self.assertEqual(eval_module("api.outputVisibleRange(20, {})"), {"start": 12, "end": 20, "hidden": 12})
+        self.assertEqual(eval_module("api.outputVisibleRange(3, {})"), {"start": 0, "end": 3, "hidden": 0})
+        self.assertEqual(eval_module("api.outputVisibleRange(20, {expanded: true})"), {"start": 0, "end": 20, "hidden": 0})
+        self.assertEqual(eval_module("api.outputVisibleRange(20, {gridSplit: true})"), {"start": 0, "end": 20, "hidden": 0})
+
     def test_restore_preview_skips_empty_src(self):
         self.assertFalse(eval_module("api.shouldRestorePreviewSrc('', '/api/media-preview?w=768&url=%2Fa.png')"))
         self.assertTrue(eval_module("api.shouldRestorePreviewSrc('/output/a.png', '/api/media-preview?w=768&url=%2Fa.png')"))
@@ -105,7 +113,9 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertIn("syncMountedPreviews", source)
         self.assertIn("canvas-media-deferred", source)
         self.assertIn("output-grid-more", source)
+        self.assertIn("outputVisibleRangeForNode", source)
         self.assertIn("outputEagerMountCount", source)
+        self.assertNotIn("mount:index < eager", source)
         self.assertIn("content-visibility: auto", css)
         self.assertIn("canvas-media-display.js", html)
 

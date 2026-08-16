@@ -6388,21 +6388,20 @@ function refreshOutputNodeContent(node){
     grid.classList.toggle('grid-layout', !!layout);
     if(layout) grid.style.setProperty('--grid-cols', String(Math.max(1, Number(layout.cols || 1))));
     else grid.style.removeProperty('--grid-cols');
-    const eager = outputEagerMountCount(node);
-    const hidden = Math.max(0, (node.images || []).length - eager);
+    const range = outputVisibleRangeForNode(node);
     const items = [
-        ...(node.images || []).map((item, index) => ({
+        ...(range.hidden ? [{
+            key:'more:expand',
+            html:`<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(range.hidden))}</button>`
+        }] : []),
+        ...(node.images || []).slice(range.start, range.end).map(item => ({
             key:outputDomKeyForItem(item),
-            html:renderOutputMedia(item, !!layout, {mount:index < eager})
+            html:renderOutputMedia(item, !!layout)
         })),
         ...(node._pending || []).map(p => ({
             key:outputDomKeyForPending(p),
             html:renderPendingOutput(p)
-        })),
-        ...(hidden ? [{
-            key:'more:expand',
-            html:`<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(hidden))}</button>`
-        }] : [])
+        }))
     ];
     const wanted = new Set(items.map(item => item.key));
     [...grid.children].forEach(child => {
@@ -12630,10 +12629,16 @@ function resumeCanvasImageTasks(){
     });
 }
 function outputEagerMountCount(node){
+    const range = outputVisibleRangeForNode(node);
+    return range.end - range.start;
+}
+function outputVisibleRangeForNode(node){
     const total = (node?.images || []).length;
     const display = window.CanvasMediaDisplay;
-    if(!display) return total;
-    return display.outputEagerMediaCount(total, {
+    if(!display || typeof display.outputVisibleRange !== 'function'){
+        return {start:0, end:total, hidden:0};
+    }
+    return display.outputVisibleRange(total, {
         expanded:Boolean(node?._outputGridExpanded),
         gridSplit:Boolean(outputGridLayout(node))
     });
@@ -12692,11 +12697,10 @@ function renderOutputGrid(node, pendingHtml=''){
     const gridClass = layout ? 'output-grid grid-layout' : 'output-grid';
     const style = layout ? ` style="--grid-cols:${Math.max(1, Number(layout.cols || 1))}"` : '';
     const items = node.images || [];
-    const eager = outputEagerMountCount(node);
-    const mediaHtml = items.map((item, index) => renderOutputMedia(item, !!layout, {mount:index < eager})).join('');
-    const hidden = Math.max(0, items.length - eager);
-    const moreHtml = hidden ? `<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(hidden))}</button>` : '';
-    return `<div class="${gridClass}"${style}>${mediaHtml}${pendingHtml}${moreHtml}</div>`;
+    const range = outputVisibleRangeForNode(node);
+    const mediaHtml = items.slice(range.start, range.end).map(item => renderOutputMedia(item, !!layout)).join('');
+    const moreHtml = range.hidden ? `<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(range.hidden))}</button>` : '';
+    return `<div class="${gridClass}"${style}>${moreHtml}${mediaHtml}${pendingHtml}</div>`;
 }
 function outputImageName(url){
     const clean = (url || '').split('?')[0];
