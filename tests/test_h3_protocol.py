@@ -82,8 +82,10 @@ class H3RequestTests(unittest.TestCase):
 
     def test_duration_snaps_and_rejects_portrait(self):
         body, _ = h3.build_h3_video_request(video_payload(duration=8, resolution="720p"), "minimax-h3")
-        self.assertEqual(body["seconds"], 10)
+        self.assertEqual(body["seconds"], 8)
         self.assertEqual(body["size"], "720p")
+        with self.assertRaises(HTTPException):
+            h3.build_h3_video_request(video_payload(duration=4), "minimax-h3")
         with self.assertRaises(HTTPException):
             h3.build_h3_video_request(video_payload(aspect_ratio="9:16"), "minimax-h3")
 

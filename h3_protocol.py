@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 H3_PROTOCOL = "h3"
 H3_DEFAULT_MODEL = "minimax-h3"
-H3_SECONDS = (5, 10, 15)
+H3_SECONDS = tuple(range(5, 16))
 H3_SIZES = {"480p", "720p"}
 H3_DEFAULT_SECONDS = 5
 H3_DEFAULT_SIZE = "480p"
@@ -72,9 +72,9 @@ def h3_seconds(payload):
         value = int(raw)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="H3 视频时长必须是整数。") from exc
-    if value < 1 or value > 15:
-        raise HTTPException(status_code=400, detail="H3 视频时长必须在 1–15 秒之间，并会就近收到 5 / 10 / 15。")
-    return min(H3_SECONDS, key=lambda item: (abs(item - value), -item))
+    if value not in H3_SECONDS:
+        raise HTTPException(status_code=400, detail="H3 视频时长必须是 5–15 秒之间的整数。")
+    return value
 
 
 def h3_size(payload):
