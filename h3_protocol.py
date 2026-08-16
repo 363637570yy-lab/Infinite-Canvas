@@ -1,22 +1,17 @@
 """Local MiniMax H3 gateway protocol.
 
-Public canvas contract is duration / quality / aspect only. Steps and YCNodes
-live on the H3 admin recipe page, not in this client payload.
+Canvas only translates fields and forwards media. Capability checks belong
+to the H3 gateway; this client surfaces that error text and stops.
 """
 
 import urllib.parse
 
-from fastapi import HTTPException
-
 
 H3_PROTOCOL = "h3"
 H3_DEFAULT_MODEL = "minimax-h3"
-H3_SECONDS = tuple(range(5, 16))
-H3_SIZES = {"480p", "720p"}
 H3_DEFAULT_SECONDS = 5
 H3_DEFAULT_SIZE = "480p"
 H3_ASPECT_RATIO = "16:9"
-H3_MAX_IMAGE_REFS = 1
 
 H3_TERMINAL_SUCCESS_STATUSES = {"completed"}
 H3_TERMINAL_FAILURE_STATUSES = {"failed"}
@@ -69,12 +64,9 @@ def h3_seconds(payload):
     if raw in (None, ""):
         return H3_DEFAULT_SECONDS
     try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="H3 视频时长必须是整数。") from exc
-    if value not in H3_SECONDS:
-        raise HTTPException(status_code=400, detail="H3 视频时长必须是 5–15 秒之间的整数。")
-    return value
+        return int(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
 def h3_size(payload):
@@ -82,11 +74,9 @@ def h3_size(payload):
     size = str(getattr(payload, "size", "") or "").strip().lower()
     value = resolution or size or H3_DEFAULT_SIZE
     if value in {"864x480", "864×480"}:
-        value = "480p"
-    if value in {"1280x704", "1280×704"}:
-        value = "720p"
-    if value not in H3_SIZES:
-        raise HTTPException(status_code=400, detail="H3 画质只支持 480p 或 720p。")
+        return "480p"
+    if value in {"1280x704", "1280×704", "1280x736", "1280×736"}:
+        return "720p"
     return value
 
 
@@ -95,16 +85,11 @@ def h3_aspect_ratio(payload):
     normalized = value.lower().replace("x", ":")
     if normalized in {"keep_ratio", "adaptive", ""}:
         return H3_ASPECT_RATIO
-    if normalized != "16:9":
-        raise HTTPException(status_code=400, detail="H3 目前只支持 16:9。")
-    return "16:9"
+    return value
 
 
 def _prompt(payload):
-    value = str(getattr(payload, "prompt", "") or "").strip()
-    if not value:
-        raise HTTPException(status_code=400, detail="H3 视频提示词不能为空。")
-    return value
+    return str(getattr(payload, "prompt", "") or "").strip()
 
 
 def _reference_value(ref):
@@ -121,21 +106,47 @@ def _reference_role(ref):
     return str(getattr(ref, "role", "") or "").strip().lower()
 
 
+def classify_h3_image_uploads(images):
+    first = None
+    last = None
+    refs = []
+    unlabeled = []
+    for ref in images or []:
+        url = _reference_value(ref)
+        if not url:
+            continue
+        role = _reference_role(ref)
+        if role in {"first_frame", "first", "input_reference"}:
+            if first is None:
+                first = url
+            else:
+                refs.append(url)
+        elif role in {"last_frame", "last", "end_frame"}:
+            if last is None:
+                last = url
+            else:
+                refs.append(url)
+        else:
+            unlabeled.append(url)
+    for url in unlabeled:
+        if first is None:
+            first = url
+        else:
+            refs.append(url)
+    uploads = []
+    if first:
+        uploads.append(("first_frame", first))
+    if last:
+        uploads.append(("last_frame", last))
+    for index, url in enumerate(refs):
+        uploads.append((f"ref_image_{index}", url))
+    return uploads
+
+
 def build_h3_video_request(payload, requested_model=""):
     images = getattr(payload, "images", None) or []
     videos = [value for value in (getattr(payload, "videos", None) or []) if value]
     audios = [value for value in (getattr(payload, "audios", None) or []) if value]
-    if videos:
-        raise HTTPException(status_code=400, detail="H3 不支持参考视频。")
-    if audios:
-        raise HTTPException(status_code=400, detail="H3 不支持参考音频。")
-    if getattr(payload, "multimodal", False):
-        raise HTTPException(status_code=400, detail="H3 不支持多模态参考。")
-    image_urls = [_reference_value(ref) for ref in images if _reference_value(ref)]
-    if len(image_urls) > H3_MAX_IMAGE_REFS:
-        raise HTTPException(status_code=400, detail="H3 图生视频只接受 1 张首帧。")
-    if any(_reference_role(ref) == "last_frame" for ref in images):
-        raise HTTPException(status_code=400, detail="H3 不支持尾帧。")
     model = str(requested_model or H3_DEFAULT_MODEL).strip() or H3_DEFAULT_MODEL
     body = {
         "model": model,
@@ -147,7 +158,11 @@ def build_h3_video_request(payload, requested_model=""):
     seed = getattr(payload, "seed", None)
     if seed not in (None, ""):
         body["seed"] = int(seed)
-    return body, image_urls[:1]
+    return body, {
+        "images": classify_h3_image_uploads(images),
+        "videos": videos,
+        "audios": audios,
+    }
 
 
 def h3_task_id(raw):

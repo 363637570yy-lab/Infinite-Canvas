@@ -1,8 +1,6 @@
 import asyncio
 import unittest
 
-from fastapi import HTTPException
-
 import h3_protocol as h3
 import main
 
@@ -81,7 +79,7 @@ class H3RoutingTests(unittest.TestCase):
 
 class H3RequestTests(unittest.TestCase):
     def test_canvas_fields_only(self):
-        body, images = h3.build_h3_video_request(video_payload(), "minimax-h3")
+        body, media = h3.build_h3_video_request(video_payload(), "minimax-h3")
         self.assertEqual(
             body,
             {
@@ -92,27 +90,42 @@ class H3RequestTests(unittest.TestCase):
                 "aspect_ratio": "16:9",
             },
         )
-        self.assertEqual(images, [])
+        self.assertEqual(media["images"], [])
+        self.assertEqual(media["videos"], [])
+        self.assertEqual(media["audios"], [])
         for wrong in ("steps", "ycnodes", "duration", "resolution"):
             self.assertNotIn(wrong, body)
 
-    def test_duration_snaps_and_rejects_portrait(self):
+    def test_duration_and_size_are_translated(self):
         body, _ = h3.build_h3_video_request(video_payload(duration=8, resolution="720p"), "minimax-h3")
         self.assertEqual(body["seconds"], 8)
         self.assertEqual(body["size"], "720p")
-        with self.assertRaises(HTTPException):
-            h3.build_h3_video_request(video_payload(duration=4), "minimax-h3")
-        with self.assertRaises(HTTPException):
-            h3.build_h3_video_request(video_payload(aspect_ratio="9:16"), "minimax-h3")
+        body, _ = h3.build_h3_video_request(video_payload(duration=4, aspect_ratio="9:16"), "minimax-h3")
+        self.assertEqual(body["seconds"], 4)
+        self.assertEqual(body["aspect_ratio"], "9:16")
 
-    def test_rejects_extra_media(self):
-        with self.assertRaises(HTTPException):
-            h3.build_h3_video_request(video_payload(videos=["http://example/a.mp4"]), "minimax-h3")
-        with self.assertRaises(HTTPException):
-            h3.build_h3_video_request(
-                video_payload(images=[{"url": "a.png"}, {"url": "b.png"}]),
-                "minimax-h3",
-            )
+    def test_forwards_all_media_to_gateway_fields(self):
+        body, media = h3.build_h3_video_request(
+            video_payload(
+                images=[
+                    {"url": "a.png", "role": "first_frame"},
+                    {"url": "b.png", "role": "last_frame"},
+                    {"url": "c.png"},
+                ],
+                videos=["http://example/a.mp4"],
+            ),
+            "minimax-h3",
+        )
+        self.assertEqual(
+            media["images"],
+            [("first_frame", "a.png"), ("last_frame", "b.png"), ("ref_image_0", "c.png")],
+        )
+        self.assertEqual(media["videos"], ["http://example/a.mp4"])
+        self.assertNotIn("first_frame", body)
+
+    def test_gateway_error_text_is_used_as_is(self):
+        self.assertEqual(h3.h3_error_text({"detail": "只允许上传 1 张首帧"}), "只允许上传 1 张首帧")
+        self.assertEqual(h3.h3_error_text({"error": "不支持 seconds=4，只接受 5 到 15 之间的整数"}), "不支持 seconds=4，只接受 5 到 15 之间的整数")
 
 
 if __name__ == "__main__":

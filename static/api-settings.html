@@ -160,8 +160,8 @@
                                 </div>
                                 <div class="h3-hint">
                                     <span class="ms-line">请求地址填局域网 H3 网关根地址，不要加 <span class="inline-code">/v1</span>。验证只请求 <span class="inline-code">GET /v1/models</span>。</span>
-                                    <span class="ms-line">画布仍只发时长、画质、比例。协议映射为 <span class="inline-code">seconds</span> / <span class="inline-code">size=480p|720p</span> / <span class="inline-code">aspect_ratio=16:9</span>；图生视频一张首帧走 <span class="inline-code">first_frame</span>。</span>
-                                    <span class="ms-line">步数、YCNodes 等配方在 H3 网关 <span class="inline-code">/admin</span> 调整，不出现在画布上。9:16 和其他比例会被拒绝。</span>
+                                    <span class="ms-line">画布只转发时长、画质、比例和挂上的素材。首帧走 <span class="inline-code">first_frame</span>，收尾帧走 <span class="inline-code">last_frame</span>，其余参考图走 <span class="inline-code">ref_image</span>。能力是否接受由 H3 网关返回，画布只展示该错误并停任务。</span>
+                                    <span class="ms-line">步数、YCNodes 等配方在 H3 网关 <span class="inline-code">/admin</span> 调整，不出现在画布上。</span>
                                 </div>
                             </label>
                             <label class="field full api-key-field">

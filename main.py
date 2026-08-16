@@ -17519,7 +17519,7 @@ async def wait_for_h3_video_task(client, provider, base_url, task_id, model):
             continue
         if response.status_code >= 400:
             detail = h3.h3_error_text(raw, getattr(response, "text", ""))
-            raise HTTPException(status_code=502, detail=f"H3 视频任务查询失败：{detail}")
+            raise HTTPException(status_code=response.status_code, detail=detail)
         if not isinstance(raw, dict):
             raise HTTPException(status_code=502, detail="H3 视频任务查询返回了无法识别的响应。")
         last_payload = raw
@@ -17527,20 +17527,32 @@ async def wait_for_h3_video_task(client, provider, base_url, task_id, model):
         if state == "success":
             return raw
         if state == "failed":
-            raise HTTPException(status_code=502, detail=f"H3 视频生成任务失败：{h3.h3_error_text(raw)}")
+            raise HTTPException(status_code=502, detail=h3.h3_error_text(raw))
         delay = min(delay + 0.5, 10.0)
     raise HTTPException(status_code=504, detail=f"H3 视频生成任务超时：{last_payload or task_id}")
 
 async def generate_h3_video(client, payload, provider, base_url, requested_model):
     api_key = h3_api_key(provider)
-    body, image_urls = h3.build_h3_video_request(payload, requested_model)
+    body, media = h3.build_h3_video_request(payload, requested_model)
     submit_url = h3.h3_video_submit_url(base_url)
-    headers = api_headers(json_body=not bool(image_urls), provider=provider, model=requested_model)
-    if image_urls:
-        ref_file = await yuli_fetch_reference_bytes(client, image_urls[0])
+    files = []
+    for field, url in media.get("images") or []:
+        ref_file = await yuli_fetch_reference_bytes(client, url)
         if not ref_file:
-            raise HTTPException(status_code=400, detail="H3 没有读到首帧图。请使用画布本地图片。")
-        files = {"first_frame": ref_file}
+            raise HTTPException(status_code=400, detail="H3 没有读到参考图。请使用画布本地图片。")
+        files.append((field, ref_file))
+    for url in media.get("videos") or []:
+        ref_file = await yuli_fetch_reference_bytes(client, url)
+        if not ref_file:
+            raise HTTPException(status_code=400, detail="H3 没有读到参考视频。请使用画布本地文件。")
+        files.append(("ref_video", ref_file))
+    for url in media.get("audios") or []:
+        ref_file = await yuli_fetch_reference_bytes(client, url)
+        if not ref_file:
+            raise HTTPException(status_code=400, detail="H3 没有读到参考音频。请使用画布本地文件。")
+        files.append(("ref_audio", ref_file))
+    headers = api_headers(json_body=not bool(files), provider=provider, model=requested_model)
+    if files:
         data = {key: str(value) for key, value in body.items()}
         response = await client.post(
             submit_url,
@@ -17558,7 +17570,7 @@ async def generate_h3_video(client, payload, provider, base_url, requested_model
         )
     if response.status_code >= 400:
         detail = h3_response_error_text(response)
-        raise HTTPException(status_code=response.status_code, detail=f"H3 视频接口错误：{detail}")
+        raise HTTPException(status_code=response.status_code, detail=detail or "H3 视频接口错误")
     try:
         raw = response.json()
     except Exception as exc:
@@ -17571,7 +17583,7 @@ async def generate_h3_video(client, payload, provider, base_url, requested_model
         raise HTTPException(status_code=502, detail=f"H3 视频接口没有返回任务号：{str(raw)[:500]}")
     state, _ = h3.h3_task_state(raw)
     if state == "failed":
-        raise HTTPException(status_code=502, detail=f"H3 视频生成任务失败：{h3.h3_error_text(raw)}")
+        raise HTTPException(status_code=502, detail=h3.h3_error_text(raw))
     result = raw if state == "success" else await wait_for_h3_video_task(
         client, provider, base_url, task_id, requested_model
     )
