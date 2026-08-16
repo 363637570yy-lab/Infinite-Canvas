@@ -55,6 +55,22 @@ class H3RoutingTests(unittest.TestCase):
             ["http://127.0.0.1:8088/v1/videos/video_abc"],
         )
         self.assertEqual(main.canvas_video_task_type(provider, "minimax-h3"), "h3-video")
+        self.assertIn("h3-video", main.CANVAS_VIDEO_TASK_TYPES)
+
+    def test_submitted_h3_task_is_queryable(self):
+        task_id = "canvas_h3_queryable_fixture"
+        main.CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "h3-video",
+            "status": "queued",
+        }
+        try:
+            task = run(main.get_canvas_video_task(task_id))
+            self.assertEqual(task["id"], task_id)
+            self.assertEqual(task["type"], "h3-video")
+            self.assertEqual(task["status"], "queued")
+        finally:
+            main.CANVAS_TASKS.pop(task_id, None)
 
     def test_models_use_upstream_capabilities_not_names(self):
         grouped, ids = main.parse_upstream_models(H3_MODELS_RESPONSE, main.H3_PROTOCOL)

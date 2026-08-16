@@ -2704,6 +2704,7 @@ CANVAS_TASK_LOCK = Lock()
 CANVAS_VIDEO_TASK_HANDLES: Dict[str, Any] = {}
 CANVAS_VIDEO_TASK_TYPES = frozenset({
     "grok2api-video",
+    "h3-video",
     "cangyuan-video",
     "chre3-video",
     "pidoi-video",
