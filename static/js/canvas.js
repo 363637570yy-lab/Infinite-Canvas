@@ -10236,6 +10236,9 @@ function shouldCreateOutputForNode(node){
     if(hasExplicitOutputConnection(node.id)) return true;
     return !hasDownstreamGenerator(node.id);
 }
+function liveCanvasNode(id){
+    return id ? nodes.find(n => n.id === id) || null : null;
+}
 function outputForNode(node, dx=460){
     if(!node || !shouldCreateOutputForNode(node)) return null;
     let out = connections
@@ -10277,11 +10280,11 @@ function syncLatestGeneratedOutputToConnection(fromId, toId){
     if(!latest) return false;
     return appendOutputImagesWithoutDuplicates(out, [latest]) > 0;
 }
-function syncConnectedOutputsFromGenerated(node, outputs){
+function syncConnectedOutputsFromGenerated(node, outputs, metas=[]){
     if(!node || !CANVAS_MEDIA_OUTPUT_TYPES.includes(node.type)) return;
     const list = (outputs || []).filter(item => outputUrlValue(item));
     if(!list.length) return;
-    outputNodesForSource(node.id).forEach(out => appendOutputImagesWithoutDuplicates(out, list));
+    outputNodesForSource(node.id).forEach(out => appendOutputImagesWithoutDuplicates(out, list, null, metas));
 }
 function generatedImageRefs(node){
     const keepGeneratedMedia = ['rh','ltxDirector','video'].includes(node?.type);
@@ -10628,6 +10631,7 @@ async function runVideoNode(nodeId, opts={}){
     if(!prompt && !refs.length){ alert(tr('canvas.needPromptOrImage')); return; }
     let out = outputForNode(node, 460);
     const pendingId = uid('p');
+    const startedAt = nowMs();
     const run = runSnapshot(node, prompt, refs);
     if(out) out._pending = [...(out._pending || []), makePendingForRun(pendingId, run, node, {refs, cascadeTargetId})];
     if(!opts.cascade){
@@ -10666,35 +10670,51 @@ async function runVideoNode(nodeId, opts={}){
         if(result?.video_pending || result?.grok2api_pending){
             result = await waitCanvasVideoTaskResult(result.task_id, {cascadeTargetId});
         }
-        const meta = collectRunMeta(out, pendingId);
-        if(out) out._pending = (out._pending || []).filter(p => p.id !== pendingId);
+        const liveNode = liveCanvasNode(node.id) || node;
+        const liveOut = liveCanvasNode(out?.id) || out;
+        const pendingMeta = collectRunMeta(liveOut, pendingId);
+        const meta = {
+            ...pendingMeta,
+            runMs: Number(pendingMeta.runMs) || Math.max(0, nowMs() - startedAt),
+            kind: 'video',
+            run: pendingMeta.run && Object.keys(pendingMeta.run).length ? pendingMeta.run : run,
+        };
+        if(liveOut) liveOut._pending = (liveOut._pending || []).filter(p => p.id !== pendingId);
+        if(out && out !== liveOut) out._pending = (out._pending || []).filter(p => p.id !== pendingId);
         const outputUrls = resultMediaUrls(result).map(item => {
             const url = outputUrlValue(item);
             return item && typeof item === 'object' ? {...item, url, kind:item.kind || 'video'} : {url, kind:'video'};
         }).filter(item => item.url);
         if(!outputUrls.length) throw new Error(tr('canvas.videoFailed'));
         run.request = requestMetaFromResult(result);
-        appendOutputImages(out, outputUrls, refs[0], [{...meta, kind:'video'}]);
-        mergeGeneratedOutputs(node, outputUrls, Boolean(opts.cascade));
+        appendOutputImages(liveOut, outputUrls, refs[0], [meta]);
+        mergeGeneratedOutputs(liveNode, outputUrls, Boolean(opts.cascade), [meta]);
         addGenerationLog({run, outputs:outputUrls, runMs:meta.runMs || 0});
-        node.runStatus = 'done'; node.runError = '';
-        refreshRunNodes(node, out);
+        liveNode.runStatus = 'done'; liveNode.runError = '';
+        refreshRunNodes(liveNode, liveOut);
         scheduleSave();
     } catch(err) {
-        const meta = collectRunMeta(out, pendingId);
-        addGenerationLog({run, outputs:[], runMs:meta.runMs || 0, error:err.message || String(err)});
-        if(out) out._pending = (out._pending || []).filter(p => p.id !== pendingId);
+        const liveNode = liveCanvasNode(node.id) || node;
+        const liveOut = liveCanvasNode(out?.id) || out;
+        const pendingMeta = collectRunMeta(liveOut, pendingId);
+        const runMs = Number(pendingMeta.runMs) || Math.max(0, nowMs() - startedAt);
+        addGenerationLog({run, outputs:[], runMs, error:err.message || String(err)});
+        if(liveOut) liveOut._pending = (liveOut._pending || []).filter(p => p.id !== pendingId);
+        if(out && out !== liveOut) out._pending = (out._pending || []).filter(p => p.id !== pendingId);
         if(isCascadeAbortError(err)){
             if(opts.cascade) throw err;
             return;
         }
-        node.runStatus = 'failed'; node.runError = err.message || String(err);
-        refreshRunNodes(node, out);
+        liveNode.runStatus = 'failed'; liveNode.runError = err.message || String(err);
+        refreshRunNodes(liveNode, liveOut);
         if(opts.cascade) throw err;
         alert(err.message || tr('canvas.videoFailed'));
     } finally {
+        const liveNode = liveCanvasNode(node.id) || node;
+        const liveOut = liveCanvasNode(out?.id) || out;
+        liveNode.running = false;
         node.running = false;
-        refreshRunNodes(node, out);
+        refreshRunNodes(liveNode, liveOut);
     }
 }
 async function uploadCanvasUrlToComfy(url){
@@ -12332,7 +12352,7 @@ function makePendingForRun(id, run, node, options={}, task={}){
     if(options?.cascadeTargetId) pending.cascadeTargetId = String(options.cascadeTargetId);
     return pending;
 }
-function mergeGeneratedOutputs(node, outputs, append=false){
+function mergeGeneratedOutputs(node, outputs, append=false, metas=[]){
     if(!node) return;
     const keepGeneratedMedia = ['rh','ltxDirector','video'].includes(node.type);
     const clean = (outputs || []).map(item => {
@@ -12348,7 +12368,7 @@ function mergeGeneratedOutputs(node, outputs, append=false){
     }).filter(Boolean);
     if(!append){
         node.generatedOutputs = clean;
-        syncConnectedOutputsFromGenerated(node, clean);
+        syncConnectedOutputsFromGenerated(node, clean, metas);
         return;
     }
     const seen = new Set((node.generatedOutputs || []).map(outputUrlValue).filter(Boolean));
@@ -12357,7 +12377,7 @@ function mergeGeneratedOutputs(node, outputs, append=false){
         return url && !seen.has(url) && seen.add(url);
     });
     node.generatedOutputs = [...(node.generatedOutputs || []), ...added];
-    syncConnectedOutputsFromGenerated(node, added);
+    syncConnectedOutputsFromGenerated(node, added, metas);
 }
 function pendingById(out, id){
     return (out?._pending || []).find(p => p.id === id) || null;
