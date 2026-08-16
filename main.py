@@ -7097,6 +7097,61 @@ def generate_video_preview_image(path: str, width: int) -> Image.Image:
         except OSError:
             pass
 
+MEDIA_PREVIEW_WARMUP_WIDTHS = (512, 768)
+_preview_warmup_tasks = set()
+
+def build_media_preview_file(path: str, width: int):
+    """按宽度生成并缓存预览图。已有缓存则直接返回路径。"""
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    width = max(64, min(2048, int(width or 512)))
+    webp_path, png_path = media_preview_cache_paths(path, width)
+    if os.path.exists(webp_path):
+        return webp_path, "image/webp"
+    if os.path.exists(png_path):
+        return png_path, "image/png"
+    os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
+    if is_video_preview_file(path):
+        img = generate_video_preview_image(path, width)
+    else:
+        with Image.open(path) as source:
+            img = ImageOps.exif_transpose(source)
+            img.thumbnail((width, width), Image.LANCZOS)
+            img = img.convert("RGBA" if image_has_alpha(img) else "RGB")
+    try:
+        img.save(webp_path, format="WEBP", quality=80, method=1)
+        return webp_path, "image/webp"
+    except Exception:
+        img.save(png_path, format="PNG")
+        return png_path, "image/png"
+
+def can_warmup_media_preview(path: str) -> bool:
+    if not path or not os.path.isfile(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    return is_video_preview_file(path) or ext in STORAGE_IMAGE_EXTS
+
+def schedule_media_preview_warmup(url: str, widths=MEDIA_PREVIEW_WARMUP_WIDTHS):
+    path = output_file_from_url(url)
+    if not can_warmup_media_preview(path):
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+    async def _warm():
+        for width in widths:
+            try:
+                await asyncio.to_thread(build_media_preview_file, path, width)
+            except Exception as exc:
+                print(f"preview warmup failed: {exc}")
+
+    task = loop.create_task(_warm())
+    _preview_warmup_tasks.add(task)
+    task.add_done_callback(_preview_warmup_tasks.discard)
+    return task
+
 @app.get("/api/media-preview")
 async def media_preview(url: str, w: int = 512):
     path = output_file_from_url(url)
@@ -7111,25 +7166,9 @@ async def media_preview(url: str, w: int = 512):
     if os.path.exists(png_path):
         return FileResponse(png_path, media_type="image/png")
 
-    def _build_preview():
-        # 同步 PIL 处理 + 落盘，放到线程里执行，避免阻塞事件循环（几十张首次生成会卡死整个 loop → 缩略图全空白）
-        os.makedirs(MEDIA_PREVIEW_DIR, exist_ok=True)
-        if is_video_preview_file(path):
-            img = generate_video_preview_image(path, width)
-        else:
-            with Image.open(path) as source:
-                img = ImageOps.exif_transpose(source)
-                img.thumbnail((width, width), Image.LANCZOS)
-                img = img.convert("RGBA" if image_has_alpha(img) else "RGB")
-        try:
-            img.save(webp_path, format="WEBP", quality=80, method=1)   # method=1 生成更快（缩略图不追求极致压缩）
-            return webp_path, "image/webp"
-        except Exception:
-            img.save(png_path, format="PNG")
-            return png_path, "image/png"
-
     try:
-        out_path, media_type = await asyncio.to_thread(_build_preview)
+        # 同步 PIL/ffmpeg + 落盘放到线程里，避免阻塞事件循环
+        out_path, media_type = await asyncio.to_thread(build_media_preview_file, path, width)
         return FileResponse(out_path, media_type=media_type)
     except Exception as exc:
         if is_video_preview_file(path):
@@ -9568,9 +9607,12 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
         filename = f"{stem}{_ai_image_ext(raw, image_data.get('mime_type'))}"
         with open(output_path_for(filename, category), "wb") as f:
             f.write(raw)
-        return output_url_for(filename, category)
+        url = output_url_for(filename, category)
+        schedule_media_preview_warmup(url)
+        return url
     value = image_data["value"]
     if value.startswith("/output/") or value.startswith("/assets/"):
+        schedule_media_preview_warmup(value)
         return value
     value = rewrite_runninghub_file_url(value)
     try:
@@ -9581,7 +9623,9 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
             filename = f"{stem}{_ai_image_ext(response.content, response.headers.get('Content-Type', ''))}"
             with open(output_path_for(filename, category), "wb") as f:
                 f.write(response.content)
-            return output_url_for(filename, category)
+            url = output_url_for(filename, category)
+            schedule_media_preview_warmup(url)
+            return url
     except Exception as e:
         print(f"保存上游图片失败: {e}; url={value}")
         return value
@@ -9627,6 +9671,7 @@ async def save_remote_video_to_output(url, prefix="video_", category="output", e
     if not url:
         return ""
     if url.startswith("/output/") or url.startswith("/assets/"):
+        schedule_media_preview_warmup(url)
         return url
     video_exts = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv", ".flv"}
     parsed = urllib.parse.urlparse(str(url or "").strip())
@@ -9672,7 +9717,9 @@ async def save_remote_video_to_output(url, prefix="video_", category="output", e
                             f.write(chunk)
             if os.path.getsize(path) <= 0:
                 raise RuntimeError("empty video response")
-            return output_url_for(filename, category)
+            local_url = output_url_for(filename, category)
+            schedule_media_preview_warmup(local_url)
+            return local_url
     except Exception as e:
         print(f"保存上游视频失败: {e}")
         try:
@@ -12047,7 +12094,10 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
         path = output_path_for(filename, "input")
         with open(path, "wb") as f:
             f.write(content)
-        uploaded.append({"url": output_url_for(filename, "input"), "name": file.filename or filename, "kind": kind, "mime": content_type})
+        item = {"url": output_url_for(filename, "input"), "name": file.filename or filename, "kind": kind, "mime": content_type}
+        uploaded.append(item)
+        if kind in ("image", "video"):
+            schedule_media_preview_warmup(item["url"])
     return {"files": uploaded}
 
 class Base64UploadRequest(BaseModel):
@@ -12080,7 +12130,10 @@ async def upload_ai_base64(payload: Base64UploadRequest):
     path = output_path_for(filename, "input")
     with open(path, "wb") as f:
         f.write(content)
-    return {"files": [{"url": output_url_for(filename, "input"), "name": payload.name or filename, "kind": kind}]}
+    url = output_url_for(filename, "input")
+    if kind in ("image", "video"):
+        schedule_media_preview_warmup(url)
+    return {"files": [{"url": url, "name": payload.name or filename, "kind": kind}]}
 
 @app.post("/api/comfyui/upload-base64")
 async def upload_comfyui_base64(payload: Base64UploadRequest):

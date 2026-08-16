@@ -54,9 +54,8 @@ function canvasMediaPreviewUrl(url, size=512){
 function canvasPreviewImgHtml(url, size=512, attrs=''){
     const original = canvasOriginalMediaUrl(url);
     const preview = canvasMediaPreviewUrl(original, size);
-    // loading=lazy：画布内容多时，视口外的缩略图不加载/不解码，避免一次性解码上百张图卡顿；
-    // decoding=async：解码放到主线程外，渲染时不阻塞。
-    return `<img loading="lazy" decoding="async" src="${escapeAttr(preview)}" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}"${attrs ? ` ${attrs}` : ''}>`;
+    // 先不写 src：由 syncMountedPreviews 在进视口后再挂上，避免离屏节点解码。
+    return `<img loading="lazy" decoding="async" class="canvas-media-deferred" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}"${attrs ? ` ${attrs}` : ''}>`;
 }
 function loadCanvasOriginalImageDimensions(url){
     const src = String(url || '');
@@ -71,7 +70,7 @@ function loadCanvasOriginalImageDimensions(url){
 function canvasVideoPreviewHtml(url, size=512, attrs=''){
     const original = canvasOriginalMediaUrl(url);
     const preview = canvasMediaPreviewUrl(original, size);
-    return `<img loading="lazy" decoding="async" src="${escapeAttr(preview)}" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}" data-preview-kind="video"${attrs ? ` ${attrs}` : ''}>`;
+    return `<img loading="lazy" decoding="async" class="canvas-media-deferred" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}" data-preview-kind="video"${attrs ? ` ${attrs}` : ''}>`;
 }
 function canvasVideoFallbackHtml(url, attrs=''){
     const original = canvasOriginalMediaUrl(url);
@@ -83,6 +82,62 @@ function canvasVideoPlayerHtml(url, attrs=''){
     const src = canvasDisplayMediaUrl(original);
     return `<video src="${escapeAttr(src)}" data-url="${escapeAttr(original)}" controls autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
 }
+function canvasMediaDisplayHelpers(){
+    return {
+        previewHtml(url, attrs=''){
+            return canvasVideoPreviewHtml(url, 768, attrs || 'draggable="false"');
+        },
+        onRestored(img, wrap){
+            bindCanvasPreviewImageFallbacks(wrap || img?.parentElement || nodesEl);
+            if(wrap?.classList?.contains('output-img-wrap')){
+                const nodeEl = wrap.closest('.node');
+                const node = nodes.find(n => n.id === nodeEl?.dataset.id);
+                if(node) bindOutputWrap(wrap, node);
+                return;
+            }
+            bindCanvasVideoPreviewTriggers(wrap || img?.parentElement);
+        }
+    };
+}
+function bindCanvasVideoPreviewTriggers(container){
+    if(!container) return;
+    const imgs = container.matches?.('img[data-preview-kind="video"]')
+        ? [container]
+        : [...(container.querySelectorAll?.('img[data-preview-kind="video"]') || [])];
+    imgs.forEach(img => {
+        if(img.dataset.videoPreviewBound === '1') return;
+        img.dataset.videoPreviewBound = '1';
+        img.addEventListener('mousedown', e => {
+            if(e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        }, true);
+        img.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            canvasActivateVideoPreview(e.currentTarget || img);
+        }, true);
+    });
+    const buttons = [...(container.querySelectorAll?.('.canvas-video-play') || [])];
+    if(container.matches?.('.canvas-video-play')) buttons.push(container);
+    buttons.forEach(btn => {
+        if(btn.dataset.videoPreviewBound === '1') return;
+        btn.dataset.videoPreviewBound = '1';
+        btn.addEventListener('mousedown', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        }, true);
+        btn.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            canvasActivateVideoPreview(btn.closest('.media-card,.image-preview-wrap,.output-img-wrap') || btn);
+        }, true);
+    });
+}
 function canvasActivateVideoPreview(img){
     if(!img) return false;
     const target = img.matches?.('img[data-preview-kind="video"]') ? img : img.querySelector?.('img[data-preview-kind="video"]');
@@ -91,6 +146,7 @@ function canvasActivateVideoPreview(img){
         if(fallback){
             fallback.controls = true;
             fallback.muted = false;
+            window.CanvasMediaDisplay?.enforceSingleLiveVideo(nodesEl, fallback, canvasMediaDisplayHelpers());
             fallback.play?.().catch(() => {});
             return true;
         }
@@ -104,6 +160,7 @@ function canvasActivateVideoPreview(img){
     if(!video) return false;
     target.replaceWith(video);
     video.parentElement?.querySelector?.('.canvas-video-play')?.style?.setProperty('display', 'none');
+    window.CanvasMediaDisplay?.enforceSingleLiveVideo(nodesEl, video, canvasMediaDisplayHelpers());
     video.play?.().catch(() => {});
     return true;
 }
@@ -118,6 +175,7 @@ function bindCanvasPreviewImageFallbacks(root=document){
     root.querySelectorAll?.('img[data-preview-src][data-original-src]:not([data-preview-fallback-bound])').forEach(img => {
         img.dataset.previewFallbackBound = '1';
         img.addEventListener('error', () => {
+            if(img.classList.contains('canvas-media-deferred') || img.dataset.mediaUnmounted === '1') return;
             const original = img.dataset.originalSrc || img.dataset.url || '';
             if(img.dataset.previewKind === 'video'){
                 const video = document.createElement('template');
@@ -129,88 +187,25 @@ function bindCanvasPreviewImageFallbacks(root=document){
         });
     });
 }
-const CANVAS_SELECTED_HIGH_RES_DELAY = 320;
-const CANVAS_HIGH_RES_ZOOM_THRESHOLD = 0.86;
-let canvasSelectedHighResTimer = 0;
-let canvasSelectedHighResSeq = 0;
-let canvasImageResolutionSyncTimer = 0;
-const canvasSelectedHighResLoaded = new Set();
-const canvasSelectedHighResLoading = new Map();
-function canvasImageEditorIsOpen(){
-    return Boolean(document.getElementById('imageEditModal')?.classList.contains('open'));
+let canvasMediaViewportSyncTimer = 0;
+function syncCanvasMediaDisplay(root=nodesEl, options={}){
+    const display = window.CanvasMediaDisplay;
+    if(!display || !root) return;
+    if(options.restorePreview !== false) display.restorePreviewSources(root);
+    if(options.enforceSingle) display.enforceSingleLiveVideo(root, options.keepVideo || null, canvasMediaDisplayHelpers());
+    const boardW = board?.clientWidth || 0;
+    const boardH = board?.clientHeight || 0;
+    if(!boardW || !boardH) return;
+    if(options.unloadVideos !== false){
+        display.unloadOffscreenVideos(root, nodes, viewport, boardW, boardH, node => defaultNodeSize(node?.type), canvasMediaDisplayHelpers());
+    }
+    display.syncMountedPreviews(root, nodes, viewport, boardW, boardH, node => defaultNodeSize(node?.type));
 }
-function preloadCanvasSelectedHighRes(src){
-    if(!src || canvasSelectedHighResLoaded.has(src)) return Promise.resolve(true);
-    if(canvasSelectedHighResLoading.has(src)) return canvasSelectedHighResLoading.get(src);
-    const task = new Promise(resolve => {
-        const img = new Image();
-        img.decoding = 'async';
-        img.onload = async () => {
-            try { if(img.decode) await img.decode(); } catch(e) {}
-            canvasSelectedHighResLoaded.add(src);
-            resolve(true);
-        };
-        img.onerror = () => resolve(false);
-        img.src = src;
-    }).finally(() => canvasSelectedHighResLoading.delete(src));
-    canvasSelectedHighResLoading.set(src, task);
-    return task;
-}
-function canvasViewportWantsHighRes(){
-    return Number(viewport?.scale || 1) >= CANVAS_HIGH_RES_ZOOM_THRESHOLD;
-}
-function canvasImageNearViewport(img){
-    if(!img?.isConnected || !board) return false;
-    const boardRect = board.getBoundingClientRect();
-    const rect = img.getBoundingClientRect();
-    const margin = 220;
-    return rect.right >= boardRect.left - margin
-        && rect.left <= boardRect.right + margin
-        && rect.bottom >= boardRect.top - margin
-        && rect.top <= boardRect.bottom + margin;
-}
-function syncCanvasSelectedImageResolution(root=nodesEl){
-    const selectedImages = [];
-    const wantHighRes = canvasViewportWantsHighRes();
-    root.querySelectorAll?.('.node img[data-preview-src][data-original-src]').forEach(img => {
-        if(img.dataset.previewKind === 'video') return;
-        const preview = img.dataset.previewSrc || '';
-        const original = img.dataset.originalSrc || img.dataset.url || '';
-        if(!wantHighRes || !canvasImageNearViewport(img)){
-            delete img.dataset.selectedHighResTarget;
-            if(preview && img.getAttribute('src') !== preview) img.src = preview;
-            return;
-        }
-        const target = canvasDisplayMediaUrl(original);
-        if(!target) return;
-        img.dataset.selectedHighResTarget = target;
-        if(canvasSelectedHighResLoaded.has(target)){
-            if(img.getAttribute('src') !== target) img.src = target;
-            return;
-        }
-        if(preview && img.getAttribute('src') !== preview) img.src = preview;
-        selectedImages.push({img, target});
-    });
-    if(canvasSelectedHighResTimer) clearTimeout(canvasSelectedHighResTimer);
-    const seq = ++canvasSelectedHighResSeq;
-    if(!selectedImages.length || canvasImageEditorIsOpen()) return;
-    canvasSelectedHighResTimer = setTimeout(async () => {
-        canvasSelectedHighResTimer = 0;
-        if(seq !== canvasSelectedHighResSeq || canvasImageEditorIsOpen()) return;
-        await Promise.all(selectedImages.map(item => preloadCanvasSelectedHighRes(item.target)));
-        if(seq !== canvasSelectedHighResSeq || canvasImageEditorIsOpen()) return;
-        selectedImages.forEach(({img, target}) => {
-            if(!img.isConnected || img.dataset.selectedHighResTarget !== target) return;
-            if(!canvasViewportWantsHighRes() || !canvasImageNearViewport(img)) return;
-            if(canvasSelectedHighResLoaded.has(target) && img.getAttribute('src') !== target) img.src = target;
-        });
-    }, CANVAS_SELECTED_HIGH_RES_DELAY);
-}
-function scheduleCanvasImageResolutionSync(root=nodesEl, delay=120){
-    if(canvasImageResolutionSyncTimer) clearTimeout(canvasImageResolutionSyncTimer);
-    canvasImageResolutionSyncTimer = setTimeout(() => {
-        canvasImageResolutionSyncTimer = 0;
-        syncCanvasSelectedImageResolution(root);
+function scheduleCanvasMediaViewportSync(root=nodesEl, delay=120){
+    if(canvasMediaViewportSyncTimer) clearTimeout(canvasMediaViewportSyncTimer);
+    canvasMediaViewportSyncTimer = setTimeout(() => {
+        canvasMediaViewportSyncTimer = 0;
+        syncCanvasMediaDisplay(root, {restorePreview:false});
     }, Math.max(0, Number(delay) || 0));
 }
 function applyLanguage(lang){
@@ -1212,7 +1207,7 @@ function canvasWheelZoomFactor(event, pageSize){
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
     scheduleMinimapRender();
-    scheduleCanvasImageResolutionSync(nodesEl, 120);
+    scheduleCanvasMediaViewportSync(nodesEl, 120);
 }
 function estimatedNodeRect(n){
     const el = nodesEl?.querySelector?.(`.node[data-id="${CSS.escape(n.id)}"]`);
@@ -5407,6 +5402,7 @@ function openImageEditor(nodeId, initialMode='crop'){
     modal.classList.add('open');
     const editorSrcToken = `${nodeId}:${Date.now()}`;
     img.dataset.editorSrcToken = editorSrcToken;
+    const fullEditorSrc = canvasDisplayMediaUrl(node.url, node.name || '');
     img.onload = () => {
         // 记录 zoom=1 时的基础显示尺寸
         imageEditBaseW = img.clientWidth;
@@ -5420,9 +5416,15 @@ function openImageEditor(nodeId, initialMode='crop'){
         if(!imageEditModeTouched) setImageEditMode(initialMode);
         syncImageEditOverflow();
         refreshIcons();
+        if(img.getAttribute('src') === fullEditorSrc && img.naturalWidth && img.naturalHeight){
+            if(!node.natural_w || !node.natural_h){
+                node.natural_w = img.naturalWidth;
+                node.natural_h = img.naturalHeight;
+                scheduleSave();
+            }
+        }
     };
     img.crossOrigin = 'anonymous';
-    const fullEditorSrc = canvasDisplayMediaUrl(node.url, node.name || '');
     const quickEditorSrc = canvasMediaPreviewUrl(node.url, initialMode === 'preview' ? 1536 : 2048);
     if(quickEditorSrc && quickEditorSrc !== fullEditorSrc){
         img.src = quickEditorSrc;
@@ -5814,8 +5816,10 @@ function applyImageEdit(){
     return applyImageCrop();
 }
 
-function nodeHasLiveMedia(node){
-    return node?.type === 'image' && node.url && ['video','audio'].includes(mediaKindForNode(node));
+function nodeHasReusableMedia(node){
+    return window.CanvasMediaDisplay
+        ? window.CanvasMediaDisplay.nodeHasReusableMedia(node)
+        : Boolean(node && ((node.type === 'image' && node.url) || node.type === 'output'));
 }
 function captureMediaPlaybackState(media){
     if(!media) return null;
@@ -5852,6 +5856,10 @@ function mediaSignatureFromElement(el){
     return url ? `${tag}:${url}` : '';
 }
 function transplantNodeMediaElement(oldNodeEl, newNodeEl){
+    if(window.CanvasMediaDisplay){
+        window.CanvasMediaDisplay.transplantReusableMedia(oldNodeEl, newNodeEl);
+        return;
+    }
     const oldMedia = oldNodeEl?.querySelector?.('video,audio');
     const newMedia = newNodeEl?.querySelector?.('video,audio');
     if(!oldMedia || !newMedia) return;
@@ -5880,32 +5888,13 @@ function restoreMediaPlaybackStates(states){
         restoreMediaPlaybackState(media, states.get(`${tag}:${url}`));
     });
 }
-function measureCanvasOriginalImageNodes(root=nodesEl){
-    root.querySelectorAll?.('.image-node img[data-original-src]').forEach(imgEl => {
-        if(imgEl.dataset.previewKind === 'video') return;
-        const nodeEl = imgEl.closest('.image-node');
-        const node = nodes.find(n => n.id === nodeEl?.dataset.id);
-        if(!node || node.type !== 'image' || !node.url || node.natural_w || node.natural_h || node._naturalSizeLoading) return;
-        const original = imgEl.dataset.originalSrc || node.url;
-        if(!original) return;
-        node._naturalSizeLoading = true;
-        loadCanvasOriginalImageDimensions(original).then(size => {
-            node._naturalSizeLoading = false;
-            if(!size || node.natural_w || node.natural_h) return;
-            node.natural_w = size.w;
-            node.natural_h = size.h;
-            scheduleSave();
-        });
-    });
-}
-
 function render(){
     const outputScrolls = captureOutputScrolls();
     const mediaStates = captureMediaPlaybackStates();
     const reusableMediaNodes = new Map();
     nodesEl.querySelectorAll('.node').forEach(el => {
         const node = nodes.find(n => n.id === el.dataset.id);
-        if(nodeHasLiveMedia(node)) reusableMediaNodes.set(node.id, el);
+        if(nodeHasReusableMedia(node)) reusableMediaNodes.set(node.id, el);
     });
     applyViewport();
     [...nodesEl.children].forEach(child => {
@@ -5926,14 +5915,13 @@ function render(){
             console.error('[canvas] renderNode 失败，已跳过该节点：', node?.id, node?.type, err);
         }
     });
-    restoreMediaPlaybackStates(mediaStates);
     restoreOutputScrolls(outputScrolls);
     refreshGeometry();
     refreshGeometryAfterLayout();
     refreshIcons();
     bindCanvasPreviewImageFallbacks(nodesEl);
-    syncCanvasSelectedImageResolution(nodesEl);
-    measureCanvasOriginalImageNodes(nodesEl);
+    syncCanvasMediaDisplay(nodesEl, {restorePreview:true, enforceSingle:true});
+    restoreMediaPlaybackStates(mediaStates);
     refreshOutputTimer();
 }
 function refreshNodes(ids=[]){
@@ -5952,7 +5940,7 @@ function refreshNodes(ids=[]){
         }
         try {
             const fresh = renderNode(node);
-            if(nodeHasLiveMedia(node)) transplantNodeMediaElement(current, fresh);
+            transplantNodeMediaElement(current, fresh);
             current.replaceWith(fresh);
         } catch(err){
             console.error('[canvas] refreshNode 失败，已跳过该节点：', id, err);
@@ -5963,8 +5951,7 @@ function refreshNodes(ids=[]){
     refreshGeometryAfterLayout();
     refreshIcons();
     bindCanvasPreviewImageFallbacks(nodesEl);
-    syncCanvasSelectedImageResolution(nodesEl);
-    measureCanvasOriginalImageNodes(nodesEl);
+    syncCanvasMediaDisplay(nodesEl, {restorePreview:true, enforceSingle:true});
     refreshOutputTimer();
 }
 function refreshRunNodes(node, out=null){
@@ -6145,7 +6132,6 @@ function renderNode(node){
             }
             const previewWrap = body.querySelector('.image-preview-wrap');
             const loadedImg = body.querySelector('img');
-            const videoPlayBtn = body.querySelector('.canvas-video-play');
             const openPreview = e => {
                 if(!node.url || missing) return;
                 e.preventDefault();
@@ -6178,33 +6164,7 @@ function renderNode(node){
                 }, true);
                 loadedImg.addEventListener('dblclick', openPreview, true);
             }
-            if(loadedImg && mediaKind === 'video'){
-                loadedImg.addEventListener('mousedown', e => {
-                    if(e.button !== 0) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                }, true);
-                loadedImg.addEventListener('click', e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    canvasActivateVideoPreview(e.currentTarget || loadedImg);
-                }, true);
-            }
-            if(videoPlayBtn && loadedImg && mediaKind === 'video'){
-                videoPlayBtn.addEventListener('mousedown', e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                }, true);
-                videoPlayBtn.addEventListener('click', e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    canvasActivateVideoPreview(videoPlayBtn.closest('.media-card,.image-preview-wrap') || loadedImg);
-                }, true);
-            }
+            if(mediaKind === 'video') bindCanvasVideoPreviewTriggers(body);
             body.addEventListener('dblclick', openPreview, true);
             if(loadedImg && loadedImg.complete && loadedImg.naturalHeight > 0){
                 requestAnimationFrame(refreshGeometry);
@@ -6288,6 +6248,7 @@ function renderNode(node){
             e.stopPropagation();
         };
         body.querySelectorAll('.output-img-wrap').forEach(wrap => bindOutputWrap(wrap, node));
+        bindOutputGridMore(body, node);
     }
     el.appendChild(body);
     el.querySelectorAll('button, select, textarea, input').forEach(control => {
@@ -6347,6 +6308,13 @@ function bindOutputWrap(wrap, node){
             if(img.dataset.dragging) return;
             openOutputLightbox(img.dataset.url, node);
         };
+    } else if(wrap.classList.contains('canvas-output-placeholder')){
+        wrap.addEventListener('click', e => {
+            if(e.target.closest?.('.output-del')) return;
+            e.stopPropagation();
+            const url = wrap.dataset.outputUrl;
+            if(url) openOutputLightbox(url, node);
+        });
     }
     wrap.addEventListener('click', e => {
         const fallbackVideo = e.target.closest?.('video[data-output-video-fallback]');
@@ -6420,19 +6388,27 @@ function refreshOutputNodeContent(node){
     grid.classList.toggle('grid-layout', !!layout);
     if(layout) grid.style.setProperty('--grid-cols', String(Math.max(1, Number(layout.cols || 1))));
     else grid.style.removeProperty('--grid-cols');
+    const eager = outputEagerMountCount(node);
+    const hidden = Math.max(0, (node.images || []).length - eager);
     const items = [
-        ...(node.images || []).map(item => ({
+        ...(node.images || []).map((item, index) => ({
             key:outputDomKeyForItem(item),
-            html:renderOutputMedia(item, !!layout)
+            html:renderOutputMedia(item, !!layout, {mount:index < eager})
         })),
         ...(node._pending || []).map(p => ({
             key:outputDomKeyForPending(p),
             html:renderPendingOutput(p)
-        }))
+        })),
+        ...(hidden ? [{
+            key:'more:expand',
+            html:`<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(hidden))}</button>`
+        }] : [])
     ];
     const wanted = new Set(items.map(item => item.key));
     [...grid.children].forEach(child => {
-        const key = child.dataset.pendingId ? outputDomKeyForPending({id:child.dataset.pendingId}) : `url:${child.dataset.outputUrl || child.dataset.missingUrl || child.querySelector('img,video,audio')?.dataset.url || ''}`;
+        const key = child.classList.contains('output-grid-more')
+            ? 'more:expand'
+            : (child.dataset.pendingId ? outputDomKeyForPending({id:child.dataset.pendingId}) : `url:${child.dataset.outputUrl || child.dataset.missingUrl || child.querySelector('img,video,audio')?.dataset.url || ''}`);
         if(!wanted.has(key)) child.remove();
         else child.dataset.outputKey = key;
     });
@@ -6443,8 +6419,9 @@ function refreshOutputNodeContent(node){
             child = grid.lastElementChild;
             child.dataset.outputKey = item.key;
             child.dataset.outputHtml = item.html;
-            bindOutputWrap(child, node);
-        } else if(item.key.startsWith('pending:') && child.dataset.outputHtml !== item.html){
+            if(item.key === 'more:expand') bindOutputGridMore(child, node);
+            else bindOutputWrap(child, node);
+        } else if(child.dataset.outputHtml !== item.html && !child.querySelector('video[data-url], audio[data-url]')){
             const tpl = document.createElement('template');
             tpl.innerHTML = item.html.trim();
             const fresh = tpl.content.firstElementChild;
@@ -6453,13 +6430,15 @@ function refreshOutputNodeContent(node){
                 fresh.dataset.outputHtml = item.html;
                 child.replaceWith(fresh);
                 child = fresh;
-                bindOutputWrap(child, node);
+                if(item.key === 'more:expand') bindOutputGridMore(child, node);
+                else bindOutputWrap(child, node);
             }
         }
         grid.appendChild(child);
     });
     bindCanvasPreviewImageFallbacks(grid);
-    syncCanvasSelectedImageResolution(el);
+    bindOutputGridMore(grid, node);
+    syncCanvasMediaDisplay(el, {restorePreview:true, unloadVideos:false});
     refreshOutputTimer();
     return true;
 }
@@ -12650,7 +12629,30 @@ function resumeCanvasImageTasks(){
         });
     });
 }
-function renderOutputMedia(item, useGridLayout=false){
+function outputEagerMountCount(node){
+    const total = (node?.images || []).length;
+    const display = window.CanvasMediaDisplay;
+    if(!display) return total;
+    return display.outputEagerMediaCount(total, {
+        expanded:Boolean(node?._outputGridExpanded),
+        gridSplit:Boolean(outputGridLayout(node))
+    });
+}
+function outputGridMoreLabel(hidden){
+    return langIsEn() ? `${hidden} more` : `还有 ${hidden} 张`;
+}
+function bindOutputGridMore(root, node){
+    const btn = root?.matches?.('.output-grid-more') ? root : root?.querySelector?.('.output-grid-more');
+    if(!btn) return;
+    btn.onmousedown = e => e.stopPropagation();
+    btn.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        node._outputGridExpanded = true;
+        refreshNodes([node.id]);
+    };
+}
+function renderOutputMedia(item, useGridLayout=false, options={}){
     const url = outputUrlValue(item);
     const safe = escapeAttr(url);
     const meta = item && typeof item === 'object' ? item : {};
@@ -12660,6 +12662,9 @@ function renderOutputMedia(item, useGridLayout=false){
     const timePill = meta.runMs && !meta.viewed ? `<span class="output-time-pill">${formatRunDuration(meta.runMs)}</span>` : '';
     if(isMissingAssetUrl(url)){
         return `<div class="output-img-wrap" data-output-url="${safe}" data-missing-url="${safe}"${gridStyle}>${missingAssetHtml(url, true)}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+    }
+    if(options.mount === false && (kind === 'image' || kind === 'video')){
+        return `<div class="output-img-wrap canvas-output-placeholder" data-output-url="${safe}"${gridStyle}><div class="canvas-media-ph" data-url="${safe}"></div>${kind === 'video' ? '<div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div>' : ''}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'video'){
         return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="video output" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
@@ -12686,7 +12691,12 @@ function renderOutputGrid(node, pendingHtml=''){
     const layout = outputGridLayout(node);
     const gridClass = layout ? 'output-grid grid-layout' : 'output-grid';
     const style = layout ? ` style="--grid-cols:${Math.max(1, Number(layout.cols || 1))}"` : '';
-    return `<div class="${gridClass}"${style}>${(node.images || []).map(item => renderOutputMedia(item, !!layout)).join('')}${pendingHtml}</div>`;
+    const items = node.images || [];
+    const eager = outputEagerMountCount(node);
+    const mediaHtml = items.map((item, index) => renderOutputMedia(item, !!layout, {mount:index < eager})).join('');
+    const hidden = Math.max(0, items.length - eager);
+    const moreHtml = hidden ? `<button type="button" class="output-grid-more" data-output-expand="1">${escapeHtml(outputGridMoreLabel(hidden))}</button>` : '';
+    return `<div class="${gridClass}"${style}>${mediaHtml}${pendingHtml}${moreHtml}</div>`;
 }
 function outputImageName(url){
     const clean = (url || '').split('?')[0];
@@ -14501,7 +14511,6 @@ function refreshSelectionVisuals(){
     nodesEl.querySelectorAll('.node').forEach(el => {
         el.classList.toggle('selected', selected.has(el.dataset.id));
     });
-    syncCanvasSelectedImageResolution(nodesEl);
     renderLinks();
     renderSelectionHub();
     if(workflowTransferModal?.classList.contains('open')) updateWorkflowTransferMeta();
