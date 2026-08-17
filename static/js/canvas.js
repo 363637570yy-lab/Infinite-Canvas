@@ -8600,6 +8600,7 @@ function renderVideoBody(node){
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
+            ${window.VideoPromptTargets ? window.VideoPromptTargets.buttonRowHtml() + window.VideoPromptTargets.metaRowHtml(node) : ''}
         </div>
         <div class="gen-run-row">
             <button class="gen-btn ${node.running ? 'running' : ''}" ${node.running ? 'disabled' : ''}><i data-lucide="clapperboard" class="w-4 h-4"></i>${node.running ? tr('canvas.generating') : tr('canvas.videoGenerate')}</button>
@@ -8643,6 +8644,13 @@ function renderVideoBody(node){
             if(field === 'useFrameRoles' && node.useFrameRoles) node.multimodal = false;
             render();
             scheduleSave();
+        };
+    });
+    wrap.querySelectorAll('[data-vpt-target]').forEach(btn => {
+        btn.onmousedown = e => e.stopPropagation();
+        btn.onclick = e => {
+            e.stopPropagation();
+            runCanvasVideoPromptConversion(node.id, btn);
         };
     });
     wrap.querySelectorAll('[data-video-temp-sh]').forEach(btn => {
@@ -10591,6 +10599,110 @@ async function runGeneratorLegacy(genId, opts={}){
         if(opts.cascade) throw err;
         showErrorModal(err.message || tr('canvas.generationFailed'), tr('canvas.apiFailed'));
     }
+}
+// --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
+// 领域逻辑在 static/js/video-prompt-targets.js 与后端 video_prompt_targets.py；
+// 这里只做经典画布接线：收集导演本与媒体、调转换接口、派生「转换稿提示词节点 + 新视频节点」。
+async function runCanvasVideoPromptConversion(nodeId, btn){
+    const vpt = window.VideoPromptTargets;
+    const node = nodes.find(n => n.id === nodeId);
+    const target = vpt?.byId?.(btn?.dataset?.vptTarget || '');
+    if(!node || !target){ showErrorModal('提示词目标清单未加载，请稍后重试', 'AI 提示词'); return; }
+    const sources = orderedSources(node, generatorSources(node));
+    const prompt = sources.map(s => s.prompt).filter(Boolean).join('\n\n').trim();
+    if(!prompt){ showErrorModal('没有可转换的导演本：请先给该节点连接提示词节点', 'AI 提示词'); return; }
+    const mediaRefs = applyUploadedUrlToRefs((sources.flatMap(s => s.refs || []) || []).filter(ref => ['image','video','audio'].includes(mediaKindForRef(ref))), node);
+    const refs = imageRefsOnly(mediaRefs).slice(0, CANVAS_REFERENCE_IMAGE_MAX);
+    const preset = target.preset || {};
+    // 首尾帧目标强制按首/尾角色送图；多参目标全部按参考图送；其余跟随当前「首尾帧」勾选。
+    const useFrameRoles = preset.frame_roles ? true : (preset.multimodal ? false : Boolean(node.useFrameRoles));
+    const images = refs.map((ref, i) => ({
+        name: ref.name || `图${i + 1}`,
+        url: ref.url || '',
+        role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
+    }));
+    const providerId = chatApiProviders()[0]?.id || 'comfly';
+    const chatModel = resolveChatModel('', providerId);
+    const oldLabel = btn ? btn.textContent : '';
+    if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
+    try {
+        const result = await vpt.convert({
+            target: target.id,
+            prompt,
+            duration: Math.max(1, Math.min(60, Number(node.duration) || 5)),
+            images,
+            provider: providerId,
+            model: chatModel
+        });
+        if(!result.ok){
+            console.warn('[提示词转换] 校验未通过，不派生节点', result.errors, result.warnings);
+            showErrorModal(`转换未通过校验：${(result.errors || [])[0] || '未知错误'}`, 'AI 提示词');
+            return;
+        }
+        deriveCanvasVideoPromptNodes(node, target, result);
+        if((result.warnings || []).length) console.warn('[提示词转换] 警告', result.warnings);
+        if(btn){ btn.disabled = false; btn.textContent = '已派生 ✓'; setTimeout(() => { btn.textContent = oldLabel; }, 2000); }
+        return;
+    } catch(e){
+        showErrorModal(e?.message || '转换失败', 'AI 提示词');
+    }
+    if(btn){ btn.disabled = false; btn.textContent = oldLabel; }
+}
+function deriveCanvasVideoPromptNodes(srcNode, target, result){
+    const nx = (Number(srcNode.x) || 0) + 460;
+    const ny = (Number(srcNode.y) || 0) + 60;
+    const promptNode = {id:uid('pr'), type:'prompt', x:nx - 340, y:ny - 190, text:String(result.prompt || '')};
+    const videoNode = {
+        id:uid('vid'),
+        type:'video',
+        x:nx,
+        y:ny,
+        apiProvider:srcNode.apiProvider,
+        model:srcNode.model,
+        duration:srcNode.duration,
+        aspectRatio:srcNode.aspectRatio || '16:9',
+        resolution:srcNode.resolution || '',
+        // 转换稿已是目标制式，上游「优化提示词」会破坏结构，派生节点固定关闭。
+        enhancePrompt:false,
+        enableUpsample:Boolean(srcNode.enableUpsample),
+        watermark:Boolean(srcNode.watermark),
+        cameraFixed:Boolean(srcNode.cameraFixed),
+        generateAudio:Boolean(srcNode.generateAudio),
+        useFrameRoles:Boolean(target.preset?.frame_roles),
+        multimodal:Boolean(target.preset?.multimodal),
+        tempShLinks:[],
+        inputs:[],
+        running:false,
+        videoPromptTarget:{
+            target: target.id,
+            sourceNodeId: srcNode.id,
+            warnings: result.warnings || [],
+            // 瘦身中间稿摘要：只留简表要素，不存原文。
+            ir: {
+                shots: (result.ir?.shots || []).length,
+                subjects: (result.ir?.subjects || []).map(item => ({id: item.id, image: item.image})),
+                images: (result.ir?.images || []).map(item => ({slot: item.slot, name: item.name, referenced: item.referenced}))
+            },
+            at: Date.now()
+        }
+    };
+    const modelPick = window.VideoPromptTargets?.pickVideoModelPreset?.(target, apiProviders);
+    if(modelPick){
+        videoNode.apiProvider = modelPick.provider;
+        videoNode.model = modelPick.model;
+    }
+    nodes.push(promptNode);
+    nodes.push(videoNode);
+    connections.push({id:uid('c'), from:promptNode.id, to:videoNode.id});
+    // 媒体上游沿用源节点连线；提示词类上游不复接，转换稿已取代原导演本。
+    connections.filter(c => c.to === srcNode.id).forEach(conn => {
+        const from = nodes.find(n => n.id === conn.from);
+        if(!from || from.type === 'prompt' || from.type === 'llm') return;
+        connections.push({id:uid('c'), from:from.id, to:videoNode.id});
+    });
+    render();
+    scheduleSave();
+    return videoNode;
 }
 async function runVideoNode(nodeId, opts={}){
     const node = nodes.find(n => n.id === nodeId);

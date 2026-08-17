@@ -32,8 +32,13 @@
             .then(data => {
                 state.targets = Array.isArray(data?.targets) ? data.targets : [];
                 state.loaded = true;
-                // 清单迟到时刷新一次已打开的视频参数面板，把按钮排上去。
-                if(state.targets.length && typeof window.scheduleDynamicParamsRefresh === 'function') window.scheduleDynamicParamsRefresh(0);
+                // 清单迟到时刷新一次页面渲染，把按钮排上去：智能画布走参数面板刷新，经典画布走整体重绘。
+                if(state.targets.length){
+                    try {
+                        if(typeof window.scheduleDynamicParamsRefresh === 'function') window.scheduleDynamicParamsRefresh(0);
+                        else if(typeof window.render === 'function') window.render();
+                    } catch(e) {}
+                }
                 return state.targets;
             })
             .catch(() => {
