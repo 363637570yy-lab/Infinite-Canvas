@@ -19,7 +19,9 @@
             '.vpt-btn:hover{border-color:rgba(128,128,148,.85);}',
             '.vpt-btn[disabled]{opacity:.5;cursor:wait;}',
             '.vpt-meta{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;opacity:.78;margin-top:4px;}',
-            '.vpt-meta-warn{color:#c8862d;cursor:help;}'
+            '.vpt-meta-warn{color:#c8862d;cursor:help;}',
+            '.vpt-chat-row{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}',
+            '.vpt-chat-row select{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}'
         ].join('\n');
         document.head.appendChild(style);
     }
@@ -56,11 +58,43 @@
         return state.targets.find(item => item.id === id) || null;
     }
 
-    function buttonRowHtml(){
+    function listChatProviders(providers){
+        return (providers || []).filter(p => {
+            if(!p || p.enabled === false) return false;
+            const id = String(p.id || '').toLowerCase();
+            const protocol = String(p.protocol || '').toLowerCase();
+            if(id === 'modelscope' || protocol === 'h3' || protocol === 'codelba') return false;
+            return Array.isArray(p.chat_models) && p.chat_models.length;
+        });
+    }
+
+    function chatSelectHtml(providers, selectedProvider, selectedModel){
+        const list = listChatProviders(providers);
+        if(!list.length){
+            return `<div class="vpt-chat-row"><span class="vpt-row-label">文字模型</span><span class="vpt-meta-warn">没有可用的文字平台，请到 API 设置添加聊天模型</span></div>`;
+        }
+        const providerId = list.some(p => p.id === selectedProvider) ? selectedProvider : '';
+        const models = (list.find(p => p.id === providerId) || {}).chat_models || [];
+        const modelId = models.includes(selectedModel) ? selectedModel : '';
+        return `<div class="vpt-chat-row">
+            <span class="vpt-row-label">文字模型</span>
+            <select class="vpt-chat-provider" data-vpt-chat="provider">
+                <option value="">选择平台</option>
+                ${list.map(p => `<option value="${esc(p.id)}" ${p.id === providerId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}
+            </select>
+            <select class="vpt-chat-model" data-vpt-chat="model" ${providerId ? '' : 'disabled'}>
+                <option value="">选择模型</option>
+                ${models.map(m => `<option value="${esc(m)}" ${m === modelId ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+            </select>
+        </div>`;
+    }
+
+    function buttonRowHtml(providers, selectedProvider, selectedModel){
         if(!state.targets.length) return '';
         return `<div class="vpt-row">
-            <span class="vpt-row-label">AI 提示词</span>
-            ${state.targets.map(item => `<button type="button" class="vpt-btn" data-vpt-target="${esc(item.id)}" title="按「${esc(item.label)}」规范转换导演本并派生新工作台">${esc(item.label)}</button>`).join('')}
+            ${chatSelectHtml(providers, selectedProvider, selectedModel)}
+            <span class="vpt-row-label">生成优化节点</span>
+            ${state.targets.map(item => `<button type="button" class="vpt-btn" data-vpt-target="${esc(item.id)}" title="按「${esc(item.label)}」改写导演本，派生新节点并连线">${esc(item.label)}</button>`).join('')}
         </div>`;
     }
 
@@ -98,21 +132,15 @@
     }
 
     // 转换必须走文字聊天通道：跳过 ModelScope 和纯视频协议，优先已填 Key 的平台。
-    function pickChatProvider(providers, requestedId){
-        const blockedIds = {modelscope:true};
-        const blockedProtocols = {h3:true, codelba:true};
-        const items = (providers || []).filter(p => p && p.enabled !== false);
-        const usable = items.filter(p => {
-            const id = String(p.id || '').toLowerCase();
-            const protocol = String(p.protocol || '').toLowerCase();
-            if(blockedIds[id] || blockedProtocols[protocol]) return false;
-            return Array.isArray(p.chat_models) && p.chat_models.length;
-        });
+    function pickChatProvider(providers, requestedId, requestedModel){
+        const list = listChatProviders(providers);
         const requested = String(requestedId || '').toLowerCase();
-        const match = requested ? usable.find(p => String(p.id || '').toLowerCase() === requested) : null;
-        const pick = match || usable.find(p => p.has_key) || usable[0] || null;
+        const match = requested ? list.find(p => String(p.id || '').toLowerCase() === requested) : null;
+        const pick = match || null;
         if(!pick) return null;
-        return {provider: pick.id, model: (pick.chat_models || [])[0] || ''};
+        const models = pick.chat_models || [];
+        const model = models.includes(String(requestedModel || '')) ? requestedModel : '';
+        return {provider: pick.id, model};
     }
 
     // 派生工作台的配套模型软默认：h3 家族按 provider 协议找，seedance 按模型名提示找；找不到返回 null（保留源设置）。
@@ -135,7 +163,7 @@
         return null;
     }
 
-    window.VideoPromptTargets = {load, list, byId, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset};
+    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

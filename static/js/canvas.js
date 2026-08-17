@@ -8600,7 +8600,7 @@ function renderVideoBody(node){
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
-            ${window.VideoPromptTargets ? window.VideoPromptTargets.buttonRowHtml() + window.VideoPromptTargets.metaRowHtml(node) : ''}
+            ${window.VideoPromptTargets ? (node.videoPromptTarget ? window.VideoPromptTargets.metaRowHtml(node) : window.VideoPromptTargets.buttonRowHtml(apiProviders, node.vptChatProvider, node.vptChatModel)) : ''}
         </div>
         <div class="gen-run-row">
             <button class="gen-btn ${node.running ? 'running' : ''}" ${node.running ? 'disabled' : ''}><i data-lucide="clapperboard" class="w-4 h-4"></i>${node.running ? tr('canvas.generating') : tr('canvas.videoGenerate')}</button>
@@ -8643,6 +8643,21 @@ function renderVideoBody(node){
             if(field === 'multimodal' && node.multimodal) node.useFrameRoles = false;
             if(field === 'useFrameRoles' && node.useFrameRoles) node.multimodal = false;
             render();
+            scheduleSave();
+        };
+    });
+    wrap.querySelectorAll('[data-vpt-chat]').forEach(sel => {
+        sel.onmousedown = e => e.stopPropagation();
+        sel.onclick = e => e.stopPropagation();
+        sel.onchange = e => {
+            e.stopPropagation();
+            if(sel.dataset.vptChat === 'provider'){
+                node.vptChatProvider = sel.value;
+                node.vptChatModel = '';
+                render();
+            } else {
+                node.vptChatModel = sel.value;
+            }
             scheduleSave();
         };
     });
@@ -10621,10 +10636,13 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
-    const chatPick = vpt.pickChatProvider(apiProviders);
-    if(!chatPick){ showErrorModal('没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。', 'AI 提示词'); return; }
+    const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
+    if(!chatPick || !chatPick.provider || !chatPick.model){
+        showErrorModal('请先选择文字平台和模型，再生成优化节点。', 'AI 提示词');
+        return;
+    }
     const providerId = chatPick.provider;
-    const chatModel = resolveChatModel(chatPick.model, providerId);
+    const chatModel = chatPick.model;
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {
@@ -10675,6 +10693,8 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
         tempShLinks:[],
         inputs:[],
         running:false,
+        vptChatProvider:srcNode.vptChatProvider || '',
+        vptChatModel:srcNode.vptChatModel || '',
         videoPromptTarget:{
             target: target.id,
             sourceNodeId: srcNode.id,
@@ -10695,6 +10715,7 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
     }
     nodes.push(promptNode);
     nodes.push(videoNode);
+    connections.push({id:uid('c'), from:srcNode.id, to:videoNode.id});
     connections.push({id:uid('c'), from:promptNode.id, to:videoNode.id});
     // 媒体上游沿用源节点连线；提示词类上游不复接，转换稿已取代原导演本。
     connections.filter(c => c.to === srcNode.id).forEach(conn => {

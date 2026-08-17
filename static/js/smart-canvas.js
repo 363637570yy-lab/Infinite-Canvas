@@ -336,6 +336,8 @@ let settings = {
     videoMultimodal:true,
     _videoMultimodalUserSet:false,
     videoUseFrameRoles:false,
+    vptChatProvider:'',
+    vptChatModel:'',
     videoTrustedAsset:false,
     videoTrustedSource:'library',
     videoTempShLinks:[],
@@ -2906,7 +2908,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
         ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
-        ${window.VideoPromptTargets ? window.VideoPromptTargets.buttonRowHtml() + window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : ''}
+        ${window.VideoPromptTargets ? ((activeSettingsSubject()?.videoPromptTarget) ? window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : window.VideoPromptTargets.buttonRowHtml(apiProviders, settings.vptChatProvider, settings.vptChatModel)) : ''}
     `;
 }
 function renderVolcengineParams(){
@@ -4120,6 +4122,21 @@ function bindDynamicParams(){
             if(btn.dataset.toggleParam === 'videoMultimodal') settings._videoMultimodalUserSet = true;
             if(btn.dataset.toggleParam === 'videoMultimodal' && settings.videoMultimodal) settings.videoUseFrameRoles = false;
             normalizeSmartVideoModeSettings(settings, btn.dataset.toggleParam === 'videoUseFrameRoles');
+            persistActiveSmartSettings();
+            renderDynamicParams();
+            scheduleSave();
+        };
+    });
+    dynamicParams.querySelectorAll('[data-vpt-chat]').forEach(sel => {
+        sel.onchange = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if(sel.dataset.vptChat === 'provider'){
+                settings.vptChatProvider = sel.value;
+                settings.vptChatModel = '';
+            } else {
+                settings.vptChatModel = sel.value;
+            }
             persistActiveSmartSettings();
             renderDynamicParams();
             scheduleSave();
@@ -15509,10 +15526,13 @@ async function runVideoPromptTargetConversion(targetId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
-    const chatPick = vpt.pickChatProvider(apiProviders);
-    if(!chatPick){ toast('没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。'); return; }
+    const chatPick = vpt.pickChatProvider(apiProviders, settings.vptChatProvider, settings.vptChatModel);
+    if(!chatPick || !chatPick.provider || !chatPick.model){
+        toast('请先选择文字平台和模型，再生成优化节点');
+        return;
+    }
     const chatProvider = chatPick.provider;
-    const chatModel = resolveChatModel(chatPick.model, chatProvider);
+    const chatModel = chatPick.model;
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {

@@ -18664,7 +18664,10 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not chat_provider:
         raise HTTPException(status_code=400, detail="没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。")
     chat_provider_id = chat_provider["id"]
-    chat_model = selected_model(payload.model, preferred_chat_model(get_api_provider(chat_provider_id)))
+    chat_model = str(payload.model or "").strip()
+    if not chat_model:
+        raise HTTPException(status_code=400, detail="请指定文字模型，不要让系统自动猜。")
+    chat_model = selected_model(chat_model, chat_model)
     text = await _video_prompt_llm_text(
         chat_provider_id, chat_model, video_prompts.build_convert_messages(target, ir)
     )

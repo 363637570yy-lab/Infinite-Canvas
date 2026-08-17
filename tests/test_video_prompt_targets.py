@@ -298,6 +298,7 @@ class ConvertEndpointTests(unittest.TestCase):
                 prompt=XINGHUA_PROMPT,
                 duration=15,
                 provider=provider,
+                model="gpt-4o-mini",
                 images=[
                     {"name": "皇帝_ref.png", "url": "u1"},
                     {"name": "甄嬛_ref.png", "url": "u2"},
@@ -332,6 +333,21 @@ class ConvertEndpointTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(result["errors"])
         self.assertEqual(result["prompt"], "坏输出二")
+
+    def test_empty_model_rejected(self):
+        from fastapi import HTTPException
+
+        request = self.main.VideoPromptConvertRequest(
+            target="h3-ref2va",
+            prompt=XINGHUA_PROMPT,
+            duration=15,
+            provider="comfly",
+            model="",
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.main.video_prompt_targets_convert(request))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("文字模型", str(ctx.exception.detail))
 
     def test_unknown_target_rejected(self):
         from fastapi import HTTPException
