@@ -90,6 +90,13 @@ class MessageBuildTests(unittest.TestCase):
         presets = {item["id"]: item["preset"] for item in vpt.list_video_prompt_targets()}
         self.assertEqual(presets["h3-ref2va"], {"multimodal": True})
         self.assertEqual(presets["h3-fl2va"], {"frame_roles": True})
+        groups = [(item["group"], item["label"]) for item in vpt.list_video_prompt_targets()]
+        self.assertEqual(groups, [
+            ("seedance优化", "2.0提示词"),
+            ("seedance优化", "2.5提示词"),
+            ("minimax优化", "多参提示词"),
+            ("minimax优化", "首尾帧提示词"),
+        ])
 
     def test_convert_messages_carry_skill_and_ir(self):
         ir = xinghua_ir()

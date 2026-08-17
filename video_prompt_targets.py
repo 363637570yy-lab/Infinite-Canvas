@@ -15,28 +15,32 @@ PROMPTS_DIR = Path(__file__).resolve().parent / "prompts" / "video-targets"
 # 不做能力分类；preset 是派生工作台需要预置的勾选。
 VIDEO_PROMPT_TARGETS = {
     "seedance-2.0": {
-        "label": "Seedance 2.0 提示词",
+        "label": "2.0提示词",
+        "group": "seedance优化",
         "skill": "seedance-2.0.md",
         "family": "seedance",
         "model_hints": ["sd2.0", "seedance-2.0", "seedance2.0", "seedance_2.0", "seedance-v2"],
         "preset": {},
     },
     "seedance-2.5": {
-        "label": "Seedance 2.5 提示词",
+        "label": "2.5提示词",
+        "group": "seedance优化",
         "skill": "seedance-2.5.md",
         "family": "seedance",
         "model_hints": ["sd2.5", "seedance-2.5", "seedance2.5", "seedance_2.5", "seedance-v2.5"],
         "preset": {},
     },
     "h3-ref2va": {
-        "label": "H3 多参提示词",
+        "label": "多参提示词",
+        "group": "minimax优化",
         "skill": "h3-ref2va.md",
         "family": "h3",
         "model_hints": [],
         "preset": {"multimodal": True},
     },
     "h3-fl2va": {
-        "label": "H3 首尾帧提示词",
+        "label": "首尾帧提示词",
+        "group": "minimax优化",
         "skill": "h3-fl2va.md",
         "family": "h3",
         "model_hints": [],
@@ -82,6 +86,7 @@ def list_video_prompt_targets():
         items.append({
             "id": target_id,
             "label": spec["label"],
+            "group": spec.get("group") or spec["family"],
             "family": spec["family"],
             "model_hints": list(spec["model_hints"]),
             "preset": dict(spec["preset"]),

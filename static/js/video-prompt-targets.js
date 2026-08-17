@@ -21,7 +21,8 @@
             '.vpt-meta{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;opacity:.78;margin-top:4px;}',
             '.vpt-meta-warn{color:#c8862d;cursor:help;}',
             '.vpt-chat-row{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}',
-            '.vpt-chat-row select{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}'
+            '.vpt-chat-row select{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}',
+            '.vpt-group{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}'
         ].join('\n');
         document.head.appendChild(style);
     }
@@ -100,12 +101,29 @@
         </div>`;
     }
 
+    function buttonGroups(targets){
+        const groups = [];
+        const index = new Map();
+        for(const item of targets || []){
+            const name = item.group || (item.family === 'h3' ? 'minimax优化' : 'seedance优化');
+            if(!index.has(name)){
+                index.set(name, groups.length);
+                groups.push({name, items: []});
+            }
+            groups[index.get(name)].items.push(item);
+        }
+        return groups;
+    }
+
     function buttonRowHtml(providers, selectedProvider, selectedModel, selectedLang){
         if(!state.targets.length) return '';
+        const groups = buttonGroups(state.targets);
         return `<div class="vpt-row">
             ${chatSelectHtml(providers, selectedProvider, selectedModel, selectedLang)}
-            <span class="vpt-row-label">生成优化节点</span>
-            ${state.targets.map(item => `<button type="button" class="vpt-btn" data-vpt-target="${esc(item.id)}" title="按「${esc(item.label)}」改写导演本，派生新节点并连线">${esc(item.label)}</button>`).join('')}
+            ${groups.map(group => `<div class="vpt-group">
+                <span class="vpt-row-label">${esc(group.name)}：</span>
+                ${group.items.map(item => `<button type="button" class="vpt-btn" data-vpt-target="${esc(item.id)}" title="按「${esc(group.name)} ${esc(item.label)}」改写导演本，派生新节点并连线">${esc(item.label)}</button>`).join('')}
+            </div>`).join('')}
         </div>`;
     }
 
