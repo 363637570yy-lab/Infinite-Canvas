@@ -10279,6 +10279,8 @@ function syncLatestGeneratedOutputToConnection(fromId, toId){
     const source = nodes.find(n => n.id === fromId);
     const out = nodes.find(n => n.id === toId);
     if(!source || !out || out.type !== 'output' || !CANVAS_MEDIA_OUTPUT_TYPES.includes(source.type)) return false;
+    // 源节点已有别的输出时，新拉的输出是空槽，不能把历史成片再拷一份进去。
+    if(outputNodesForSource(source.id).some(n => n.id !== out.id)) return false;
     const latest = latestGeneratedOutputItem(source);
     if(!latest) return false;
     return appendOutputImagesWithoutDuplicates(out, [latest]) > 0;
