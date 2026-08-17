@@ -18678,7 +18678,7 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         video_prompts.build_convert_messages(target, ir, payload.prompt, language),
         images=image_urls,
     )
-    checked = video_prompts.validate_target_output(target, text, ir)
+    checked = video_prompts.validate_target_output(target, text, ir, language)
     if checked["errors"]:
         # 校验失败带着错误自动重跑一次；再失败则如实返回，前端不派生工作台。
         text = await _video_prompt_llm_text(
@@ -18686,7 +18686,7 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
             video_prompts.build_repair_messages(target, ir, text, checked["errors"], language),
             images=image_urls,
         )
-        checked = video_prompts.validate_target_output(target, text, ir)
+        checked = video_prompts.validate_target_output(target, text, ir, language)
     return {
         "ok": not checked["errors"],
         "target": target,

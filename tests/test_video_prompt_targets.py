@@ -103,17 +103,22 @@ class MessageBuildTests(unittest.TestCase):
         self.assertIn("只输出该目标的提示词正文", messages[1]["content"])
         self.assertIn("生成语言：英文", messages[0]["content"])
         self.assertIn("生成语言：英文", messages[1]["content"])
+        self.assertIn("本轮描写语言只能是英文", messages[1]["content"])
+        self.assertIn("不要因为 skill 里有中文样例就改回中文", messages[0]["content"])
         self.assertNotIn("http://x/1.png", messages[1]["content"])
 
     def test_convert_messages_honor_chinese_output(self):
         ir = xinghua_ir()
         messages = vpt.build_convert_messages("h3-ref2va", ir, language="zh")
         self.assertTrue(messages[0]["content"].startswith("生成语言：中文"))
-        self.assertIn("不要因为 skill 样例是英文就改回英文", messages[0]["content"])
+        self.assertIn("不要因为 skill 里有英文样例就改回英文", messages[0]["content"])
         self.assertIn("生成语言：中文", messages[1]["content"])
+        self.assertIn("本轮描写语言只能是中文", messages[1]["content"])
         self.assertIn("不要翻译", messages[1]["content"])
         self.assertNotIn("正文全英文", messages[0]["content"])
         self.assertIn("keyframe completion", messages[0]["content"])
+        self.assertIn("<Subject 1> 是", messages[0]["content"])
+        self.assertIn("禁止写成", messages[0]["content"])
         self.assertEqual(vpt.normalize_output_language("中文"), "zh")
         self.assertEqual(vpt.normalize_output_language(""), "en")
         self.assertGreater(vpt._content_units("镜头从门口缓缓推入客厅，保持户型图的空间顺序。" * 10), 200)
@@ -202,6 +207,35 @@ class ValidateRef2vaTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertTrue(any("任务类型应使用官方前缀" in w for w in result["warnings"]))
 
+    def test_english_prose_ok_when_language_en(self):
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ir(), language="en")
+        self.assertFalse(any("仍是英文" in e for e in result["errors"]))
+
+    def test_english_prose_fails_when_language_zh(self):
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ir(), language="zh")
+        self.assertTrue(any("仍是英文" in e for e in result["errors"]))
+        self.assertTrue(any("subject_definitions" in e for e in result["errors"]))
+
+    def test_chinese_prose_ok_when_language_zh(self):
+        text = (
+            "subject_definitions:\n"
+            "<Subject 1> 是 <Picture 1> 里的中年皇帝，深金色龙袍，神情沉稳。\n"
+            "<Subject 2> 是 <Picture 2> 里的年轻妃子，浅蓝色宫装。\n"
+            "summary:\n[reference generation] 黄昏御花园里，<Subject 2> 向 <Subject 1> 行礼。\n"
+            "retention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - 脸和金袍保持一致。\n"
+            "detailed_description:\n目标视频采用电影感宫廷风格。\n"
+            "[Shot 1] <Subject 1> 坐在石桌旁批阅奏折，镜头小幅度缓慢推进。\n"
+            "[Shot 2] At 00:04.000, the camera cuts to <Subject 2> 走入鞠躬。<Subject 2> (S1) says: <d>[Chinese] 臣妾参见皇上。</d>\n"
+            "[Shot 3] At 00:08.000, <Subject 1> 抬头微笑。<Subject 1> (S2) says: <d>[Chinese] 免礼。</d>\n"
+            "[Shot 4] At 00:11.500, 两人对坐赏花。\n"
+            "overall_soundscape:\n园中轻风和远处鸟鸣。\n"
+            "non_diegetic_music:\nN/A"
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, xinghua_ir(), language="zh")
+        self.assertFalse(any("仍是英文" in e for e in result["errors"]))
+        en_result = vpt.validate_target_output("h3-ref2va", text, xinghua_ir(), language="en")
+        self.assertTrue(any("仍是中文" in e for e in en_result["errors"]))
+
     def test_leftover_canvas_syntax_fails(self):
         bad = GOOD_REF2VA.replace("<Picture 1>", "@图1")
         result = vpt.validate_target_output("h3-ref2va", bad, xinghua_ir())
@@ -272,6 +306,21 @@ class ValidateFl2vaTests(unittest.TestCase):
         result = vpt.validate_target_output("h3-fl2va", text, self._ir())
         self.assertEqual(result["errors"], [])
 
+    def test_fl2va_language_must_match_selection(self):
+        ir = self._ir()
+        english = self._good(vpt.fl2va_align_first())
+        chinese = (
+            vpt.fl2va_align_first() + "\n\n"
+            "integrated_multimodal_description: [Shot 1] 皇帝坐在石桌旁，慢慢抬头看向杏花，镜头小幅度缓慢推进。"
+            "(S1) <d>[Chinese] 春色正好。</d>\n"
+            "overall_soundscape: 安静园中环境声和远处鸟鸣。\n"
+            "non_diegetic_music: N/A"
+        )
+        self.assertEqual(vpt.validate_target_output("h3-fl2va", english, ir, language="en")["errors"], [])
+        self.assertTrue(any("仍是英文" in e for e in vpt.validate_target_output("h3-fl2va", english, ir, language="zh")["errors"]))
+        self.assertFalse(any("仍是中文" in e or "仍是英文" in e for e in vpt.validate_target_output("h3-fl2va", chinese, ir, language="zh")["errors"]))
+        self.assertTrue(any("仍是中文" in e for e in vpt.validate_target_output("h3-fl2va", chinese, ir, language="en")["errors"]))
+
 
 class ValidateSeedanceTests(unittest.TestCase):
     GOOD_25 = (
@@ -318,9 +367,12 @@ class ValidateSeedanceTests(unittest.TestCase):
             "镜头2（4-8s）：妃子（@Image 2）走入鞠躬。妃子说：“臣妾参见皇上。”\n"
             "全程暖光，不要字幕。"
         )
-        result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir())
+        result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir(), language="zh")
         self.assertEqual(result["errors"], [])
         self.assertFalse(any("时间轴" in w for w in result["warnings"]))
+        self.assertFalse(any("仍是英文" in e for e in result["errors"]))
+        en_result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir(), language="en")
+        self.assertTrue(any("仍是中文" in e for e in en_result["errors"]))
 
     def test_seedance_25_warns_when_seconds_exceed_duration(self):
         text = self.GOOD_25 + "\n镜头3（16-20s）：两人离场。"
@@ -331,14 +383,16 @@ class ValidateSeedanceTests(unittest.TestCase):
     def test_seedance_20_allows_shot_numbers(self):
         text = (
             "镜头1：皇帝（@Image 1）坐在石桌旁批折。\n"
-            "镜头2：妃子（@Image 2）走入鞠躬。The consort says: \"臣妾参见皇上。\""
+            "镜头2：妃子（@Image 2）走入鞠躬。妃子说：“臣妾参见皇上。”"
         )
-        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir())
+        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir(), language="zh")
         self.assertEqual(result["errors"], [])
+        en_result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir(), language="en")
+        self.assertTrue(any("仍是中文" in e for e in en_result["errors"]))
 
     def test_seedance_20_warns_on_integer_timestamps(self):
         text = "0-3s：皇帝（@Image 1）坐着。3秒后妃子（@Image 2）入画。"
-        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir())
+        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir(), language="zh")
         self.assertEqual(result["errors"], [])
         self.assertTrue(any("不响应时间戳" in w for w in result["warnings"]))
 
@@ -353,6 +407,20 @@ class ValidateSeedanceTests(unittest.TestCase):
         self.assertIn("整数秒", skill)
         self.assertIn("镜头1", skill)
         self.assertIn("0-3s", skill)
+
+    def test_all_skills_teach_both_languages(self):
+        for target_id in ("h3-ref2va", "h3-fl2va", "seedance-2.0", "seedance-2.5"):
+            skill = vpt.load_target_skill(target_id)
+            self.assertIn("语言铁律", skill, target_id)
+            self.assertIn("中文描写样例", skill, target_id)
+            self.assertIn("英文描写样例", skill, target_id)
+            self.assertIn("禁止中英混写", skill, target_id)
+
+    def test_english_seedance_fails_when_language_zh(self):
+        result = vpt.validate_target_output("seedance-2.5", self.GOOD_25, xinghua_ir(), language="zh")
+        self.assertTrue(any("仍是英文" in e for e in result["errors"]))
+        result20 = vpt.validate_target_output("seedance-2.0", self.GOOD_25, xinghua_ir(), language="zh")
+        self.assertTrue(any("仍是英文" in e for e in result20["errors"]))
 
     def test_first_frame_declaration_required_when_role_present(self):
         images = [

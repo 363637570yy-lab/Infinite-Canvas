@@ -360,15 +360,27 @@ def normalize_output_language(value):
 def output_language_instruction(language):
     if normalize_output_language(language) == "zh":
         return (
-            "生成语言：中文。描写、动作、场景、运镜、声音必须用中文写。"
-            "不要因为 skill 样例是英文就改回英文；样例只示范结构。"
-            "段名、对齐行、标签和协议词必须保持 skill 规定的英文，不要翻译："
+            "生成语言：中文。整份描写只能用中文，禁止中英混写描写。"
+            "subject_definitions / summary / retention_analysis / detailed_description / "
+            "overall_soundscape / integrated_multimodal_description 以及 Seedance 概述、情节、结尾"
+            "必须是中文句子。"
+            "要写「<Subject 1> 是……」「目标视频采用……」「皇帝坐在石桌旁」，"
+            "禁止写成 “<Subject 1> is the ...” / “A cinematic ...” / “The target video is ...” / "
+            "“The emperor sits ...”。"
+            "不要因为 skill 里有英文样例就改回英文；英文样例只在选英文时用。"
+            "段名、对齐行、标签和协议词必须保持英文，不要翻译："
             "subject_definitions / summary / [reference generation] / fully_preserved / "
             "<Picture N> / <Subject N> / [Shot N] / At MM:SS.mmm / @Image N / is the first frame。"
             "台词、牌匾、画面可见原文保持原语言。"
         )
     return (
-        "生成语言：英文。描写正文用英文。"
+        "生成语言：英文。整份描写只能用英文，禁止中英混写描写。"
+        "subject_definitions / summary / retention_analysis / detailed_description / "
+        "overall_soundscape / integrated_multimodal_description 以及 Seedance 概述、情节、结尾"
+        "必须是英文句子。"
+        "要写 “<Subject 1> is ...” / “The target video is ...” / “The emperor sits ...”，"
+        "禁止写成「<Subject 1> 是……」「目标视频采用……」「皇帝坐在石桌旁」。"
+        "不要因为 skill 里有中文样例就改回中文；中文样例只在选中文时用。"
         "段名、对齐行、标签和协议词保持 skill 规定的英文。"
         "台词、牌匾、画面可见原文保持原语言。"
     )
@@ -392,6 +404,7 @@ def build_convert_messages(target_id, ir, source_prompt="", language="en"):
         f"{json.dumps(ir, ensure_ascii=False, indent=2)}\n\n"
         "附图已按槽位顺序附在本条消息里。请看图写词。"
         "户型图、场景图、物体图也要定义成 Subject / Picture，禁止写 No identified subjects。\n"
+        f"本轮描写语言只能是{'中文' if normalize_output_language(language) == 'zh' else '英文'}，不要混用另一份样例的语言。\n"
         "只输出该目标的提示词正文，不要解释，不要代码块围栏。"
     )
     return [
@@ -403,9 +416,14 @@ def build_convert_messages(target_id, ir, source_prompt="", language="en"):
 def build_repair_messages(target_id, ir, previous_output, errors, language="en"):
     messages = build_convert_messages(target_id, ir, language=language)
     messages.append({"role": "assistant", "content": previous_output})
+    lang_name = "中文" if normalize_output_language(language) == "zh" else "英文"
     messages.append({
         "role": "user",
-        "content": "上一版未通过校验，问题如下：\n- " + "\n- ".join(errors) + "\n请修正以上问题，重新只输出提示词正文。",
+        "content": (
+            f"上一版未通过校验，问题如下：\n- " + "\n- ".join(errors)
+            + f"\n生成语言必须仍是{lang_name}，只改描写语言和结构错误，不要改成另一种语言。"
+            + "\n请修正以上问题，重新只输出提示词正文。"
+        ),
     })
     return messages
 
@@ -705,7 +723,110 @@ _VALIDATORS = {
 }
 
 
-def validate_target_output(target_id, text, ir):
+_PROTOCOL_FOR_LANGUAGE = re.compile(
+    r"(?:"
+    r"<Picture\s+\d+>|<Subject\s+\d+>|@Image\s+\d+|"
+    r"\[Shot\s+\d+\]|At\s+\d{1,2}:\d{2}\.\d{3}|"
+    r"fully_preserved|partially_preserved|attribute_transfer|weak_reference|"
+    r"fully_copy|partially_copy|reference generation|keyframe completion|"
+    r"video editing|video continuation|audio reuse|audio reference|"
+    r"subject_definitions|retention_analysis|detailed_description|"
+    r"overall_soundscape|non_diegetic_music|integrated_multimodal_description|"
+    r"the camera cuts to|says in an off-screen voiceover|"
+    r"Push In|Pull Out|Pan Left|Pan Right|Truck Left|Truck Right|"
+    r"Tilt Up|Tilt Down|Pedestal Up|Pedestal Down|Zoom In|Zoom Out|"
+    r"Arc Shot|Tracking Shot|Static Shot|Shake Slightly|\bPOV\b|"
+    r"with small amplitude|with large amplitude|at slow speed|at fast speed|"
+    r"is the first frame|is the last frame|is the reference|"
+    r"\bN/A\b"
+    r")",
+    re.IGNORECASE,
+)
+_H3_LANGUAGE_SECTIONS = {
+    "subject_definitions": ["summary"],
+    "summary": ["retention_analysis"],
+    "retention_analysis": ["detailed_description"],
+    "detailed_description": ["overall_soundscape"],
+    "overall_soundscape": ["non_diegetic_music"],
+    "integrated_multimodal_description": ["overall_soundscape"],
+}
+
+
+def _strip_protocol_for_language(text):
+    """去掉协议词、对齐行、声明行和原样台词，只留描写供语言检查。"""
+    value = _D_TAG.sub(" ", str(text or ""))
+    value = re.sub(r"[\"“「][^\"”」]{1,80}[\"”」]", " ", value)
+    kept = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("For the target video, at 0.00 seconds"):
+            continue
+        if stripped.startswith("How the reference pictures align"):
+            continue
+        if _AT_IMAGE.search(stripped) and re.search(
+            r"\b(is the first frame|is the last frame|is the reference|defines)\b",
+            stripped,
+            re.IGNORECASE,
+        ):
+            continue
+        kept.append(line)
+    value = _PROTOCOL_FOR_LANGUAGE.sub(" ", "\n".join(kept))
+    return re.sub(r"<[^>]+>", " ", value)
+
+
+def _prose_counts(text):
+    cleaned = _strip_protocol_for_language(text)
+    return (
+        len(re.findall(r"[\u4e00-\u9fff]", cleaned)),
+        len(re.findall(r"[A-Za-z']+", cleaned)),
+    )
+
+
+def _prose_is_english(text):
+    cjk, latin = _prose_counts(text)
+    return latin >= 20 and latin >= cjk
+
+
+def _prose_is_chinese(text):
+    cjk, latin = _prose_counts(text)
+    return cjk >= 20 and cjk >= latin
+
+
+def _language_chunks(text, target_id):
+    spec = VIDEO_PROMPT_TARGETS.get(str(target_id or "").strip()) or {}
+    if spec.get("family") == "h3":
+        chunks = []
+        for name, nxt in _H3_LANGUAGE_SECTIONS.items():
+            body = _section_body(text, name, nxt)
+            if body:
+                chunks.append((name, body))
+        return chunks
+    return [("body", str(text or ""))]
+
+
+def _check_requested_language(text, target_id, language, errors):
+    wanted = normalize_output_language(language)
+    bad = []
+    for name, body in _language_chunks(text, target_id):
+        if wanted == "zh" and _prose_is_english(body):
+            bad.append(name)
+        elif wanted == "en" and _prose_is_chinese(body):
+            bad.append(name)
+    if not bad:
+        return
+    if wanted == "zh":
+        errors.append(
+            "选了中文，但这些段落仍是英文：" + " / ".join(bad)
+            + "。请改成中文句子，段名和 <Subject> / [Shot] / fully_preserved / @Image 声明行保持英文。"
+        )
+    else:
+        errors.append(
+            "选了英文，但这些段落仍是中文：" + " / ".join(bad)
+            + "。请改成英文句子，台词和牌匾原文保持原语言。"
+        )
+
+
+def validate_target_output(target_id, text, ir, language="en"):
     """返回 {"errors": [...], "warnings": [...]}；errors 非空则不得发出。"""
     errors = []
     warnings = []
@@ -716,4 +837,5 @@ def validate_target_output(target_id, text, ir):
     if validator is None:
         return {"errors": [f"未知的提示词目标：{target_id}"], "warnings": warnings}
     validator(value, ir, errors, warnings)
+    _check_requested_language(value, target_id, language, errors)
     return {"errors": errors, "warnings": warnings}
