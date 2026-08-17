@@ -51,6 +51,8 @@ import codelba_protocol as codelba
 import grok2api_protocol as grok2api
 # 本地 H3 网关：画布只发时长/画质/比例，步数等配方在 H3 管理页。
 import h3_protocol as h3
+# 出片提示词目标转换：中间稿抽取、目标校验等纯逻辑（画布出片提示词适配方案）。
+import video_prompt_targets as video_prompts
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -2869,6 +2871,15 @@ class CanvasLLMRequest(BaseModel):
     ms_model: str = ""
     images: List[str] = []   # 可以是 /output/*.png、/assets/*.png 本地路径 或 http(s) URL 或 data URL
     videos: List[str] = []   # 可以是 /output/*.mp4、/assets/*.mp4 本地路径 或 http(s) URL 或 data URL
+
+class VideoPromptConvertRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=40)
+    prompt: str = Field(default="", max_length=10000)
+    duration: int = 5
+    images: List[AIReference] = []
+    # 转换用画布已配置的文本模型通道，与视频站点无关。
+    provider: str = "comfly"
+    model: str = ""
 
 class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
@@ -18605,6 +18616,66 @@ async def canvas_llm(payload: CanvasLLMRequest):
         raise HTTPException(status_code=502, detail=f"解析回复内容失败：{exc}") from exc
     raw_data = unwrap_apimart_response(raw) if isinstance(raw, dict) else {}
     return {"text": text, "model": model, "raw_usage": raw_data.get("usage")}
+
+# --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
+
+@app.get("/api/video-prompt-targets")
+async def video_prompt_targets_list():
+    return {"targets": video_prompts.list_video_prompt_targets()}
+
+async def _video_prompt_llm_text(provider_id, model, messages):
+    """把转换消息映射成 canvas-llm 请求，在进程内复用其全部协议分支。"""
+    system = ""
+    history = []
+    for item in messages:
+        role = item.get("role")
+        if role == "system":
+            system = item.get("content") or ""
+        elif role in {"user", "assistant"}:
+            history.append({"role": role, "content": item.get("content") or ""})
+    if not history or history[-1].get("role") != "user":
+        raise HTTPException(status_code=400, detail="转换消息序列不合法")
+    last_user = history.pop()
+    if len(last_user["content"]) > LLM_MESSAGE_MAX_LENGTH:
+        raise HTTPException(status_code=400, detail="导演本过长，转换消息超出文本通道上限，请精简后重试。")
+    llm_payload = CanvasLLMRequest(
+        message=last_user["content"],
+        system_prompt=system,
+        model=model,
+        messages=history,
+        provider=provider_id or "comfly",
+    )
+    result = await canvas_llm(llm_payload)
+    return video_prompts.strip_model_output((result or {}).get("text") or "")
+
+@app.post("/api/video-prompt-targets/convert")
+async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
+    target = payload.target.strip()
+    if target not in video_prompts.VIDEO_PROMPT_TARGETS:
+        raise HTTPException(status_code=400, detail=f"未知的提示词目标：{target}")
+    if not payload.prompt.strip():
+        raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
+    images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
+    ir = video_prompts.extract_canvas_ir(payload.prompt, images, payload.duration)
+    text = await _video_prompt_llm_text(
+        payload.provider, payload.model, video_prompts.build_convert_messages(target, ir)
+    )
+    checked = video_prompts.validate_target_output(target, text, ir)
+    if checked["errors"]:
+        # 校验失败带着错误自动重跑一次；再失败则如实返回，前端不派生工作台。
+        text = await _video_prompt_llm_text(
+            payload.provider, payload.model,
+            video_prompts.build_repair_messages(target, ir, text, checked["errors"]),
+        )
+        checked = video_prompts.validate_target_output(target, text, ir)
+    return {
+        "ok": not checked["errors"],
+        "target": target,
+        "prompt": text,
+        "errors": checked["errors"],
+        "warnings": (ir.get("warnings") or []) + checked["warnings"],
+        "ir": ir,
+    }
 
 # --- 对话管理 ---
 

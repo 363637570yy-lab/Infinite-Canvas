@@ -2906,6 +2906,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
         ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
+        ${window.VideoPromptTargets ? window.VideoPromptTargets.buttonRowHtml() + window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : ''}
     `;
 }
 function renderVolcengineParams(){
@@ -4122,6 +4123,13 @@ function bindDynamicParams(){
             persistActiveSmartSettings();
             renderDynamicParams();
             scheduleSave();
+        };
+    });
+    dynamicParams.querySelectorAll('[data-vpt-target]').forEach(btn => {
+        btn.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            runVideoPromptTargetConversion(btn.dataset.vptTarget, btn);
         };
     });
     dynamicParams.querySelectorAll('[data-trusted-source]').forEach(btn => {
@@ -15479,6 +15487,116 @@ async function runRunningHubGeneration(prompt, refs, runSettings=settings){
         if(data.status === 'FAILED') throw new Error(data.failReason || tr('smart.rhFailed'));
     }
     throw new Error(tr('smart.rhTimeout'));
+}
+// --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
+// 领域逻辑在 static/js/video-prompt-targets.js 与后端 video_prompt_targets.py；
+// 这里只做画布接线：收集导演本与 MEDIA、调转换接口、派生新的视频工作台。
+async function runVideoPromptTargetConversion(targetId, btn){
+    const vpt = window.VideoPromptTargets;
+    const target = vpt?.byId?.(targetId);
+    if(!target){ toast('提示词目标清单未加载，请稍后重试'); return; }
+    const node = activeSettingsSubject();
+    if(!node){ toast('请先选中视频工作台节点'); return; }
+    savePromptDraftForCurrent();
+    const prompt = String(node.promptDraftText || promptPlainText() || '').trim();
+    if(!prompt){ toast('导演本提示词为空，无法转换'); return; }
+    const refs = imageRefsOnly(defaultReferenceImagesFor(node)).slice(0, SMART_REFERENCE_IMAGE_MAX);
+    const preset = target.preset || {};
+    // 首尾帧目标强制按首/尾角色送图；多参目标全部按参考图送；其余跟随当前「首尾帧」勾选。
+    const useFrameRoles = preset.frame_roles ? true : (preset.multimodal ? false : Boolean(settings.videoUseFrameRoles));
+    const images = refs.map((ref, i) => ({
+        name: ref.name || `图${i + 1}`,
+        url: ref.url || '',
+        role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
+    }));
+    const chatProvider = resolveChatProviderId();
+    const chatModel = resolveChatModel('', chatProvider);
+    const oldLabel = btn ? btn.textContent : '';
+    if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
+    try {
+        const result = await vpt.convert({
+            target: targetId,
+            prompt,
+            duration: Math.max(1, Math.min(60, Number(settings.videoDuration) || 5)),
+            images,
+            provider: chatProvider,
+            model: chatModel
+        });
+        if(!result.ok){
+            console.warn('[提示词转换] 校验未通过，不派生工作台', result.errors, result.warnings);
+            toast(`转换未通过校验：${(result.errors || [])[0] || '未知错误'}`);
+            return;
+        }
+        deriveVideoPromptWorkbench(node, target, result);
+        const warnings = result.warnings || [];
+        if(warnings.length){
+            console.warn('[提示词转换] 警告', warnings);
+            toast(`已派生「${target.label}」工作台（${warnings.length} 条警告）：${warnings[0]}`);
+        } else {
+            toast(`已派生「${target.label}」工作台`);
+        }
+    } catch(e){
+        toast(e?.message || '转换失败');
+    } finally {
+        if(btn){ btn.disabled = false; btn.textContent = oldLabel; }
+    }
+}
+function deriveVideoPromptWorkbench(srcNode, target, result){
+    pushUndo();
+    const rect = nodeRect(srcNode);
+    const copy = cloneSmartNode(srcNode, (Number(rect.width) || 260) + 120, 40);
+    copy.title = target.label || target.id;
+    copy.images = [];
+    delete copy.w;
+    delete copy.h;
+    // 派生工作台是全新未运行节点：清掉上次运行快照，否则 composer 会优先显示旧 runPrompt。
+    delete copy.runPrompt;
+    delete copy.runModelPrompt;
+    delete copy.runPromptRefs;
+    delete copy.runInputRefs;
+    delete copy.runAt;
+    delete copy.sourceNodeId;
+    delete copy.historyFor;
+    delete copy.isHistoryGroup;
+    delete copy.blockedInputRefs;
+    copy.inputNodeIds = [];
+    copy.videoPromptTarget = {
+        target: target.id,
+        sourceNodeId: srcNode.id,
+        warnings: result.warnings || [],
+        // 瘦身中间稿摘要：只留简表要素（镜头数、人物绑定、图槽），不存原文。
+        ir: {
+            shots: (result.ir?.shots || []).length,
+            subjects: (result.ir?.subjects || []).map(item => ({id: item.id, image: item.image})),
+            images: (result.ir?.images || []).map(item => ({slot: item.slot, name: item.name, referenced: item.referenced}))
+        },
+        at: Date.now()
+    };
+    const runSettings = cloneSmartSettings(smartSettingsForNode(srcNode));
+    runSettings.engine = 'api';
+    runSettings.apiKind = 'video';
+    const preset = target.preset || {};
+    if(preset.multimodal){ runSettings.videoMultimodal = true; runSettings.videoUseFrameRoles = false; }
+    if(preset.frame_roles){ runSettings.videoUseFrameRoles = true; runSettings.videoMultimodal = false; }
+    const modelPick = window.VideoPromptTargets?.pickVideoModelPreset?.(target, apiProviders);
+    if(modelPick){
+        runSettings.videoProvider = modelPick.provider;
+        runSettings.videoModel = modelPick.model;
+    }
+    copy.runSettings = runSettings;
+    nodes.push(copy);
+    localUnsyncedNodeIds.add(copy.id);
+    localDeletedNodeIds.delete(copy.id);
+    // 媒体与提示词来源沿用源工作台的上游连线；再补一条派生血缘。
+    (srcNode.inputNodeIds || []).forEach(id => connectInputNode(id, copy.id));
+    addConnection(srcNode.id, copy.id, 'flow');
+    setPromptDraftForNode(copy, result.prompt || '');
+    selectedId = copy.id;
+    selectedImage = {nodeId:'', index:-1};
+    render();
+    scheduleSave();
+    updateComposer();
+    return copy;
 }
 async function runApiVideoGeneration(prompt, refs, runSettings=settings){
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));

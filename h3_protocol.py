@@ -106,7 +106,7 @@ def _reference_role(ref):
     return str(getattr(ref, "role", "") or "").strip().lower()
 
 
-def classify_h3_image_uploads(images):
+def classify_h3_image_uploads(images, multimodal=False):
     first = None
     last = None
     refs = []
@@ -128,11 +128,15 @@ def classify_h3_image_uploads(images):
                 refs.append(url)
         else:
             unlabeled.append(url)
-    for url in unlabeled:
-        if first is None:
-            first = url
-        else:
-            refs.append(url)
+    if multimodal:
+        # 全能参考：无角色图全部进参考槽，不再自动占用首帧槽；显式 first/last 角色仍然生效。
+        refs.extend(unlabeled)
+    else:
+        for url in unlabeled:
+            if first is None:
+                first = url
+            else:
+                refs.append(url)
     uploads = []
     if first:
         uploads.append(("first_frame", first))
@@ -159,7 +163,7 @@ def build_h3_video_request(payload, requested_model=""):
     if seed not in (None, ""):
         body["seed"] = int(seed)
     return body, {
-        "images": classify_h3_image_uploads(images),
+        "images": classify_h3_image_uploads(images, multimodal=bool(getattr(payload, "multimodal", False))),
         "videos": videos,
         "audios": audios,
     }

@@ -123,6 +123,39 @@ class H3RequestTests(unittest.TestCase):
         self.assertEqual(media["videos"], ["http://example/a.mp4"])
         self.assertNotIn("first_frame", body)
 
+    def test_unlabeled_first_image_still_promoted_without_multimodal(self):
+        # 现状保留：不勾全能参考时，第一张无角色图仍进首帧槽。
+        _, media = h3.build_h3_video_request(
+            video_payload(images=[{"url": "a.png"}, {"url": "b.png"}]),
+            "minimax-h3",
+        )
+        self.assertEqual(media["images"], [("first_frame", "a.png"), ("ref_image_0", "b.png")])
+
+    def test_multimodal_sends_all_unlabeled_images_as_refs(self):
+        # 全能参考：全部无角色图进 ref_image_N，不再自动占用首帧槽。
+        _, media = h3.build_h3_video_request(
+            video_payload(multimodal=True, images=[{"url": "a.png"}, {"url": "b.png"}]),
+            "minimax-h3",
+        )
+        self.assertEqual(media["images"], [("ref_image_0", "a.png"), ("ref_image_1", "b.png")])
+
+    def test_multimodal_keeps_explicit_frame_roles(self):
+        _, media = h3.build_h3_video_request(
+            video_payload(
+                multimodal=True,
+                images=[
+                    {"url": "a.png", "role": "first_frame"},
+                    {"url": "b.png", "role": "last_frame"},
+                    {"url": "c.png"},
+                ],
+            ),
+            "minimax-h3",
+        )
+        self.assertEqual(
+            media["images"],
+            [("first_frame", "a.png"), ("last_frame", "b.png"), ("ref_image_0", "c.png")],
+        )
+
     def test_gateway_error_text_is_used_as_is(self):
         self.assertEqual(h3.h3_error_text({"detail": "只允许上传 1 张首帧"}), "只允许上传 1 张首帧")
         self.assertEqual(h3.h3_error_text({"error": "不支持 seconds=4，只接受 5 到 15 之间的整数"}), "不支持 seconds=4，只接受 5 到 15 之间的整数")
