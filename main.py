@@ -18657,14 +18657,22 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
     ir = video_prompts.extract_canvas_ir(payload.prompt, images, payload.duration)
+    chat_provider = video_prompts.pick_chat_provider(
+        [public_provider(item) for item in load_api_providers()],
+        payload.provider,
+    )
+    if not chat_provider:
+        raise HTTPException(status_code=400, detail="没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。")
+    chat_provider_id = chat_provider["id"]
+    chat_model = selected_model(payload.model, preferred_chat_model(get_api_provider(chat_provider_id)))
     text = await _video_prompt_llm_text(
-        payload.provider, payload.model, video_prompts.build_convert_messages(target, ir)
+        chat_provider_id, chat_model, video_prompts.build_convert_messages(target, ir)
     )
     checked = video_prompts.validate_target_output(target, text, ir)
     if checked["errors"]:
         # 校验失败带着错误自动重跑一次；再失败则如实返回，前端不派生工作台。
         text = await _video_prompt_llm_text(
-            payload.provider, payload.model,
+            chat_provider_id, chat_model,
             video_prompts.build_repair_messages(target, ir, text, checked["errors"]),
         )
         checked = video_prompts.validate_target_output(target, text, ir)

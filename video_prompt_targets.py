@@ -45,6 +45,37 @@ VIDEO_PROMPT_TARGETS = {
 }
 
 
+# 转换走文字聊天通道，不走 ModelScope / 纯视频协议。
+CHAT_CONVERT_BLOCKED_IDS = {"modelscope"}
+CHAT_CONVERT_BLOCKED_PROTOCOLS = {"h3", "codelba"}
+
+
+def is_usable_chat_provider(provider):
+    if not isinstance(provider, dict):
+        return False
+    if provider.get("enabled", True) is False:
+        return False
+    provider_id = str(provider.get("id") or "").strip().lower()
+    protocol = str(provider.get("protocol") or "").strip().lower()
+    if provider_id in CHAT_CONVERT_BLOCKED_IDS or protocol in CHAT_CONVERT_BLOCKED_PROTOCOLS:
+        return False
+    return bool(provider.get("chat_models"))
+
+
+def pick_chat_provider(providers, requested_id=""):
+    """选一个能走 /chat/completions 的文字平台。优先用户指定，否则第一个可用。"""
+    items = [item for item in (providers or []) if isinstance(item, dict)]
+    requested = str(requested_id or "").strip().lower()
+    if requested:
+        match = next((item for item in items if str(item.get("id") or "").strip().lower() == requested and is_usable_chat_provider(item)), None)
+        if match:
+            return match
+    keyed = next((item for item in items if is_usable_chat_provider(item) and item.get("has_key")), None)
+    if keyed:
+        return keyed
+    return next((item for item in items if is_usable_chat_provider(item)), None)
+
+
 def list_video_prompt_targets():
     items = []
     for target_id, spec in VIDEO_PROMPT_TARGETS.items():

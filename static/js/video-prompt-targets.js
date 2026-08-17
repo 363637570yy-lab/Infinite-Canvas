@@ -97,6 +97,24 @@
         return data || {};
     }
 
+    // 转换必须走文字聊天通道：跳过 ModelScope 和纯视频协议，优先已填 Key 的平台。
+    function pickChatProvider(providers, requestedId){
+        const blockedIds = {modelscope:true};
+        const blockedProtocols = {h3:true, codelba:true};
+        const items = (providers || []).filter(p => p && p.enabled !== false);
+        const usable = items.filter(p => {
+            const id = String(p.id || '').toLowerCase();
+            const protocol = String(p.protocol || '').toLowerCase();
+            if(blockedIds[id] || blockedProtocols[protocol]) return false;
+            return Array.isArray(p.chat_models) && p.chat_models.length;
+        });
+        const requested = String(requestedId || '').toLowerCase();
+        const match = requested ? usable.find(p => String(p.id || '').toLowerCase() === requested) : null;
+        const pick = match || usable.find(p => p.has_key) || usable[0] || null;
+        if(!pick) return null;
+        return {provider: pick.id, model: (pick.chat_models || [])[0] || ''};
+    }
+
     // 派生工作台的配套模型软默认：h3 家族按 provider 协议找，seedance 按模型名提示找；找不到返回 null（保留源设置）。
     function pickVideoModelPreset(target, providers){
         const spec = typeof target === 'string' ? byId(target) : target;
@@ -117,7 +135,7 @@
         return null;
     }
 
-    window.VideoPromptTargets = {load, list, byId, buttonRowHtml, metaRowHtml, convert, pickVideoModelPreset};
+    window.VideoPromptTargets = {load, list, byId, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

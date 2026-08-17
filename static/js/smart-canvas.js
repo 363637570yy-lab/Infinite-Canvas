@@ -15509,8 +15509,10 @@ async function runVideoPromptTargetConversion(targetId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
-    const chatProvider = resolveChatProviderId();
-    const chatModel = resolveChatModel('', chatProvider);
+    const chatPick = vpt.pickChatProvider(apiProviders);
+    if(!chatPick){ toast('没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。'); return; }
+    const chatProvider = chatPick.provider;
+    const chatModel = resolveChatModel(chatPick.model, chatProvider);
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {

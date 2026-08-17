@@ -10621,8 +10621,10 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
-    const providerId = chatApiProviders()[0]?.id || 'comfly';
-    const chatModel = resolveChatModel('', providerId);
+    const chatPick = vpt.pickChatProvider(apiProviders);
+    if(!chatPick){ showErrorModal('没有可用的文字模型平台。请在 API 设置中配置带聊天模型的平台（不要用 ModelScope）。', 'AI 提示词'); return; }
+    const providerId = chatPick.provider;
+    const chatModel = resolveChatModel(chatPick.model, providerId);
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {

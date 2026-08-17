@@ -242,14 +242,48 @@ class ValidateSeedanceTests(unittest.TestCase):
         self.assertTrue(any("上限 200" in w for w in result["warnings"]))
 
 
+class PickChatProviderTests(unittest.TestCase):
+    def test_skips_modelscope_and_video_only(self):
+        pick = vpt.pick_chat_provider([
+            {"id": "modelscope", "enabled": True, "chat_models": ["Qwen"], "has_key": True},
+            {"id": "h3-local", "protocol": "h3", "enabled": True, "chat_models": ["minimax-h3"]},
+            {"id": "comfly", "enabled": True, "chat_models": ["gpt-4o-mini"], "has_key": True},
+        ], "modelscope")
+        self.assertEqual(pick["id"], "comfly")
+
+    def test_prefers_keyed_chat_provider(self):
+        pick = vpt.pick_chat_provider([
+            {"id": "a", "enabled": True, "chat_models": ["m1"]},
+            {"id": "b", "enabled": True, "chat_models": ["m2"], "has_key": True},
+        ])
+        self.assertEqual(pick["id"], "b")
+
+    def test_empty_when_only_modelscope(self):
+        self.assertIsNone(vpt.pick_chat_provider([
+            {"id": "modelscope", "enabled": True, "chat_models": ["Qwen"], "has_key": True},
+        ]))
+
+
 class ConvertEndpointTests(unittest.TestCase):
     """转换端点：进程内 mock canvas_llm，不发任何真实请求。"""
 
     def setUp(self):
         import main
         self.main = main
+        self._chat = {"id": "comfly", "enabled": True, "chat_models": ["gpt-4o-mini"], "protocol": "openai"}
+        self._orig_load = main.load_api_providers
+        self._orig_public = main.public_provider
+        self._orig_get = main.get_api_provider
+        main.load_api_providers = lambda: [self._chat]
+        main.public_provider = lambda item: {**item, "has_key": True}
+        main.get_api_provider = lambda provider_id="comfly": self._chat
 
-    def _run_convert(self, replies, target="h3-ref2va"):
+    def tearDown(self):
+        self.main.load_api_providers = self._orig_load
+        self.main.public_provider = self._orig_public
+        self.main.get_api_provider = self._orig_get
+
+    def _run_convert(self, replies, target="h3-ref2va", provider="modelscope"):
         calls = []
 
         async def fake_canvas_llm(payload):
@@ -263,6 +297,7 @@ class ConvertEndpointTests(unittest.TestCase):
                 target=target,
                 prompt=XINGHUA_PROMPT,
                 duration=15,
+                provider=provider,
                 images=[
                     {"name": "皇帝_ref.png", "url": "u1"},
                     {"name": "甄嬛_ref.png", "url": "u2"},
@@ -280,6 +315,7 @@ class ConvertEndpointTests(unittest.TestCase):
         self.assertEqual(result["prompt"], GOOD_REF2VA)
         self.assertEqual(result["errors"], [])
         self.assertIn("subject_definitions", calls[0].system_prompt)
+        self.assertEqual(calls[0].provider, "comfly")
 
     def test_invalid_output_triggers_one_repair(self):
         result, calls = self._run_convert(["这不是合格输出", GOOD_REF2VA])
