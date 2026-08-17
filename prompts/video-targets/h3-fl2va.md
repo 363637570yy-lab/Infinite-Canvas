@@ -39,7 +39,10 @@ How the reference pictures align with the target video — Picture 1 (from Shot 
 - 写从首帧状态出发的连续路径；有尾帧时，最后落到 Picture 2 的姿势、间距和构图。不要把两张静帧各描述一遍。
 - 尽量单镜头。确需切镜才用 `At MM:SS.mmm, the camera cuts to ...`，15 秒内不超过 2 次。
 - 帧锚点可以写 `<Picture 1>` / `<Picture 2>` 或 `Picture 1` / `Picture 2`。不要写 `<Subject N>`、`@Image`、`@图`。
-- 运镜写完整句子（语言跟随生成语言）。说话人 `(S1)`。台词 `<d>[Chinese] 原文</d>`：只准原样保留或按时长舍弃，不准改写。
+- 运镜写完整句子（语言跟随生成语言），需要时带类型 + 幅度 + 速度：`Push In / Pull Out`、`Pan`、`Truck`、`Tilt`、`Pedestal`、`Zoom`、`Arc Shot`、`Tracking Shot`、`Static Shot`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。
+- 说话人 `(S1)`。台词 `<d>[Chinese] 原文</d>`：只准原样保留或按时长舍弃，不准改写。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。
+- 画面可见原文用英文双引号原样包住，例如 `"营业中"`。
+- 外观以帧图为准，不要编帧图里看不清或不存在的衣服细节。
 - 非首尾帧上的人物不当成「必须长得和图N一样」；只写行为，不写参照图N。
 
 ## 硬性禁令

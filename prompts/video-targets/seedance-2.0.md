@@ -8,14 +8,17 @@
 
 ## 输出
 
-一段连续短文，200 词以内（中文按汉字计），不写字段名，不写 `[Shot]`，不写时间码。
+一段连续短文，200 词以内（中文按汉字计），不写字段名，不写 H3 时间码。
 
-顺序可以按「谁 / 什么 → 动作 → 场景 → 运镜 → 声音」挤在同一段里：
+2.0 **不响应时间戳**。多动作时用 `镜头1` / `镜头2` 切分，不要写 `0-3s`、`第5s` 或 `At MM:SS.mmm`。
 
-- 参考图：`The emperor (@Image 1) ...` 或 `the apartment layout (@Image 1)`
-- 动作一两句说完；单镜头优先，最多一次 `then cuts to`
+顺序可以按「谁 / 什么 → 动作 → 场景 → 运镜 → 声音」：
+
+- 参考图：`The emperor (@Image 1) ...` 或 `the apartment layout (@Image 1)`。不要改成 `@图片`。
+- 动作一两句说完；单镜头优先，最多一次切镜
 - 台词最多留一句，中文原文引号保留：`The consort says: "臣妾参见皇上。"`
 - 声音一句带过
+- 不编附图里看不见的衣服或五官
 
 ### 若中间稿图带了首帧 / 尾帧角色
 
@@ -33,7 +36,7 @@ The subject moves continuously from the first frame to the last frame. Quiet amb
 
 1. 超过 200 词就删描写，不改保留下来的台词。
 2. `@Image N` 必须在图清单里。
-3. 不用 `<Picture>` / `<Subject>` / `[Shot]` / 时间码 / `@图N`。
+3. 不用 `<Picture>` / `<Subject>` / `At MM:SS.mmm` / `@图N`。
 4. 不翻译、不改写保留的台词。
 5. 有首尾帧角色时必须一行一图声明，禁止 `@Images 1 and 2 are the first and last frames.`
 
@@ -48,5 +51,6 @@ The emperor (@Image 1) in a dark golden dragon robe sits at a stone table in a p
 - [ ] 200 词以内
 - [ ] `@Image N` 全部有效
 - [ ] 有首尾帧角色时声明行分行写了
+- [ ] 多动作用镜头序号，没有时间戳
 - [ ] 至多一次切镜；台词只留必要的一句且逐字一致
-- [ ] 无 H3 语法残留
+- [ ] 无 `<Picture>` / `<Subject>` / `At MM:SS.mmm`

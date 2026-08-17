@@ -38,12 +38,17 @@ N/A
 ## 各段写法
 
 - `subject_definitions`：每个标签单独一行。人物、环境、物体、布局都可以是 Subject。图只当来源、后面不再单独分析时，写进 Subject 里即可，不必再单列 Picture。
-- `summary`：必须以方括号任务类型开头，多参出片用 `[reference generation]`。一两句说清目标和参考关系。
+- `summary`：必须以方括号任务类型开头，可按素材角色选，多种关系用 ` + ` 拼接，不要发明新前缀：
+  - 图只提供人物/场景/风格/动作，不当成某一帧 → `[reference generation]`
+  - 图是首帧、尾帧、关键帧或构图/分镜锚点 → `[keyframe completion]` 或 `[reference generation + keyframe completion]`
+  - 当前画布转换只附图，不要写 `video editing` / `video continuation` / `audio reuse`
 - `retention_analysis`：每个标签一行，必须用官方标记之一：`fully_preserved` / `partially_preserved` / `attribute_transfer` / `weak_reference`。户型/空间写结构保持，不要只写脸和衣服。
 - `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。
 - `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于 `duration_s`。中间稿 `shots[].at_s` 是估点，可微调。
-- 运镜写完整句子。英文结构示例：`The camera pushes in with small amplitude at slow speed.` 中文时写成同等信息的中文句。
-- 说话人 `(S1)` `(S2)`；台词 `<d>[Chinese] 原文</d>`。台词只准原样保留或按时长舍弃，不准改写、不准新编。15 秒以内建议不超过 2 句对白。
+- 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pushes in with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。
+- 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。15 秒以内建议不超过 2 句对白。
+- 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。
+- 外观以附图为准。不换装时不要编衣服颜色或纹样，写「沿用 <Picture N> 里的穿着」即可。
 
 ## 硬性禁令
 
@@ -110,7 +115,7 @@ N/A
 ## 自检清单
 
 - [ ] 六段齐全、多行书写、顺序正确
-- [ ] summary 有 `[reference generation]` 之类任务前缀
+- [ ] summary 有官方任务前缀（`[reference generation]` / `[keyframe completion]` 等）
 - [ ] retention_analysis 用了官方关系标记
 - [ ] 每个 `<Picture N>` 都在图清单里
 - [ ] 有附图时没有 `No identified subjects`

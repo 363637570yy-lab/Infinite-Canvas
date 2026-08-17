@@ -429,6 +429,16 @@ _PICTURE_TAG = re.compile(r"<Picture\s+(\d{1,2})>", re.IGNORECASE)
 _SUBJECT_TAG = re.compile(r"<Subject\s+(\d{1,2})>", re.IGNORECASE)
 _AT_IMAGE = re.compile(r"@Image\s+(\d{1,2})", re.IGNORECASE)
 _AT_IMAGE_MERGED = re.compile(r"@Images?\s+\d{1,2}\s*(?:,|and|和|与)\s*(?:@Image\s+)?\d{1,2}\s+(?:are|is)", re.IGNORECASE)
+_SEEDANCE_SEC_RANGE = re.compile(r"(?<![\d:])(\d{1,2})\s*[-–~到至]\s*(\d{1,2})\s*(?:s|sec|秒)\b", re.IGNORECASE)
+_SEEDANCE_SEC_POINT = re.compile(r"(?:第\s*(\d{1,2})\s*(?:s|sec|秒)|(\d{1,2})\s*(?:s|sec|秒)\s*后)", re.IGNORECASE)
+_SUMMARY_TASK_TYPES = (
+    "reference generation",
+    "keyframe completion",
+    "video editing",
+    "video continuation",
+    "audio reuse",
+    "audio reference",
+)
 _CJK_QUOTED = re.compile(r"[\"“「]([^\"”」]{1,200})[\"”」]")
 _NO_IDENTIFIED_SUBJECTS = re.compile(r"no identified subjects", re.IGNORECASE)
 _H3_REF2VA_SECTIONS = (
@@ -584,7 +594,18 @@ def _validate_h3_ref2va(text, ir, errors, warnings):
         errors.append("残留了 @图N / @Image N 语法，多参目标只允许 <Picture N>")
     summary = _section_body(text, "summary", ["retention_analysis"])
     if summary and not summary.lstrip().startswith("["):
-        warnings.append("summary 应以 [reference generation] 等任务类型开头")
+        warnings.append(
+            "summary 应以任务类型开头，例如 [reference generation] 或 [keyframe completion]"
+        )
+    elif summary:
+        bracket = re.match(r"\[([^\]]+)\]", summary.lstrip())
+        if bracket:
+            parts = [part.strip().lower() for part in bracket.group(1).split("+")]
+            if parts and not any(part in _SUMMARY_TASK_TYPES for part in parts):
+                warnings.append(
+                    "summary 任务类型应使用官方前缀：reference generation / keyframe completion / "
+                    "video editing / video continuation / audio reuse / audio reference"
+                )
     retention = _section_body(text, "retention_analysis", ["detailed_description"])
     if retention and not any(marker in retention.lower() for marker in _RETENTION_MARKERS):
         warnings.append("retention_analysis 未使用官方关系标记（fully_preserved / partially_preserved / attribute_transfer / weak_reference）")
@@ -620,6 +641,24 @@ def _validate_h3_fl2va(text, ir, errors, warnings):
     _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ir, errors, warnings)
 
 
+def _seedance_integer_marks(text):
+    marks = []
+    for match in _SEEDANCE_SEC_RANGE.finditer(text):
+        start, end = int(match.group(1)), int(match.group(2))
+        marks.append((min(start, end), max(start, end), match.group(0).strip()))
+    for match in _SEEDANCE_SEC_POINT.finditer(text):
+        second = int(match.group(1) or match.group(2))
+        marks.append((second, second, match.group(0).strip()))
+    return marks
+
+
+def _check_seedance_h3_markup(text, errors):
+    if _PICTURE_TAG.search(text) or _SUBJECT_TAG.search(text) or "@图" in text:
+        errors.append("残留了 H3 语法（<Picture>/<Subject>/@图N）")
+    if _TIME_CODE.search(text):
+        errors.append("残留了 H3 时间码 At MM:SS.mmm；Seedance 2.5 用整数秒，2.0 用镜头序号")
+
+
 def _validate_seedance_common(text, ir, errors, warnings, word_limit):
     count = _image_count(ir)
     for match in _AT_IMAGE.finditer(text):
@@ -628,8 +667,7 @@ def _validate_seedance_common(text, ir, errors, warnings, word_limit):
             errors.append(f"@Image {number} 超出挂载图数量 {count}")
     if _AT_IMAGE_MERGED.search(text):
         errors.append("首尾帧声明必须一行一图，禁止合并声明")
-    if _PICTURE_TAG.search(text) or _SUBJECT_TAG.search(text) or "[Shot" in text or _TIME_CODE.search(text) or "@图" in text:
-        errors.append("残留了 H3 语法（<Picture>/<Subject>/[Shot]/时间码）或 @图N")
+    _check_seedance_h3_markup(text, errors)
     words = _content_units(text)
     if words > word_limit:
         warnings.append(f"正文 {words} 词，超出建议上限 {word_limit}")
@@ -643,10 +681,20 @@ def _validate_seedance_common(text, ir, errors, warnings, word_limit):
 
 def _validate_seedance_25(text, ir, errors, warnings):
     _validate_seedance_common(text, ir, errors, warnings, word_limit=700)
+    duration = float(ir.get("duration_s") or 0)
+    last_end = -1
+    for start, end, raw in _seedance_integer_marks(text):
+        if duration and end > duration:
+            warnings.append(f"时间轴 {raw} 超出时长 {int(duration)} 秒")
+        if start < last_end:
+            warnings.append(f"时间轴 {raw} 与前一段重叠或回跳")
+        last_end = max(last_end, end)
 
 
 def _validate_seedance_20(text, ir, errors, warnings):
     _validate_seedance_common(text, ir, errors, warnings, word_limit=200)
+    if _seedance_integer_marks(text):
+        warnings.append("Seedance 2.0 不响应时间戳，请改用镜头序号（镜头1 / 镜头2）")
 
 
 _VALIDATORS = {

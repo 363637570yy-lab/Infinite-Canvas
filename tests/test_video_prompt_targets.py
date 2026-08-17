@@ -113,9 +113,10 @@ class MessageBuildTests(unittest.TestCase):
         self.assertIn("生成语言：中文", messages[1]["content"])
         self.assertIn("不要翻译", messages[1]["content"])
         self.assertNotIn("正文全英文", messages[0]["content"])
+        self.assertIn("keyframe completion", messages[0]["content"])
         self.assertEqual(vpt.normalize_output_language("中文"), "zh")
         self.assertEqual(vpt.normalize_output_language(""), "en")
-        self.assertGreater(vpt._content_units("镜头从门口缓缓推入客厅，保持户型图的空间顺序。" * 8), 200)
+        self.assertGreater(vpt._content_units("镜头从门口缓缓推入客厅，保持户型图的空间顺序。" * 10), 200)
 
     def test_convert_image_urls_keep_slot_order(self):
         self.assertEqual(
@@ -193,6 +194,13 @@ class ValidateRef2vaTests(unittest.TestCase):
         )
         result = vpt.validate_target_output("h3-ref2va", text, ir)
         self.assertEqual(result["errors"], [])
+        self.assertFalse(any("任务类型应使用官方前缀" in w for w in result["warnings"]))
+
+    def test_summary_unknown_prefix_warns(self):
+        text = GOOD_REF2VA.replace("summary: In an imperial garden", "summary: [custom vibe] In an imperial garden")
+        result = vpt.validate_target_output("h3-ref2va", text, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(any("任务类型应使用官方前缀" in w for w in result["warnings"]))
 
     def test_leftover_canvas_syntax_fails(self):
         bad = GOOD_REF2VA.replace("<Picture 1>", "@图1")
@@ -291,10 +299,60 @@ class ValidateSeedanceTests(unittest.TestCase):
         result = vpt.validate_target_output("seedance-2.5", bad, xinghua_ir())
         self.assertTrue(any("@Image 5" in e for e in result["errors"]))
 
-    def test_h3_syntax_forbidden(self):
+    def test_h3_timecode_forbidden(self):
         bad = self.GOOD_25 + "\n[Shot 2] At 00:04.000, the camera cuts."
         result = vpt.validate_target_output("seedance-2.5", bad, xinghua_ir())
-        self.assertTrue(any("H3 语法" in e for e in result["errors"]))
+        self.assertTrue(any("At MM:SS.mmm" in e for e in result["errors"]))
+
+    def test_h3_picture_tag_still_forbidden(self):
+        bad = self.GOOD_25 + "\n<Picture 1> walks in."
+        result = vpt.validate_target_output("seedance-2.5", bad, xinghua_ir())
+        self.assertTrue(any("<Picture>" in e for e in result["errors"]))
+
+    def test_seedance_25_allows_integer_seconds_and_shot_labels(self):
+        text = (
+            "@Image 1 is the reference for the emperor's appearance.\n"
+            "@Image 2 is the reference for the young consort's appearance.\n"
+            "黄昏御花园，皇帝批折，妃子入园行礼。\n"
+            "镜头1（0-4s）：皇帝（@Image 1）坐在石桌旁。\n"
+            "镜头2（4-8s）：妃子（@Image 2）走入鞠躬。妃子说：“臣妾参见皇上。”\n"
+            "全程暖光，不要字幕。"
+        )
+        result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+        self.assertFalse(any("时间轴" in w for w in result["warnings"]))
+
+    def test_seedance_25_warns_when_seconds_exceed_duration(self):
+        text = self.GOOD_25 + "\n镜头3（16-20s）：两人离场。"
+        result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir(duration=15))
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(any("超出时长" in w for w in result["warnings"]))
+
+    def test_seedance_20_allows_shot_numbers(self):
+        text = (
+            "镜头1：皇帝（@Image 1）坐在石桌旁批折。\n"
+            "镜头2：妃子（@Image 2）走入鞠躬。The consort says: \"臣妾参见皇上。\""
+        )
+        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+
+    def test_seedance_20_warns_on_integer_timestamps(self):
+        text = "0-3s：皇帝（@Image 1）坐着。3秒后妃子（@Image 2）入画。"
+        result = vpt.validate_target_output("seedance-2.0", text, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(any("不响应时间戳" in w for w in result["warnings"]))
+
+    def test_seedance_25_allows_shot_heading_without_h3_timecode(self):
+        text = self.GOOD_25 + "\n[Shot 2] then the camera cuts to a two-shot."
+        result = vpt.validate_target_output("seedance-2.5", text, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+
+    def test_seedance_25_skill_teaches_lock_and_integer_seconds(self):
+        skill = vpt.load_target_skill("seedance-2.5")
+        self.assertIn("有锁定", skill)
+        self.assertIn("整数秒", skill)
+        self.assertIn("镜头1", skill)
+        self.assertIn("0-3s", skill)
 
     def test_first_frame_declaration_required_when_role_present(self):
         images = [
