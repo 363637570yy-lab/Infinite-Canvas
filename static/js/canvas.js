@@ -8600,7 +8600,7 @@ function renderVideoBody(node){
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
-            ${window.VideoPromptTargets ? (node.videoPromptTarget ? window.VideoPromptTargets.metaRowHtml(node) : window.VideoPromptTargets.buttonRowHtml(apiProviders, node.vptChatProvider, node.vptChatModel)) : ''}
+            ${window.VideoPromptTargets ? (node.videoPromptTarget ? window.VideoPromptTargets.metaRowHtml(node) : window.VideoPromptTargets.buttonRowHtml(apiProviders, node.vptChatProvider, node.vptChatModel, node.vptOutputLang)) : ''}
         </div>
         <div class="gen-run-row">
             <button class="gen-btn ${node.running ? 'running' : ''}" ${node.running ? 'disabled' : ''}><i data-lucide="clapperboard" class="w-4 h-4"></i>${node.running ? tr('canvas.generating') : tr('canvas.videoGenerate')}</button>
@@ -8655,6 +8655,8 @@ function renderVideoBody(node){
                 node.vptChatProvider = sel.value;
                 node.vptChatModel = '';
                 render();
+            } else if(sel.dataset.vptChat === 'lang'){
+                node.vptOutputLang = sel.value === 'zh' ? 'zh' : 'en';
             } else {
                 node.vptChatModel = sel.value;
             }
@@ -10652,7 +10654,8 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
             duration: Math.max(1, Math.min(60, Number(node.duration) || 5)),
             images,
             provider: providerId,
-            model: chatModel
+            model: chatModel,
+            language: vpt.normalizeLang ? vpt.normalizeLang(node.vptOutputLang) : (node.vptOutputLang === 'zh' ? 'zh' : 'en')
         });
         if(!result.ok){
             console.warn('[提示词转换] 校验未通过，不派生节点', result.errors, result.warnings);
@@ -10695,9 +10698,11 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
         running:false,
         vptChatProvider:srcNode.vptChatProvider || '',
         vptChatModel:srcNode.vptChatModel || '',
+        vptOutputLang:srcNode.vptOutputLang || 'en',
         videoPromptTarget:{
             target: target.id,
             sourceNodeId: srcNode.id,
+            language: result.language || srcNode.vptOutputLang || 'en',
             warnings: result.warnings || [],
             // 瘦身中间稿摘要：只留简表要素，不存原文。
             ir: {
@@ -10715,9 +10720,8 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
     }
     nodes.push(promptNode);
     nodes.push(videoNode);
-    connections.push({id:uid('c'), from:srcNode.id, to:videoNode.id});
     connections.push({id:uid('c'), from:promptNode.id, to:videoNode.id});
-    // 媒体上游沿用源节点连线；提示词类上游不复接，转换稿已取代原导演本。
+    // 只复接参考媒体。源视频节点不连过来，原导演本也不复接。
     connections.filter(c => c.to === srcNode.id).forEach(conn => {
         const from = nodes.find(n => n.id === conn.from);
         if(!from || from.type === 'prompt' || from.type === 'llm') return;

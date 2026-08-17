@@ -149,6 +149,21 @@ def _match_image_by_name(name, images):
     return 0
 
 
+def _fill_shot_times(shots, duration_s):
+    """词里没写秒数时，按时长均分估点；第一镜保持空，给 [Shot 1] 不带时间码。"""
+    if not shots:
+        return
+    duration = float(duration_s or 0)
+    count = len(shots)
+    if count <= 1:
+        return
+    step = duration / count if duration else 0
+    for index, shot in enumerate(shots):
+        if shot.get("at_s") is not None:
+            continue
+        shot["at_s"] = None if index == 0 else round(step * index, 3)
+
+
 def _split_shots(prompt):
     """按 镜头N / Shot N 切分；没有标题就整段算一镜。标题前的铺垫并入第一镜。"""
     matches = list(_SHOT_HEADER.finditer(prompt))
@@ -251,6 +266,7 @@ def extract_canvas_ir(prompt, images, duration_s):
             "camera": _extract_camera(body),
             "dialogue": _extract_dialogue(body),
         })
+    _fill_shot_times(shots, duration_s)
 
     style_lines = []
     sound_lines = []
@@ -282,6 +298,7 @@ def extract_canvas_ir(prompt, images, duration_s):
         warnings.append("导演本抽不出结构（无镜头、无台词、无图引用），图片绑定不完整")
 
     return {
+        "source_prompt": prompt,
         "duration_s": duration_s,
         "style": " / ".join(dict.fromkeys(style_lines)),
         "shots": shots,
@@ -296,13 +313,83 @@ def extract_canvas_ir(prompt, images, duration_s):
 # 消息构造
 # ---------------------------------------------------------------------------
 
-def build_convert_messages(target_id, ir):
+# 只用于「当前模型多半看不到附图」的软提示，不拿来拦转换、不拿来猜视频能力。
+_VISION_MODEL_HINTS = (
+    "vision", "vl-", "-vl-", "internvl", "qvq", "qwen-vl", "qwen3-vl",
+    "gpt-4o", "gpt-4.1", "gpt-5", "claude", "gemini", "glm-4v", "minicpm-v",
+)
+
+
+def chat_model_likely_sees_images(model):
+    lc = str(model or "").strip().lower()
+    return bool(lc) and any(key in lc for key in _VISION_MODEL_HINTS)
+
+
+def convert_image_urls(images):
+    """抽出可送给文字通道的参考图地址，顺序即图1、图2。不把地址写进提示词正文。"""
+    urls = []
+    for item in images or []:
+        url = str((item or {}).get("url") or "").strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
+def image_inventory_lines(ir):
+    lines = []
+    for item in ir.get("images") or []:
+        index = item.get("index") or (len(lines) + 1)
+        slot = item.get("slot") or f"图{index}"
+        name = str(item.get("name") or "").strip() or "(未命名)"
+        role = str(item.get("role") or "").strip() or "reference"
+        lines.append(f"- {slot} / <Picture {index}> = {name} （角色 {role}）")
+    return lines
+
+
+def convert_input_warnings(ir, model, image_urls):
+    warnings = list(ir.get("warnings") or [])
+    if image_urls and not chat_model_likely_sees_images(model):
+        warnings.append("当前文字模型多半看不到附图，只会读文件名和导演本；要看图写词请换视觉模型")
+    return warnings
+
+
+def normalize_output_language(value):
+    return "zh" if str(value or "").strip().lower() in {"zh", "zh-cn", "cn", "chinese", "中文"} else "en"
+
+
+def output_language_instruction(language):
+    if normalize_output_language(language) == "zh":
+        return (
+            "生成语言：中文。描写、动作、场景、运镜说明用中文写。"
+            "段名、对齐行、标签和协议词必须保持 skill 规定的英文，不要翻译："
+            "subject_definitions / summary / [reference generation] / fully_preserved / "
+            "<Picture N> / <Subject N> / [Shot N] / At MM:SS.mmm / @Image N / is the first frame。"
+            "台词、牌匾、画面可见原文保持原语言。"
+        )
+    return (
+        "生成语言：英文。描写正文用英文。"
+        "段名、对齐行、标签和协议词保持 skill 规定的英文。"
+        "台词、牌匾、画面可见原文保持原语言。"
+    )
+
+
+def build_convert_messages(target_id, ir, source_prompt="", language="en"):
     system = load_target_skill(target_id)
+    prompt_text = str(source_prompt or ir.get("source_prompt") or "").strip()
+    inventory = image_inventory_lines(ir)
+    inventory_text = "\n".join(inventory) if inventory else "（没有参考图）"
     user = (
         f"目标：{target_id}\n"
         f"时长（秒）：{ir.get('duration_s')}\n"
+        f"{output_language_instruction(language)}\n\n"
+        "原始导演本：\n"
+        f"{prompt_text}\n\n"
+        "参考图槽位（与附图顺序一致；正文必须用这些槽位绑定，不要改文件名）：\n"
+        f"{inventory_text}\n\n"
         "中间稿 JSON：\n"
         f"{json.dumps(ir, ensure_ascii=False, indent=2)}\n\n"
+        "附图已按槽位顺序附在本条消息里。请看图写词。"
+        "户型图、场景图、物体图也要定义成 Subject / Picture，禁止写 No identified subjects。\n"
         "只输出该目标的提示词正文，不要解释，不要代码块围栏。"
     )
     return [
@@ -311,8 +398,8 @@ def build_convert_messages(target_id, ir):
     ]
 
 
-def build_repair_messages(target_id, ir, previous_output, errors):
-    messages = build_convert_messages(target_id, ir)
+def build_repair_messages(target_id, ir, previous_output, errors, language="en"):
+    messages = build_convert_messages(target_id, ir, language=language)
     messages.append({"role": "assistant", "content": previous_output})
     messages.append({
         "role": "user",
@@ -341,6 +428,7 @@ _SUBJECT_TAG = re.compile(r"<Subject\s+(\d{1,2})>", re.IGNORECASE)
 _AT_IMAGE = re.compile(r"@Image\s+(\d{1,2})", re.IGNORECASE)
 _AT_IMAGE_MERGED = re.compile(r"@Images?\s+\d{1,2}\s*(?:,|and|和|与)\s*(?:@Image\s+)?\d{1,2}\s+(?:are|is)", re.IGNORECASE)
 _CJK_QUOTED = re.compile(r"[\"“「]([^\"”」]{1,200})[\"”」]")
+_NO_IDENTIFIED_SUBJECTS = re.compile(r"no identified subjects", re.IGNORECASE)
 _H3_REF2VA_SECTIONS = (
     "subject_definitions",
     "summary",
@@ -349,8 +437,15 @@ _H3_REF2VA_SECTIONS = (
     "overall_soundscape",
     "non_diegetic_music",
 )
-_FL2VA_ALIGN_BOTH = "The video starts exactly on the provided first frame and ends exactly on the provided last frame."
-_FL2VA_ALIGN_FIRST = "The video starts exactly on the provided first frame."
+_RETENTION_MARKERS = (
+    "fully_preserved",
+    "partially_preserved",
+    "attribute_transfer",
+    "weak_reference",
+    "fully_copy",
+    "partially_copy",
+)
+_SUBJECT_INDEX_MAX = 20
 
 
 def _input_dialogues(ir):
@@ -378,20 +473,81 @@ def _check_time_codes(text, duration_s, errors):
         last = seconds
 
 
-def _check_output_dialogues(found, ir, errors, require_all=False):
+def _check_output_dialogues(found, ir, errors, warnings=None):
+    """台词只准原样保留或按时长舍弃，不准改写、不准凭空新增。"""
     inputs = [re.sub(r"\s+", "", text) for text in _input_dialogues(ir)]
     normalized_found = [re.sub(r"\s+", "", text) for text in found]
     for raw, norm in zip(found, normalized_found):
         if inputs and norm not in inputs:
             errors.append(f"台词被改写或凭空新增：{raw}")
-    if require_all:
-        for original, norm in zip(_input_dialogues(ir), inputs):
-            if norm not in normalized_found:
-                errors.append(f"输入台词缺失：{original}")
+    if warnings is not None and inputs and not normalized_found:
+        warnings.append("导演本有台词，输出里全部舍弃了")
 
 
 def _image_count(ir):
     return len(ir.get("images") or [])
+
+
+def _section_body(text, name, next_names):
+    match = re.search(rf"^{name}\s*:", text, re.MULTILINE | re.IGNORECASE)
+    if not match:
+        return ""
+    rest = text[match.end():]
+    if next_names:
+        nxt = re.search(r"^(" + "|".join(re.escape(item) for item in next_names) + r")\s*:", rest, re.MULTILINE | re.IGNORECASE)
+        if nxt:
+            rest = rest[:nxt.start()]
+    return rest.strip()
+
+
+def fl2va_has_last_frame(ir):
+    roles = {str(item.get("role") or "").lower() for item in ir.get("images") or []}
+    return bool(roles & {"last_frame", "last", "end_frame"})
+
+
+def fl2va_last_shot_index(ir):
+    shots = ir.get("shots") or []
+    if not shots:
+        return 1
+    return max(int(shot.get("index") or 1) for shot in shots)
+
+
+def fl2va_align_first():
+    return "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
+
+
+def fl2va_align_both(ir):
+    shot_n = fl2va_last_shot_index(ir)
+    mark = f"{float(ir.get('duration_s') or 0):.2f}"
+    return (
+        "How the reference pictures align with the target video — "
+        "Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; "
+        f"Picture 2 (from Shot {shot_n}) aligns with the {mark}-second mark of the target video."
+    )
+
+
+def fl2va_expected_align(ir):
+    return fl2va_align_both(ir) if fl2va_has_last_frame(ir) else fl2va_align_first()
+
+
+def _seedance_frame_indexes(ir):
+    first_index = last_index = None
+    for item in ir.get("images") or []:
+        role = str(item.get("role") or "").lower()
+        index = item.get("index")
+        if role in {"first_frame", "first"} and first_index is None:
+            first_index = index
+        if role in {"last_frame", "last"} and last_index is None:
+            last_index = index
+    return first_index, last_index
+
+
+def _require_seedance_frame_lines(text, ir, errors):
+    first_index, last_index = _seedance_frame_indexes(ir)
+    if first_index and not re.search(rf"@Image\s+{first_index}\s+is\s+the\s+first\s+frame", text, re.IGNORECASE):
+        errors.append(f"缺少首帧声明行：@Image {first_index} is the first frame.")
+    if last_index and not re.search(rf"@Image\s+{last_index}\s+is\s+the\s+last\s+frame", text, re.IGNORECASE):
+        errors.append(f"缺少尾帧声明行：@Image {last_index} is the last frame.")
 
 
 def _validate_h3_ref2va(text, ir, errors, warnings):
@@ -411,20 +567,30 @@ def _validate_h3_ref2va(text, ir, errors, warnings):
             errors.append(f"<Picture {number}> 超出挂载图数量 {count}")
     for match in _SUBJECT_TAG.finditer(text):
         number = int(match.group(1))
-        if count and (number < 1 or number > count):
-            errors.append(f"<Subject {number}> 超出挂载图数量 {count}")
+        if number < 1 or number > _SUBJECT_INDEX_MAX:
+            errors.append(f"<Subject {number}> 超出允许范围 1–{_SUBJECT_INDEX_MAX}")
+    if count and (_NO_IDENTIFIED_SUBJECTS.search(text) or (not _PICTURE_TAG.search(text) and not _SUBJECT_TAG.search(text))):
+        errors.append("有参考图时 subject_definitions 必须绑定 <Picture N> 或 <Subject N>，禁止写 No identified subjects")
     if "@图" in text or _AT_IMAGE.search(text):
         errors.append("残留了 @图N / @Image N 语法，多参目标只允许 <Picture N>")
+    summary = _section_body(text, "summary", ["retention_analysis"])
+    if summary and not summary.lstrip().startswith("["):
+        warnings.append("summary 应以 [reference generation] 等任务类型开头")
+    retention = _section_body(text, "retention_analysis", ["detailed_description"])
+    if retention and not any(marker in retention.lower() for marker in _RETENTION_MARKERS):
+        warnings.append("retention_analysis 未使用官方关系标记（fully_preserved / partially_preserved / attribute_transfer / weak_reference）")
+    detail = _section_body(text, "detailed_description", ["overall_soundscape"])
+    words = len(re.findall(r"[A-Za-z']+", detail))
+    if detail and words < 200:
+        warnings.append(f"detailed_description 仅 {words} 词，官方 generation 任务建议 350–500 词")
     _check_time_codes(text, ir.get("duration_s"), errors)
-    _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ir, errors, require_all=True)
+    _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ir, errors, warnings)
 
 
 def _validate_h3_fl2va(text, ir, errors, warnings):
     lines = text.splitlines()
     first_line = lines[0].strip() if lines else ""
-    roles = {str(item.get("role") or "").lower() for item in ir.get("images") or []}
-    has_last = bool(roles & {"last_frame", "last", "end_frame"})
-    expected = _FL2VA_ALIGN_BOTH if has_last else _FL2VA_ALIGN_FIRST
+    expected = fl2va_expected_align(ir)
     if first_line != expected:
         errors.append(f"第一行必须是对齐行：{expected}")
     elif len(lines) > 1 and lines[1].strip():
@@ -432,12 +598,17 @@ def _validate_h3_fl2va(text, ir, errors, warnings):
     for field in ("integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"):
         if not re.search(rf"^{field}\s*:", text, re.MULTILINE | re.IGNORECASE):
             errors.append(f"缺少字段：{field}:")
-    if _PICTURE_TAG.search(text) or _SUBJECT_TAG.search(text) or _AT_IMAGE.search(text) or "@图" in text:
-        errors.append("首尾帧目标不允许出现参考图语法（<Picture>/<Subject>/@Image/@图）")
+    frame_max = 2 if fl2va_has_last_frame(ir) else 1
+    for match in _PICTURE_TAG.finditer(text):
+        number = int(match.group(1))
+        if number < 1 or number > frame_max:
+            errors.append(f"<Picture {number}> 超出首尾帧图数量 {frame_max}")
+    if _SUBJECT_TAG.search(text) or _AT_IMAGE.search(text) or "@图" in text:
+        errors.append("首尾帧目标不允许出现 <Subject> / @Image / @图；帧锚点只用 <Picture 1/2>")
     if len(re.findall(r"cuts to", text, re.IGNORECASE)) > 2:
         warnings.append("切镜超过 2 次，首尾帧目标建议单镜头")
     _check_time_codes(text, ir.get("duration_s"), errors)
-    _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ir, errors)
+    _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ir, errors, warnings)
 
 
 def _validate_seedance_common(text, ir, errors, warnings, word_limit):
@@ -457,21 +628,12 @@ def _validate_seedance_common(text, ir, errors, warnings, word_limit):
     if quoted and not _input_dialogues(ir):
         warnings.append("输出里有中文引号台词，但导演本没有台词")
     else:
-        _check_output_dialogues(quoted, ir, errors)
+        _check_output_dialogues(quoted, ir, errors, warnings)
+    _require_seedance_frame_lines(text, ir, errors)
 
 
 def _validate_seedance_25(text, ir, errors, warnings):
     _validate_seedance_common(text, ir, errors, warnings, word_limit=700)
-    roles = {}
-    for item in ir.get("images") or []:
-        role = str(item.get("role") or "").lower()
-        roles.setdefault(role, item["index"])
-    first_index = roles.get("first_frame") or roles.get("first")
-    last_index = roles.get("last_frame") or roles.get("last")
-    if first_index and not re.search(rf"@Image\s+{first_index}\s+is\s+the\s+first\s+frame", text, re.IGNORECASE):
-        errors.append(f"缺少首帧声明行：@Image {first_index} is the first frame.")
-    if last_index and not re.search(rf"@Image\s+{last_index}\s+is\s+the\s+last\s+frame", text, re.IGNORECASE):
-        errors.append(f"缺少尾帧声明行：@Image {last_index} is the last frame.")
 
 
 def _validate_seedance_20(text, ir, errors, warnings):

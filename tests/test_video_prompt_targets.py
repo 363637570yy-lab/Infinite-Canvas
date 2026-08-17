@@ -48,6 +48,11 @@ class ExtractIrTests(unittest.TestCase):
         self.assertTrue(all(entry["referenced"] for entry in ir["images"]))
         self.assertIn("柔光摄影 / 8K超高清", ir["style"])
         self.assertEqual(ir["warnings"], [])
+        self.assertIn("皇帝@图1", ir["source_prompt"])
+        self.assertIsNone(ir["shots"][0]["at_s"])
+        self.assertEqual(ir["shots"][1]["at_s"], 3.75)
+        self.assertEqual(ir["shots"][2]["at_s"], 7.5)
+        self.assertEqual(ir["shots"][3]["at_s"], 11.25)
 
     def test_out_of_range_image_reference_warns(self):
         ir = vpt.extract_canvas_ir("皇帝@图1 与甄嬛@图3 对话", TWO_IMAGES, 10)
@@ -91,8 +96,34 @@ class MessageBuildTests(unittest.TestCase):
         messages = vpt.build_convert_messages("h3-ref2va", ir)
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("subject_definitions", messages[0]["content"])
+        self.assertIn("原始导演本", messages[1]["content"])
+        self.assertIn("皇帝@图1", messages[1]["content"])
+        self.assertIn("图1 / <Picture 1> = 皇帝_ref.png", messages[1]["content"])
         self.assertIn("臣妾参见皇上。", messages[1]["content"])
         self.assertIn("只输出该目标的提示词正文", messages[1]["content"])
+        self.assertIn("生成语言：英文", messages[1]["content"])
+        self.assertNotIn("http://x/1.png", messages[1]["content"])
+
+    def test_convert_messages_honor_chinese_output(self):
+        ir = xinghua_ir()
+        messages = vpt.build_convert_messages("h3-ref2va", ir, language="zh")
+        self.assertIn("生成语言：中文", messages[1]["content"])
+        self.assertIn("不要翻译", messages[1]["content"])
+        self.assertEqual(vpt.normalize_output_language("中文"), "zh")
+        self.assertEqual(vpt.normalize_output_language(""), "en")
+
+    def test_convert_image_urls_keep_slot_order(self):
+        self.assertEqual(
+            vpt.convert_image_urls(TWO_IMAGES + [{"name": "空", "url": "  "}]),
+            ["http://x/1.png", "http://x/2.png"],
+        )
+
+    def test_non_vision_model_warns_but_still_lists_images(self):
+        ir = xinghua_ir()
+        warnings = vpt.convert_input_warnings(ir, "gpt-3.5-turbo", ["http://x/1.png"])
+        self.assertTrue(any("看不到附图" in item for item in warnings))
+        self.assertTrue(vpt.chat_model_likely_sees_images("gpt-4o-mini"))
+        self.assertFalse(vpt.chat_model_likely_sees_images("gpt-3.5-turbo"))
 
     def test_repair_messages_append_errors(self):
         ir = xinghua_ir()
@@ -128,7 +159,35 @@ class ValidateRef2vaTests(unittest.TestCase):
         bad = GOOD_REF2VA.replace("臣妾参见皇上。", "臣妾拜见皇上。")
         result = vpt.validate_target_output("h3-ref2va", bad, xinghua_ir())
         self.assertTrue(any("改写" in e for e in result["errors"]))
-        self.assertTrue(any("缺失" in e for e in result["errors"]))
+        self.assertFalse(any("缺失" in e for e in result["errors"]))
+
+    def test_dropping_dialogue_is_allowed(self):
+        dropped = GOOD_REF2VA.replace(" (S1) <d>[Chinese] 今日杏花开得正好。</d> (S2) <d>[Chinese] 与你同赏。</d>", "")
+        result = vpt.validate_target_output("h3-ref2va", dropped, xinghua_ir())
+        self.assertEqual(result["errors"], [])
+
+    def test_no_identified_subjects_fails_when_images_exist(self):
+        bad = GOOD_REF2VA.replace(
+            "<Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>. <Subject 2> is a young consort in a pale blue palace dress from <Picture 2>.",
+            "No identified subjects.",
+        )
+        result = vpt.validate_target_output("h3-ref2va", bad, xinghua_ir())
+        self.assertTrue(any("No identified subjects" in e for e in result["errors"]))
+
+    def test_multiple_subjects_from_one_picture_allowed(self):
+        ir = vpt.extract_canvas_ir("从入户走到所有房间", [{"name": "户型.png", "url": "u1"}], 15)
+        text = (
+            "subject_definitions:\n"
+            "<Subject 1> is the apartment layout in <Picture 1>, including the entrance and rooms.\n"
+            "<Subject 2> is the corridor sequence inside <Picture 1>.\n"
+            "summary:\n[reference generation] A walkthrough of <Subject 1>.\n"
+            "retention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - room order stays consistent.\n"
+            "detailed_description:\nThe target video is a realistic interior walkthrough. [Shot 1] The camera starts at the entrance of <Subject 1>.\n"
+            "overall_soundscape:\nQuiet indoor ambience.\n"
+            "non_diegetic_music:\nN/A"
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, ir)
+        self.assertEqual(result["errors"], [])
 
     def test_leftover_canvas_syntax_fails(self):
         bad = GOOD_REF2VA.replace("<Picture 1>", "@图1")
@@ -164,32 +223,39 @@ class ValidateFl2vaTests(unittest.TestCase):
         )
 
     def test_first_only_alignment_passes(self):
-        result = vpt.validate_target_output("h3-fl2va", self._good("The video starts exactly on the provided first frame."), self._ir())
+        ir = self._ir()
+        result = vpt.validate_target_output("h3-fl2va", self._good(vpt.fl2va_align_first()), ir)
         self.assertEqual(result["errors"], [])
 
     def test_wrong_alignment_line_fails(self):
         result = vpt.validate_target_output(
             "h3-fl2va",
-            self._good("The video starts exactly on the provided first frame and ends exactly on the provided last frame."),
+            self._good("The video starts exactly on the provided first frame."),
             self._ir(with_last=False),
         )
         self.assertTrue(any("对齐行" in e for e in result["errors"]))
 
     def test_both_frames_need_full_alignment(self):
-        result = vpt.validate_target_output(
-            "h3-fl2va",
-            self._good("The video starts exactly on the provided first frame and ends exactly on the provided last frame."),
-            self._ir(with_last=True),
-        )
+        ir = self._ir(with_last=True)
+        result = vpt.validate_target_output("h3-fl2va", self._good(vpt.fl2va_align_both(ir)), ir)
         self.assertEqual(result["errors"], [])
 
-    def test_reference_syntax_forbidden(self):
-        bad = self._good("The video starts exactly on the provided first frame.").replace("The emperor", "<Subject 1>")
+    def test_picture_anchor_allowed_in_body(self):
+        ir = self._ir()
+        text = self._good(vpt.fl2va_align_first()).replace(
+            "The emperor sits at a stone table",
+            "The emperor remains in the framing established by <Picture 1> and sits at a stone table",
+        )
+        result = vpt.validate_target_output("h3-fl2va", text, ir)
+        self.assertEqual(result["errors"], [])
+
+    def test_subject_syntax_forbidden(self):
+        bad = self._good(vpt.fl2va_align_first()).replace("The emperor", "<Subject 1>")
         result = vpt.validate_target_output("h3-fl2va", bad, self._ir())
-        self.assertTrue(any("参考图语法" in e for e in result["errors"]))
+        self.assertTrue(any("<Subject>" in e for e in result["errors"]))
 
     def test_dropping_dialogue_is_allowed(self):
-        text = self._good("The video starts exactly on the provided first frame.").replace(" (S1) <d>[Chinese] 春色正好。</d>", "")
+        text = self._good(vpt.fl2va_align_first()).replace(" (S1) <d>[Chinese] 春色正好。</d>", "")
         result = vpt.validate_target_output("h3-fl2va", text, self._ir())
         self.assertEqual(result["errors"], [])
 
@@ -234,6 +300,18 @@ class ValidateSeedanceTests(unittest.TestCase):
         text = "The emperor (@Image 1) stands up slowly in a garden. Warm light. The camera holds still. Quiet ambience."
         result = vpt.validate_target_output("seedance-2.5", text, ir)
         self.assertTrue(any("首帧声明" in e for e in result["errors"]))
+        result20 = vpt.validate_target_output("seedance-2.0", text, ir)
+        self.assertTrue(any("首帧声明" in e for e in result20["errors"]))
+
+    def test_seedance_20_accepts_first_frame_declaration(self):
+        images = [{"name": "first.png", "url": "u1", "role": "first_frame"}]
+        ir = vpt.extract_canvas_ir("皇帝起身", images, 8)
+        text = (
+            "@Image 1 is the first frame. It defines the opening composition, subject position, pose, and camera direction.\n"
+            "The emperor stands and walks forward. Quiet ambience."
+        )
+        result = vpt.validate_target_output("seedance-2.0", text, ir)
+        self.assertEqual(result["errors"], [])
 
     def test_seedance_20_word_limit_warns(self):
         long_text = "The emperor (@Image 1) walks. " + ("very slowly and gracefully through the garden " * 40)
@@ -317,6 +395,10 @@ class ConvertEndpointTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertIn("subject_definitions", calls[0].system_prompt)
         self.assertEqual(calls[0].provider, "comfly")
+        self.assertEqual(calls[0].images, ["u1", "u2"])
+        self.assertIn("原始导演本", calls[0].message)
+        self.assertIn("生成语言：英文", calls[0].message)
+        self.assertEqual(result.get("language"), "en")
 
     def test_invalid_output_triggers_one_repair(self):
         result, calls = self._run_convert(["这不是合格输出", GOOD_REF2VA])

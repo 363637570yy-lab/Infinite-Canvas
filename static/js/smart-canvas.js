@@ -338,6 +338,7 @@ let settings = {
     videoUseFrameRoles:false,
     vptChatProvider:'',
     vptChatModel:'',
+    vptOutputLang:'en',
     videoTrustedAsset:false,
     videoTrustedSource:'library',
     videoTempShLinks:[],
@@ -2908,7 +2909,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
         ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
-        ${window.VideoPromptTargets ? ((activeSettingsSubject()?.videoPromptTarget) ? window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : window.VideoPromptTargets.buttonRowHtml(apiProviders, settings.vptChatProvider, settings.vptChatModel)) : ''}
+        ${window.VideoPromptTargets ? ((activeSettingsSubject()?.videoPromptTarget) ? window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : window.VideoPromptTargets.buttonRowHtml(apiProviders, settings.vptChatProvider, settings.vptChatModel, settings.vptOutputLang)) : ''}
     `;
 }
 function renderVolcengineParams(){
@@ -4134,6 +4135,8 @@ function bindDynamicParams(){
             if(sel.dataset.vptChat === 'provider'){
                 settings.vptChatProvider = sel.value;
                 settings.vptChatModel = '';
+            } else if(sel.dataset.vptChat === 'lang'){
+                settings.vptOutputLang = sel.value === 'zh' ? 'zh' : 'en';
             } else {
                 settings.vptChatModel = sel.value;
             }
@@ -15542,7 +15545,8 @@ async function runVideoPromptTargetConversion(targetId, btn){
             duration: Math.max(1, Math.min(60, Number(settings.videoDuration) || 5)),
             images,
             provider: chatProvider,
-            model: chatModel
+            model: chatModel,
+            language: vpt.normalizeLang ? vpt.normalizeLang(settings.vptOutputLang) : (settings.vptOutputLang === 'zh' ? 'zh' : 'en')
         });
         if(!result.ok){
             console.warn('[提示词转换] 校验未通过，不派生工作台', result.errors, result.warnings);
@@ -15585,6 +15589,7 @@ function deriveVideoPromptWorkbench(srcNode, target, result){
     copy.videoPromptTarget = {
         target: target.id,
         sourceNodeId: srcNode.id,
+        language: result.language || settings.vptOutputLang || 'en',
         warnings: result.warnings || [],
         // 瘦身中间稿摘要：只留简表要素（镜头数、人物绑定、图槽），不存原文。
         ir: {
@@ -15609,9 +15614,12 @@ function deriveVideoPromptWorkbench(srcNode, target, result){
     nodes.push(copy);
     localUnsyncedNodeIds.add(copy.id);
     localDeletedNodeIds.delete(copy.id);
-    // 媒体与提示词来源沿用源工作台的上游连线；再补一条派生血缘。
-    (srcNode.inputNodeIds || []).forEach(id => connectInputNode(id, copy.id));
-    addConnection(srcNode.id, copy.id, 'flow');
+    // 只复接参考媒体。源工作台不连过来，原导演本由转换稿取代。
+    (srcNode.inputNodeIds || []).forEach(id => {
+        const from = nodes.find(n => n.id === id);
+        if(!from || from.type === 'smart-prompt') return;
+        connectInputNode(id, copy.id);
+    });
     setPromptDraftForNode(copy, result.prompt || '');
     selectedId = copy.id;
     selectedImage = {nodeId:'', index:-1};

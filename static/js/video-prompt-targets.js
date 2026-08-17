@@ -68,8 +68,13 @@
         });
     }
 
-    function chatSelectHtml(providers, selectedProvider, selectedModel){
+    function normalizeLang(value){
+        return String(value || '').toLowerCase() === 'zh' ? 'zh' : 'en';
+    }
+
+    function chatSelectHtml(providers, selectedProvider, selectedModel, selectedLang){
         const list = listChatProviders(providers);
+        const lang = normalizeLang(selectedLang);
         if(!list.length){
             return `<div class="vpt-chat-row"><span class="vpt-row-label">文字模型</span><span class="vpt-meta-warn">没有可用的文字平台，请到 API 设置添加聊天模型</span></div>`;
         }
@@ -86,13 +91,19 @@
                 <option value="">选择模型</option>
                 ${models.map(m => `<option value="${esc(m)}" ${m === modelId ? 'selected' : ''}>${esc(m)}</option>`).join('')}
             </select>
+            <span class="vpt-row-label">生成语言</span>
+            <select class="vpt-chat-lang" data-vpt-chat="lang">
+                <option value="en" ${lang === 'en' ? 'selected' : ''}>英文</option>
+                <option value="zh" ${lang === 'zh' ? 'selected' : ''}>中文</option>
+            </select>
+            <span class="vpt-row-label">看图写词请选视觉模型</span>
         </div>`;
     }
 
-    function buttonRowHtml(providers, selectedProvider, selectedModel){
+    function buttonRowHtml(providers, selectedProvider, selectedModel, selectedLang){
         if(!state.targets.length) return '';
         return `<div class="vpt-row">
-            ${chatSelectHtml(providers, selectedProvider, selectedModel)}
+            ${chatSelectHtml(providers, selectedProvider, selectedModel, selectedLang)}
             <span class="vpt-row-label">生成优化节点</span>
             ${state.targets.map(item => `<button type="button" class="vpt-btn" data-vpt-target="${esc(item.id)}" title="按「${esc(item.label)}」改写导演本，派生新节点并连线">${esc(item.label)}</button>`).join('')}
         </div>`;
@@ -104,6 +115,7 @@
         if(!meta || !meta.target) return '';
         const spec = byId(meta.target);
         const parts = [`目标 ${spec?.label || meta.target}`];
+        if(meta.language) parts.push(meta.language === 'zh' ? '中文' : '英文');
         if(meta.ir){
             if(meta.ir.shots) parts.push(`${meta.ir.shots} 镜`);
             (meta.ir.subjects || []).forEach(subject => {
@@ -163,7 +175,7 @@
         return null;
     }
 
-    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset};
+    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

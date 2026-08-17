@@ -2880,6 +2880,7 @@ class VideoPromptConvertRequest(BaseModel):
     # 转换用画布已配置的文本模型通道，与视频站点无关。
     provider: str = "comfly"
     model: str = ""
+    language: str = "en"
 
 class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
@@ -18623,7 +18624,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
 async def video_prompt_targets_list():
     return {"targets": video_prompts.list_video_prompt_targets()}
 
-async def _video_prompt_llm_text(provider_id, model, messages):
+async def _video_prompt_llm_text(provider_id, model, messages, images=None):
     """把转换消息映射成 canvas-llm 请求，在进程内复用其全部协议分支。"""
     system = ""
     history = []
@@ -18638,12 +18639,14 @@ async def _video_prompt_llm_text(provider_id, model, messages):
     last_user = history.pop()
     if len(last_user["content"]) > LLM_MESSAGE_MAX_LENGTH:
         raise HTTPException(status_code=400, detail="导演本过长，转换消息超出文本通道上限，请精简后重试。")
+    image_urls = [str(url).strip() for url in (images or []) if str(url or "").strip()]
     llm_payload = CanvasLLMRequest(
         message=last_user["content"],
         system_prompt=system,
         model=model,
         messages=history,
         provider=provider_id or "comfly",
+        images=image_urls,
     )
     result = await canvas_llm(llm_payload)
     return video_prompts.strip_model_output((result or {}).get("text") or "")
@@ -18657,6 +18660,7 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
     ir = video_prompts.extract_canvas_ir(payload.prompt, images, payload.duration)
+    image_urls = video_prompts.convert_image_urls(images)
     chat_provider = video_prompts.pick_chat_provider(
         [public_provider(item) for item in load_api_providers()],
         payload.provider,
@@ -18668,23 +18672,28 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not chat_model:
         raise HTTPException(status_code=400, detail="请指定文字模型，不要让系统自动猜。")
     chat_model = selected_model(chat_model, chat_model)
+    language = video_prompts.normalize_output_language(payload.language)
     text = await _video_prompt_llm_text(
-        chat_provider_id, chat_model, video_prompts.build_convert_messages(target, ir)
+        chat_provider_id, chat_model,
+        video_prompts.build_convert_messages(target, ir, payload.prompt, language),
+        images=image_urls,
     )
     checked = video_prompts.validate_target_output(target, text, ir)
     if checked["errors"]:
         # 校验失败带着错误自动重跑一次；再失败则如实返回，前端不派生工作台。
         text = await _video_prompt_llm_text(
             chat_provider_id, chat_model,
-            video_prompts.build_repair_messages(target, ir, text, checked["errors"]),
+            video_prompts.build_repair_messages(target, ir, text, checked["errors"], language),
+            images=image_urls,
         )
         checked = video_prompts.validate_target_output(target, text, ir)
     return {
         "ok": not checked["errors"],
         "target": target,
         "prompt": text,
+        "language": language,
         "errors": checked["errors"],
-        "warnings": (ir.get("warnings") or []) + checked["warnings"],
+        "warnings": video_prompts.convert_input_warnings(ir, chat_model, image_urls) + checked["warnings"],
         "ir": ir,
     }
 
