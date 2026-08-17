@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest import mock
 
 import h3_protocol as h3
 import main
@@ -51,6 +52,10 @@ class H3RoutingTests(unittest.TestCase):
         self.assertEqual(
             main.video_task_url_candidates(provider, "http://127.0.0.1:8088/v1", "video_abc", "", "minimax-h3"),
             ["http://127.0.0.1:8088/v1/videos/video_abc"],
+        )
+        self.assertEqual(
+            h3.h3_video_cancel_url("http://127.0.0.1:8088", "video_abc"),
+            "http://127.0.0.1:8088/v1/videos/video_abc",
         )
         self.assertEqual(main.canvas_video_task_type(provider, "minimax-h3"), "h3-video")
         self.assertIn("h3-video", main.CANVAS_VIDEO_TASK_TYPES)
@@ -159,6 +164,104 @@ class H3RequestTests(unittest.TestCase):
     def test_gateway_error_text_is_used_as_is(self):
         self.assertEqual(h3.h3_error_text({"detail": "只允许上传 1 张首帧"}), "只允许上传 1 张首帧")
         self.assertEqual(h3.h3_error_text({"error": "不支持 seconds=4，只接受 5 到 15 之间的整数"}), "不支持 seconds=4，只接受 5 到 15 之间的整数")
+
+
+class H3CancelTests(unittest.TestCase):
+    def tearDown(self):
+        main.CANVAS_TASKS.clear()
+        main.CANVAS_VIDEO_TASK_HANDLES.clear()
+
+    def test_cancel_url_matches_task_url(self):
+        self.assertEqual(
+            h3.h3_video_cancel_url("http://127.0.0.1:8088", "video_abc"),
+            "http://127.0.0.1:8088/v1/videos/video_abc",
+        )
+
+    def test_cancel_queued_video_does_not_call_upstream(self):
+        task_id = "canvas_h3_cancel_queued"
+        main.CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "h3-video",
+            "status": "queued",
+            "provider_id": "h3-local",
+            "model": "minimax-h3",
+            "upstream_task_id": "",
+        }
+        with mock.patch.object(main, "cancel_h3_upstream_video", new=mock.AsyncMock()) as delete_upstream:
+            result = run(main.cancel_canvas_video_task(task_id))
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(main.CANVAS_TASKS[task_id]["status"], "cancelled")
+        delete_upstream.assert_not_awaited()
+
+    def test_cancel_h3_running_task_deletes_upstream(self):
+        task_id = "canvas_h3_cancel_running"
+        main.CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "h3-video",
+            "status": "running",
+            "provider_id": "h3-local",
+            "model": "minimax-h3",
+            "upstream_task_id": "video_abc",
+        }
+        handle = mock.Mock()
+        main.CANVAS_VIDEO_TASK_HANDLES[task_id] = handle
+        provider = {"id": "h3-local", "protocol": main.H3_PROTOCOL, "base_url": "http://127.0.0.1:8088"}
+        with mock.patch.object(main, "get_api_provider", return_value=provider), mock.patch.object(
+            main, "video_api_root", return_value="http://127.0.0.1:8088"
+        ), mock.patch.object(main, "cancel_h3_upstream_video", new=mock.AsyncMock(return_value=True)) as delete_upstream:
+            result = run(main.cancel_canvas_video_task(task_id))
+        self.assertTrue(result["cancelled"])
+        delete_upstream.assert_awaited_once()
+        self.assertEqual(delete_upstream.await_args.args[2], "video_abc")
+        handle.cancel.assert_called_once()
+
+    def test_cancel_other_protocol_does_not_delete_h3(self):
+        task_id = "canvas_cangyuan_cancel"
+        main.CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "cangyuan-video",
+            "status": "running",
+            "provider_id": "cangyuan",
+            "upstream_task_id": "task_1",
+        }
+        handle = mock.Mock()
+        main.CANVAS_VIDEO_TASK_HANDLES[task_id] = handle
+        with mock.patch.object(main, "cancel_h3_upstream_video", new=mock.AsyncMock()) as delete_upstream:
+            result = run(main.cancel_canvas_video_task(task_id))
+        self.assertTrue(result["cancelled"])
+        delete_upstream.assert_not_awaited()
+        handle.cancel.assert_called_once()
+
+    def test_generate_h3_deletes_upstream_when_cancelled_after_submit(self):
+        provider = {"id": "h3-local", "protocol": main.H3_PROTOCOL}
+        payload = video_payload()
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"id": "video_abc", "status": "queued"}
+        client = mock.AsyncMock()
+        client.post.return_value = response
+        seen = []
+
+        def on_task_id(task_id):
+            seen.append(task_id)
+
+        with mock.patch.object(main, "h3_api_key", return_value="test-key"), mock.patch.object(
+            main, "api_headers", return_value={"Authorization": "Bearer test-key"}
+        ), mock.patch.object(
+            main, "cancel_h3_upstream_video", new=mock.AsyncMock(return_value=True)
+        ) as delete_upstream:
+            with self.assertRaises(main.CanvasTaskCancelled):
+                run(main.generate_h3_video(
+                    client,
+                    payload,
+                    provider,
+                    "http://127.0.0.1:8088",
+                    "minimax-h3",
+                    on_task_id=on_task_id,
+                    should_cancel=lambda: True,
+                ))
+        self.assertEqual(seen, ["video_abc"])
+        delete_upstream.assert_awaited_once()
 
 
 if __name__ == "__main__":

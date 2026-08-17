@@ -6353,6 +6353,9 @@ async function loadCanvas(){
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes.forEach(n => {
+            if(n.videoTaskId && !smartPendingTasks(n).length){
+                n.pendingTasks = [{taskId:n.videoTaskId, kind:'video'}];
+            }
             const pendingTasks = smartPendingTasks(n);
             if(pendingTasks.length){
                 n.pending = Math.max(pendingTasks.length, Number(n.pending || 0) || pendingTasks.length);
@@ -9149,7 +9152,35 @@ function setDropHighlight(targetId){
     const el = world.querySelector(`.image-node[data-id="${targetId}"]`);
     if(el) el.classList.add('drop-target');
 }
+function smartUserCancelError(message){
+    const err = new Error(message || (typeof tr === 'function' ? tr('smart.errRunFailed') : '已取消生成'));
+    err.name = 'UserCancelError';
+    err.isUserCancel = true;
+    return err;
+}
+function isSmartUserCancel(err){
+    return Boolean(err?.isUserCancel || err?.name === 'UserCancelError');
+}
+function cancelSmartCanvasTask(taskId, kind){
+    const id = encodeURIComponent(String(taskId || '').trim());
+    if(!id) return;
+    const url = kind === 'image'
+        ? `/api/canvas-image-tasks/${id}`
+        : kind === 'comfy'
+            ? `/api/canvas-comfy-tasks/${id}`
+            : `/api/canvas-video-tasks/${id}`;
+    fetch(url, {method:'DELETE'}).catch(() => {});
+}
+function cancelSmartNodeTasks(node){
+    if(!node) return;
+    smartPendingTasks(node).forEach(task => cancelSmartCanvasTask(task.taskId, task.kind || 'image'));
+    if(node.videoTaskId) cancelSmartCanvasTask(node.videoTaskId, 'video');
+    node.videoTaskCancelled = true;
+    delete node.videoTaskId;
+}
 function deleteNode(id){
+    const doomed = nodes.filter(node => node.id === id || (isHistoryGroupNode(node) && node.historyFor === id));
+    doomed.forEach(cancelSmartNodeTasks);
     pushUndo();
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
@@ -9179,6 +9210,7 @@ function clearNodeMediaBeforeDelete(id){
     const hadMedia = Boolean((node.images || []).length || node.pending);
     if(!hadMedia) return false;
     pushUndo();
+    cancelSmartNodeTasks(node);
     node.images = [];
     node.pending = 0;
     node.running = false;
@@ -14020,6 +14052,8 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     const metaTarget = pendingNode._runMetaTargetId ? nodes.find(n => n.id === pendingNode._runMetaTargetId) : pendingNode;
     if(metaTarget) attachRunMeta(metaTarget, meta);
     pendingNode.images = (pendingNode.images || []).map(img => stripImageGenerationMeta(img));
+    delete pendingNode.videoTaskId;
+    delete pendingNode.videoTaskCancelled;
     clearSourceBusyStateIfDownstreamDone(nodes.find(n => n.id === meta?.sourceNodeId));
     // 生成完成不抢占选择:仅当用户仍停留在该生成节点上(或当前无选择)时才切换选择;
     // 否则保留用户当前选择 —— 支持并发生成时去调整/编辑别的卡片,A 节点的参数栏不被打断。
@@ -14628,7 +14662,7 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         return {urls, kind:mediaKindForUrls(urls, 'image')};
     }
     if(isApiLikeEngine(activeSettings.engine) && activeSettings.apiKind === 'video'){
-        return {urls:await runApiVideoGeneration(prompt, refs, activeSettings), kind:'video'};
+        return {urls:await runApiVideoGeneration(prompt, refs, activeSettings, node), kind:'video'};
     }
     if(isApiLikeEngine(activeSettings.engine)){
         const taskResult = await runApiGeneration(prompt, refs, activeSettings);
@@ -14912,6 +14946,12 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         addSmartGenerationLog({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {
+        if(isSmartUserCancel(e)){
+            outputSlot.queued = false;
+            outputSlot.pending = 0;
+            outputSlot.running = false;
+            return [];
+        }
         if(handleJimengPendingSignal(outputSlot, e)){
             outputSlot.queued = false;
             return [];
@@ -15318,7 +15358,8 @@ async function runGeneration(){
             // 后续只用快照，运行结束也不再有任何还原动作去覆盖用户的修改。
             const videoRunSettings = cloneSmartSettings(settings);
             releaseSettingsOverride();
-            const outVideos = await runApiVideoGeneration(prompt, refs, videoRunSettings);
+            const outVideos = await runApiVideoGeneration(prompt, refs, videoRunSettings, pendingNode);
+            if(pendingNode.videoTaskCancelled || !nodes.find(n => n.id === pendingNode.id)) return;
             if(!outVideos.length) throw new Error(tr('smart.errNoOutVideos'));
             finalizePendingNode(pendingNode, outVideos, pendingMeta, 'video');
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
@@ -15373,6 +15414,13 @@ async function runGeneration(){
         scheduleSave();
     } catch(e) {
         releaseSettingsOverride();
+        if(isSmartUserCancel(e)){
+            pendingNode.pending = 0;
+            pendingNode.running = false;
+            delete pendingNode._runMetaTargetId;
+            if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
+            return;
+        }
         if(handleJimengPendingSignal(pendingNode, e)){
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             delete pendingNode._runMetaTargetId;
@@ -15628,7 +15676,7 @@ function deriveVideoPromptWorkbench(srcNode, target, result){
     updateComposer();
     return copy;
 }
-async function runApiVideoGeneration(prompt, refs, runSettings=settings){
+async function runApiVideoGeneration(prompt, refs, runSettings=settings, targetNode=null){
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
     try {
         const uploadedRefs = applyUploadedUrlsToSmartRefs(refs, runSettings);
@@ -15701,22 +15749,45 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings){
         }).then(async r => { if(!r.ok) throw new Error(await smartResponseErrorMessage(r, tr('smart.errRunFailed'))); return r.json(); });
         if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
         if(result?.video_pending || result?.grok2api_pending){
-            result = await waitSmartCanvasVideoTaskResult(result.task_id);
+            if(targetNode){
+                targetNode.videoTaskId = result.task_id;
+                targetNode.pendingTasks = [{
+                    taskId:result.task_id,
+                    kind:'video',
+                    providerId:runSettings.videoProvider || payload.provider_id
+                }];
+                targetNode.pending = Math.max(1, Number(targetNode.pending || 0) || 1);
+                render();
+                scheduleSave();
+                await saveCanvas();
+            }
+            if(targetNode?.videoTaskCancelled){
+                cancelSmartCanvasTask(result.task_id, 'video');
+                throw smartUserCancelError();
+            }
+            result = await waitSmartCanvasVideoTaskResult(result.task_id, {nodeId:targetNode?.id});
         }
         return resultMediaUrls(result);
     } finally {
         transientSmartCloudLinks = [];
     }
 }
-async function waitSmartCanvasVideoTaskResult(taskId){
+async function waitSmartCanvasVideoTaskResult(taskId, options={}){
     if(!taskId) throw new Error(tr('smart.errRunFailed'));
     while(true){
+        if(options.nodeId){
+            const node = nodes.find(n => n.id === options.nodeId);
+            if(!node || node.videoTaskCancelled || (node.videoTaskId && node.videoTaskId !== taskId)){
+                throw smartUserCancelError();
+            }
+        }
         const res = await fetch(`/api/canvas-video-tasks/${encodeURIComponent(taskId)}`);
         if(!res.ok){
             if(res.status === 404) throw new Error('后端已重启，视频任务状态已丢失');
             throw new Error(await smartResponseErrorMessage(res, tr('smart.errRunFailed')));
         }
         const data = await res.json();
+        if(data.status === 'cancelled') throw smartUserCancelError();
         if(data.status === 'succeeded') return data.result || {};
         if(data.status === 'failed') throw new Error(data.error || tr('smart.errRunFailed'));
         await sleep(1800);
@@ -16153,6 +16224,7 @@ async function pollSmartCanvasTask(taskId){
                 if(!r.ok) throw new Error(await r.text());
                 return r.json();
             });
+            if(task.status === 'cancelled') throw smartUserCancelError();
             if(task.status === 'succeeded') return task.result || {};
             if(task.status === 'jimeng_pending') throw new JimengPendingSignal({submitId:task.submit_id, kind:task.kind, queueInfo:task.queue_info, message:task.message});
             if(task.status === 'failed'){
@@ -16190,8 +16262,10 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image'){
     });
     node.images = [...existing, ...additions];
     if(additions.length) node.outputKind = kind;
+    if(node.videoTaskId === taskId) delete node.videoTaskId;
     if(!node.pending && smartPendingTasks(node).length === 0){
         delete node.pendingTasks;
+        delete node.videoTaskId;
         node.runFinishedAt = nowMs();
         if(!node.runStartedAt) node.runStartedAt = node.runFinishedAt;
         node.runElapsedMs = Math.max(0, node.runFinishedAt - Number(node.runStartedAt || node.runFinishedAt));
@@ -16224,11 +16298,24 @@ async function resumeSmartPendingNode(node, logContext={}){
     await Promise.all(tasks.map(async task => {
         if(task.failed && task.recoverTaskId) return;
         try {
-            const result = await pollSmartCanvasTask(task.taskId);
+            const result = task.kind === 'video'
+                ? await waitSmartCanvasVideoTaskResult(task.taskId, {nodeId:node.id})
+                : await pollSmartCanvasTask(task.taskId);
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result)), task.kind || 'image');
             render();
             scheduleSave();
         } catch(e) {
+            if(isSmartUserCancel(e)){
+                node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
+                node.pending = Math.max(0, Number(node.pending || 0) - 1);
+                if(!node.pending && smartPendingTasks(node).length === 0){
+                    delete node.pendingTasks;
+                    node.running = false;
+                }
+                render();
+                scheduleSave();
+                return;
+            }
             if(e && e.jimengPending && e.submitId){
                 node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                 setNodeJimengPending(node, e);

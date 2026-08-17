@@ -2712,6 +2712,11 @@ CANVAS_VIDEO_TASK_TYPES = frozenset({
     "pidoi-video",
     "codelba-video",
 })
+CANVAS_TASK_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+
+
+class CanvasTaskCancelled(Exception):
+    """本地画布任务已被用户取消，停止收片/轮询。"""
 
 class CanvasVideoRequest(BaseModel):
     # Grok2API 支持只提交参考图的图生视频；路由层仍会拒绝无 prompt 且无参考图的请求。
@@ -14944,6 +14949,8 @@ async def query_image_task(payload: ImageTaskQueryRequest):
     }
 
 async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
+    if canvas_task_cancelled(task_id):
+        return
     with CANVAS_TASK_LOCK:
         if task_id in CANVAS_TASKS:
             CANVAS_TASKS[task_id]["status"] = "running"
@@ -14951,6 +14958,9 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
     try:
         result = await build_online_image_result(payload)
         with CANVAS_TASK_LOCK:
+            task = CANVAS_TASKS.get(task_id)
+            if not task or str(task.get("status") or "") == "cancelled":
+                return
             CANVAS_TASKS[task_id].update({
                 "status": "succeeded",
                 "result": result,
@@ -14958,6 +14968,8 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
                 "updated_at": time.time(),
             })
     except JimengPendingError as exc:
+        if canvas_task_cancelled(task_id):
+            return
         # 即梦云端还在排队：标记为 jimeng_pending，前端据 submit_id 持久续查（任务未丢失）
         info = jimeng_pending_payload(exc)
         with CANVAS_TASK_LOCK:
@@ -14972,6 +14984,8 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
                 "updated_at": time.time(),
             })
     except Exception as exc:
+        if canvas_task_cancelled(task_id):
+            return
         detail = getattr(exc, "detail", None) or str(exc)
         status_code = getattr(exc, "status_code", 500)
         upstream_task_id = getattr(exc, "upstream_task_id", "") or extract_task_id_from_text(detail)
@@ -15010,7 +15024,20 @@ async def get_canvas_image_task(task_id: str):
         raise HTTPException(status_code=404, detail="画布任务不存在，可能服务已重启或任务已过期")
     return task
 
+@app.delete("/api/canvas-image-tasks/{task_id}")
+async def cancel_canvas_image_task(task_id: str):
+    task = canvas_task_record(task_id)
+    if not task or task.get("type") != "online-image":
+        raise HTTPException(status_code=404, detail="画布任务不存在，可能服务已重启或任务已过期")
+    status = str(task.get("status") or "")
+    if status in CANVAS_TASK_TERMINAL_STATUSES:
+        return {**task, "cancelled": status == "cancelled"}
+    marked = mark_canvas_task_cancelled(task_id) or task
+    return {**marked, "cancelled": True}
+
 async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
+    if canvas_task_cancelled(task_id):
+        return
     with CANVAS_TASK_LOCK:
         if task_id in CANVAS_TASKS:
             CANVAS_TASKS[task_id]["status"] = "running"
@@ -15020,6 +15047,9 @@ async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
         if isinstance(result, dict) and result.get("error"):
             raise RuntimeError(str(result.get("error") or "ComfyUI 生成失败"))
         with CANVAS_TASK_LOCK:
+            task = CANVAS_TASKS.get(task_id)
+            if not task or str(task.get("status") or "") == "cancelled":
+                return
             CANVAS_TASKS[task_id].update({
                 "status": "succeeded",
                 "result": result,
@@ -15027,6 +15057,8 @@ async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
                 "updated_at": time.time(),
             })
     except Exception as exc:
+        if canvas_task_cancelled(task_id):
+            return
         detail = getattr(exc, "detail", None) or str(exc)
         status_code = getattr(exc, "status_code", 500)
         with CANVAS_TASK_LOCK:
@@ -15061,6 +15093,17 @@ async def get_canvas_comfy_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="ComfyUI 任务不存在，可能服务已重启或任务已过期")
     return task
+
+@app.delete("/api/canvas-comfy-tasks/{task_id}")
+async def cancel_canvas_comfy_task(task_id: str):
+    task = canvas_task_record(task_id)
+    if not task or task.get("type") != "comfy":
+        raise HTTPException(status_code=404, detail="ComfyUI 任务不存在，可能服务已重启或任务已过期")
+    status = str(task.get("status") or "")
+    if status in CANVAS_TASK_TERMINAL_STATUSES:
+        return {**task, "cancelled": status == "cancelled"}
+    marked = mark_canvas_task_cancelled(task_id) or task
+    return {**marked, "cancelled": True}
 
 # --- 图像生成参数 schema（供客户端动态渲染参数表单，避免把参数写死在前端） ---
 IMAGE_PARAM_RATIOS = [
@@ -17593,12 +17636,37 @@ def h3_response_error_text(response):
         return text[:500]
     return h3.h3_error_text(raw, text)
 
-async def wait_for_h3_video_task(client, provider, base_url, task_id, model):
+async def cancel_h3_upstream_video(provider, base_url, upstream_task_id, model=""):
+    task_id = str(upstream_task_id or "").strip()
+    if not task_id:
+        return False
+    url = h3.h3_video_cancel_url(base_url, task_id)
+    try:
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.delete(
+                url,
+                headers=api_headers(json_body=False, provider=provider, model=model),
+            )
+        if response.status_code in {200, 202, 204, 404}:
+            return True
+        print(f"[h3] 取消上游任务失败 http={response.status_code} task={task_id}")
+        return False
+    except httpx.HTTPError as exc:
+        print(f"[h3] 取消上游任务网络错误 task={task_id}: {exc}")
+        return False
+
+
+async def wait_for_h3_video_task(client, provider, base_url, task_id, model, should_cancel=None):
     deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
     delay = 4.0
     last_payload = {}
     while time.monotonic() < deadline:
+        if should_cancel and should_cancel():
+            raise CanvasTaskCancelled()
         await asyncio.sleep(delay)
+        if should_cancel and should_cancel():
+            raise CanvasTaskCancelled()
         url = h3.h3_video_task_url(base_url, task_id)
         try:
             response = await client.get(
@@ -17632,7 +17700,7 @@ async def wait_for_h3_video_task(client, provider, base_url, task_id, model):
         delay = min(delay + 0.5, 10.0)
     raise HTTPException(status_code=504, detail=f"H3 视频生成任务超时：{last_payload or task_id}")
 
-async def generate_h3_video(client, payload, provider, base_url, requested_model):
+async def generate_h3_video(client, payload, provider, base_url, requested_model, on_task_id=None, should_cancel=None):
     api_key = h3_api_key(provider)
     body, media = h3.build_h3_video_request(payload, requested_model)
     submit_url = h3.h3_video_submit_url(base_url)
@@ -17682,12 +17750,23 @@ async def generate_h3_video(client, payload, provider, base_url, requested_model
     task_id = h3.h3_task_id(raw)
     if not task_id:
         raise HTTPException(status_code=502, detail=f"H3 视频接口没有返回任务号：{str(raw)[:500]}")
+    if on_task_id:
+        try:
+            on_task_id(task_id)
+        except Exception as exc:
+            print(f"[h3] 本地任务号留痕失败 task={task_id}: {exc}")
+    if should_cancel and should_cancel():
+        await cancel_h3_upstream_video(provider, base_url, task_id, requested_model)
+        raise CanvasTaskCancelled()
     state, _ = h3.h3_task_state(raw)
     if state == "failed":
         raise HTTPException(status_code=502, detail=h3.h3_error_text(raw))
     result = raw if state == "success" else await wait_for_h3_video_task(
-        client, provider, base_url, task_id, requested_model
+        client, provider, base_url, task_id, requested_model, should_cancel=should_cancel
     )
+    if should_cancel and should_cancel():
+        await cancel_h3_upstream_video(provider, base_url, task_id, requested_model)
+        raise CanvasTaskCancelled()
     local_url = await save_remote_video_to_output(
         h3.h3_video_content_url(base_url, task_id),
         prefix="h3_video_",
@@ -17733,10 +17812,40 @@ def canvas_video_task_label(task_type):
         "codelba-video": "Codelba",
     }.get(task_type, "视频")
 
+def canvas_task_record(task_id):
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        return dict(task) if task else {}
+
+
+def canvas_task_cancelled(task_id):
+    return str(canvas_task_record(task_id).get("status") or "") == "cancelled"
+
+
+def mark_canvas_task_cancelled(task_id, message="用户取消"):
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        if not task:
+            return None
+        if str(task.get("status") or "") in CANVAS_TASK_TERMINAL_STATUSES:
+            return dict(task)
+        task.update({
+            "status": "cancelled",
+            "error": message,
+            "updated_at": time.time(),
+        })
+        return dict(task)
+
+
 def update_canvas_video_task(task_id, **updates):
     with CANVAS_TASK_LOCK:
         task = CANVAS_TASKS.get(task_id)
         if not task:
+            return
+        if str(task.get("status") or "") == "cancelled":
+            if "upstream_task_id" in updates and updates.get("upstream_task_id"):
+                task["upstream_task_id"] = updates["upstream_task_id"]
+                task["updated_at"] = time.time()
             return
         task.update(updates)
         task["updated_at"] = time.time()
@@ -17744,7 +17853,7 @@ def update_canvas_video_task(task_id, **updates):
 def update_grok2api_canvas_task(task_id, **updates):
     update_canvas_video_task(task_id, **updates)
 
-async def generate_canvas_video_for_background_task(client, payload, provider, base_url, requested_model, task_type, on_task_id=None):
+async def generate_canvas_video_for_background_task(client, payload, provider, base_url, requested_model, task_type, on_task_id=None, should_cancel=None):
     if task_type == "grok2api-video":
         return await generate_grok2api_video(
             client,
@@ -17763,19 +17872,28 @@ async def generate_canvas_video_for_background_task(client, payload, provider, b
     if task_type == "codelba-video":
         return await generate_codelba_video(client, payload, provider, base_url, requested_model)
     if task_type == "h3-video":
-        return await generate_h3_video(client, payload, provider, base_url, requested_model)
+        return await generate_h3_video(
+            client,
+            payload,
+            provider,
+            base_url,
+            requested_model,
+            on_task_id=on_task_id,
+            should_cancel=should_cancel,
+        )
     raise HTTPException(status_code=500, detail=f"不支持的后台视频任务类型：{task_type}")
 
 async def run_canvas_video_background_task(task_id, payload, provider, base_url, requested_model, task_type):
     """在请求生命周期之外完成视频轮询和成片下载，避免被长连接/网关超时切断。"""
+    if canvas_task_cancelled(task_id):
+        return
     update_canvas_video_task(task_id, status="running")
 
     def mark_upstream_task(upstream_task_id):
-        update_canvas_video_task(
-            task_id,
-            status="running",
-            upstream_task_id=str(upstream_task_id or ""),
-        )
+        update_canvas_video_task(task_id, upstream_task_id=str(upstream_task_id or ""))
+
+    def should_cancel():
+        return canvas_task_cancelled(task_id)
 
     client_timeout = GROK2API_POLL_REQUEST_TIMEOUT if task_type == "grok2api-video" else VIDEO_POLL_TIMEOUT
     try:
@@ -17787,8 +17905,11 @@ async def run_canvas_video_background_task(task_id, payload, provider, base_url,
                 base_url,
                 requested_model,
                 task_type,
-                on_task_id=mark_upstream_task if task_type == "grok2api-video" else None,
+                on_task_id=mark_upstream_task,
+                should_cancel=should_cancel,
             )
+        if canvas_task_cancelled(task_id):
+            return
         update_canvas_video_task(
             task_id,
             status="succeeded",
@@ -17796,9 +17917,14 @@ async def run_canvas_video_background_task(task_id, payload, provider, base_url,
             error="",
             status_code=200,
         )
+    except CanvasTaskCancelled:
+        mark_canvas_task_cancelled(task_id)
     except asyncio.CancelledError:
+        mark_canvas_task_cancelled(task_id)
         raise
     except Exception as exc:
+        if canvas_task_cancelled(task_id):
+            return
         detail = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
         try:
             status_code = int(getattr(exc, "status_code", 500) or 500)
@@ -17872,6 +17998,41 @@ async def get_canvas_video_task(task_id: str):
     if not task or task.get("type") not in CANVAS_VIDEO_TASK_TYPES:
         raise HTTPException(status_code=404, detail="画布视频任务不存在，可能服务已重启或任务已过期")
     return task
+
+@app.delete("/api/canvas-video-tasks/{task_id}")
+async def cancel_canvas_video_task(task_id: str):
+    task = canvas_task_record(task_id)
+    if not task or task.get("type") not in CANVAS_VIDEO_TASK_TYPES:
+        raise HTTPException(status_code=404, detail="画布视频任务不存在，可能服务已重启或任务已过期")
+    status = str(task.get("status") or "")
+    if status in CANVAS_TASK_TERMINAL_STATUSES:
+        return {**task, "cancelled": status == "cancelled"}
+
+    marked = mark_canvas_task_cancelled(task_id) or task
+    with CANVAS_TASK_LOCK:
+        handle = CANVAS_VIDEO_TASK_HANDLES.get(task_id)
+
+    if task.get("type") == "h3-video":
+        upstream = str(marked.get("upstream_task_id") or task.get("upstream_task_id") or "").strip()
+        if upstream:
+            try:
+                provider = get_api_provider(task.get("provider_id"))
+                await cancel_h3_upstream_video(
+                    provider,
+                    video_api_root(provider),
+                    upstream,
+                    task.get("model") or "",
+                )
+            except Exception as exc:
+                print(f"[h3] 取消上游任务失败 task={task_id}: {exc}")
+            if handle:
+                handle.cancel()
+        # 还没拿到 H3 任务号时留下后台协程：提交成功后会自己 DELETE。
+    elif handle:
+        handle.cancel()
+
+    latest = canvas_task_record(task_id) or marked
+    return {**latest, "cancelled": True}
 
 async def generate_grok_video(client, payload, provider, base_url, requested_model):
     submit_url = f"{base_url}/v1/videos"

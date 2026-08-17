@@ -42,6 +42,10 @@ def h3_video_content_url(base_url, task_id):
     return f"{h3_api_root(base_url)}/v1/videos/{quoted}/content"
 
 
+def h3_video_cancel_url(base_url, task_id):
+    return h3_video_task_url(base_url, task_id)
+
+
 def classify_h3_model_entry(item, model_id=""):
     if isinstance(item, dict):
         endpoint_types = item.get("supported_endpoint_types")
