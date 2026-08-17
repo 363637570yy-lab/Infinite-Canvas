@@ -745,7 +745,7 @@ VIDEO_POLL_TIMEOUT = float(os.getenv("VIDEO_POLL_TIMEOUT", "1800"))
 # 正被读取的文件，需要等读侧关闭句柄。Linux 上第一次就成功，这个值不会生效。
 ATOMIC_REPLACE_TIMEOUT = float(os.getenv("ATOMIC_REPLACE_TIMEOUT", "10"))
 ONLINE_IMAGE_PROMPT_MAX_LENGTH = int(os.getenv("ONLINE_IMAGE_PROMPT_MAX_LENGTH", "20000"))
-VIDEO_PROMPT_MAX_LENGTH = int(os.getenv("VIDEO_PROMPT_MAX_LENGTH", "4000"))
+VIDEO_PROMPT_MAX_LENGTH = int(os.getenv("VIDEO_PROMPT_MAX_LENGTH", "20000"))
 LLM_MESSAGE_MAX_LENGTH = int(os.getenv("LLM_MESSAGE_MAX_LENGTH", "20000"))
 CHAT_ATTACHMENT_MAX = int(os.getenv("CHAT_ATTACHMENT_MAX", "20"))
 ONLINE_IMAGE_REFERENCE_MAX = int(os.getenv("ONLINE_IMAGE_REFERENCE_MAX", "20"))
@@ -13904,7 +13904,8 @@ async def probe_codelba_endpoint(client, base_url: str, api_key: str):
             result["ok"] = True
             result["message"] = (
                 "Codelba 视频协议入口可达，但 /openapi/v1/models 不存在；"
-                "请手动填写 sd-2-c5、sd-2-c5-10、seedance2.0-14s"
+                "请手动填写视频模型 ID。有能力字段的模型提交时按目录组包，"
+                "旧 ID sd-2-c5 / sd-2-c5-10 / seedance2.0-14s 仍可走本地家族表。"
             )
             return result
         result["message"] = f"Codelba 任务查询入口不可用 (HTTP {probe_response.status_code})"
@@ -16359,6 +16360,39 @@ def codelba_response_error_text(response):
 CODELBA_SUBMIT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=20.0)
 CODELBA_POLL_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
 CODELBA_DOWNLOAD_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+CODELBA_CATALOG_TTL = 300.0
+_CODELBA_CATALOG_CACHE = {}
+
+
+async def load_codelba_catalog(client, provider, base_url):
+    """提交前读取 /openapi/v1/models 的时长、画幅和参考上限。失败时用空目录，旧 ID 仍走本地家族表。"""
+    cache_key = f"{codelba.codelba_api_root(base_url)}|{provider.get('id') or ''}"
+    now = time.monotonic()
+    cached = _CODELBA_CATALOG_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < CODELBA_CATALOG_TTL:
+        return cached[1]
+    catalog = codelba.CodelbaCatalog()
+    try:
+        response = await client.get(
+            codelba.codelba_models_url(base_url),
+            headers=upstream_model_headers(codelba_api_key(provider), CODELBA_PROTOCOL),
+            timeout=CODELBA_POLL_REQUEST_TIMEOUT,
+        )
+        if response.status_code < 400:
+            raw = response.json() if response.text else {}
+            catalog = codelba.parse_codelba_catalog(raw)
+        else:
+            print(f"[codelba] 能力目录返回 HTTP {response.status_code}，本次按目录不可用处理")
+    except Exception as exc:
+        print(f"[codelba] 能力目录拉取失败，本次按目录不可用处理：{exc}")
+        if cached:
+            return cached[1]
+        return catalog
+    if len(catalog):
+        _CODELBA_CATALOG_CACHE[cache_key] = (now, catalog)
+    elif cached:
+        return cached[1]
+    return catalog
 
 async def wait_for_codelba_video_task(client, provider, base_url, task_id, model):
     """按 Codelba 文档每 5～10 秒查询一次。"""
@@ -16408,10 +16442,12 @@ async def wait_for_codelba_video_task(client, provider, base_url, task_id, model
 
 async def generate_codelba_video(client, payload, provider, base_url, requested_model):
     api_key = codelba_api_key(provider)
+    catalog = await load_codelba_catalog(client, provider, base_url)
     body = await codelba.build_codelba_video_request(
         payload,
         requested_model,
         resolve_ref=make_codelba_resolver(),
+        catalog=catalog,
     )
     submit_url = video_submit_url_candidates(provider, base_url, requested_model)[0]
     response = await client.post(

@@ -3,10 +3,13 @@
 站点合同是 POST /openapi/v1/videos → GET /openapi/v1/videos/{task_id}
 → GET /openapi/v1/videos/{task_id}/content。当前可用网关是
 https://hz.codelba.cn；https://hz.codelba.cn/ai_video_ui/ 只是网页后台。
-请求字段是 size 与 image_refs / video_refs / audio_refs。
-文档示例 size 为 1280x720 这种宽x高；请求体按画幅发送对应像素尺寸，
-16:9 默认 1280x720。720p 只当作清晰度别名，不会写进 size。
-和 chre3、苍元、MegabyAI 都不同，所以单独成协议。本模块不反向导入 main.py。
+全部视频模型共用同一套 OpenAPI v1 请求字段：size 与
+image_refs / video_refs / audio_refs。模型改名不是新家族。
+时长、画幅、参考上限以 GET /openapi/v1/models 的能力字段为准；
+本地家族表只给目录不可用时的旧 ID 兜底。没有能力字段的模型
+不会按其它版本参数提交。文档示例 size 为 1280x720 这种宽x高；
+请求体按画幅发送对应像素尺寸，16:9 默认 1280x720。720p 只当作
+清晰度别名，不会写进 size。本模块不反向导入 main.py。
 """
 
 import re
@@ -93,9 +96,167 @@ CODELBA_DEFAULT_DURATION = 5
 CODELBA_PROMPT_MAX_LENGTH = 32000
 CODELBA_PIXEL_SIZE_RE = re.compile(r"^(\d+)\s*[xX]\s*(\d+)$")
 CODELBA_TIER_SIZE_ALIASES = frozenset({"720p", "720"})
+CODELBA_DEFAULT_RESOLUTIONS = frozenset({"720p", "720"})
 
 CODELBA_TERMINAL_SUCCESS_STATUSES = {"completed"}
 CODELBA_TERMINAL_FAILURE_STATUSES = {"failed"}
+
+
+def _int_list(value):
+    values = []
+    if not isinstance(value, list):
+        return values
+    for item in value:
+        try:
+            values.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _str_list(value):
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
+
+
+def _optional_nonneg_int(entry, key):
+    if not isinstance(entry, dict) or key not in entry:
+        return None
+    try:
+        return max(0, int(entry.get(key)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_resolution_token(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {"4k", "2160", "2160p"}:
+        return "4k"
+    if text.endswith("p") and text[:-1].isdigit():
+        return text
+    if text.isdigit():
+        return f"{text}p"
+    return text
+
+
+def _catalog_resolutions(entry):
+    values = set()
+    for item in _str_list((entry or {}).get("resolutions")):
+        token = _normalize_resolution_token(item)
+        if token:
+            values.add(token)
+    return frozenset(values)
+
+
+def has_codelba_video_capability_schema(item):
+    """OpenAPI v1 模型条目用时长/画幅/参考上限声明视频能力，不看模型名。"""
+    if not isinstance(item, dict):
+        return False
+    durations = _int_list(item.get("durations"))
+    ratios = _str_list(item.get("aspect_ratios"))
+    has_ref_caps = any(key in item for key in ("max_image_refs", "max_video_refs", "max_audio_refs"))
+    has_compliance = "compliance_supported" in item
+    return bool(durations) and (bool(ratios) or has_ref_caps or has_compliance)
+
+
+def _legacy_family_spec(model):
+    family = CODELBA_VIDEO_MODEL_FAMILIES.get(str(model or "").strip().lower(), "")
+    if not family:
+        return None
+    spec = dict(CODELBA_FAMILY_SPECS[family])
+    spec.setdefault("resolutions", CODELBA_DEFAULT_RESOLUTIONS)
+    spec.setdefault("compliance_supported", False)
+    return spec
+
+
+class CodelbaCatalog:
+    """GET /openapi/v1/models 的解析结果。
+
+    目录只提供每个模型的时长、画幅、清晰度和参考上限。
+    请求体字段本身是全站同一套 OpenAPI v1，不随模型改名变化。
+    """
+
+    def __init__(self, models=None):
+        self._by_id = {}
+        for item in models or []:
+            if isinstance(item, dict) and item.get("id"):
+                self._by_id[str(item["id"]).strip().lower()] = item
+
+    def __len__(self):
+        return len(self._by_id)
+
+    def entry(self, model):
+        return self._by_id.get(str(model or "").strip().lower()) or {}
+
+    def knows(self, model):
+        return bool(self.entry(model))
+
+    def spec_for(self, model):
+        entry = self.entry(model)
+        if not entry:
+            return None
+        durations = _int_list(entry.get("durations"))
+        ratios = [item for item in _str_list(entry.get("aspect_ratios")) if item in CODELBA_SIZE_BY_RATIO]
+        sizes = set()
+        for item in _str_list(entry.get("sizes")):
+            pixel = _normalize_pixel_size(item)
+            if pixel:
+                sizes.add(pixel)
+        for ratio in ratios:
+            mapped = CODELBA_SIZE_BY_RATIO.get(ratio)
+            if mapped:
+                sizes.add(mapped)
+        if not durations or not sizes:
+            return None
+        max_images = _optional_nonneg_int(entry, "max_image_refs")
+        max_videos = _optional_nonneg_int(entry, "max_video_refs")
+        max_audios = _optional_nonneg_int(entry, "max_audio_refs")
+        duration_set = frozenset(durations)
+        low, high = min(durations), max(durations)
+        is_range = duration_set == frozenset(range(low, high + 1)) and (high - low + 1) >= 4
+        default_size = (
+            CODELBA_SIZE_BY_RATIO["16:9"]
+            if "16:9" in ratios and CODELBA_SIZE_BY_RATIO["16:9"] in sizes
+            else sorted(sizes)[0]
+        )
+        return {
+            "durations": duration_set,
+            "sizes": frozenset(sizes),
+            "ratios": frozenset(ratios) if ratios else frozenset(
+                ratio for ratio, size in CODELBA_SIZE_BY_RATIO.items() if size in sizes
+            ),
+            "default_size": default_size,
+            "max_images": 0 if max_images is None else max_images,
+            "max_videos": 0 if max_videos is None else max_videos,
+            "max_audios": 0 if max_audios is None else max_audios,
+            "allow_video_refs": (max_videos or 0) > 0,
+            "allow_audio_refs": (max_audios or 0) > 0,
+            "duration_mode": "range" if is_range else "enum",
+            "min_duration": low,
+            "max_duration": high,
+            "resolutions": _catalog_resolutions(entry) or CODELBA_DEFAULT_RESOLUTIONS,
+            "compliance_supported": bool(entry.get("compliance_supported")),
+        }
+
+
+def parse_codelba_catalog(raw):
+    items = raw.get("data") if isinstance(raw, dict) else None
+    if not isinstance(items, list) and isinstance(raw, dict):
+        items = raw.get("models")
+    if not isinstance(items, list):
+        items = []
+    return CodelbaCatalog(items)
+
+
+def resolve_codelba_spec(model, catalog=None):
+    if catalog is not None:
+        spec = catalog.spec_for(model)
+        if spec:
+            return spec
+    return _legacy_family_spec(model)
 
 
 def codelba_api_root(base_url=""):
@@ -189,6 +350,8 @@ def classify_codelba_model_entry(item, model_id=""):
         return "image"
     if values:
         return "chat"
+    if has_codelba_video_capability_schema(item):
+        return "video"
     return "unknown"
 
 
@@ -287,13 +450,25 @@ def _size(payload, spec):
     return spec["default_size"]
 
 
-def _reject_resolution(payload):
+def _reject_resolution(payload, spec):
     value = str(getattr(payload, "resolution", "") or "").strip().lower()
-    if not value or value in {"720p", "720", "720P".lower()}:
+    if not value:
         return
+    token = _normalize_resolution_token(value)
+    allowed = spec.get("resolutions") or CODELBA_DEFAULT_RESOLUTIONS
+    if token in allowed or value in allowed:
+        if token in {"1080p", "4k"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Codelba 文档只给出 720P 的宽x高尺寸，不会把 1080p/4K 改写成 1280x720 后静默提交。",
+            )
+        return
+    if token in {"720p", "720"} and not allowed.difference(CODELBA_DEFAULT_RESOLUTIONS):
+        return
+    choices = "、".join(sorted(item for item in allowed if item))
     raise HTTPException(
         status_code=400,
-        detail="Codelba 当前模型只输出 720P，不会把 1080p/4K 等清晰度改写成 720P 后静默提交。",
+        detail=f"Codelba 该模型不支持清晰度「{value}」；可选值：{choices or '720p'}。不会改写成邻近值。",
     )
 
 
@@ -310,10 +485,11 @@ def _reject_unsupported_modes(payload, images, spec):
             detail="Codelba 没有 generate_audio 开关；有声参考请使用 audio_refs，且必须同时带图片或视频。",
         )
     if getattr(payload, "compliance_enabled", None) is True or str(getattr(payload, "compliance_mode", "") or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Codelba 当前模型未开放 compliance_enabled / compliance_mode，请不要传 true。",
-        )
+        if not spec.get("compliance_supported"):
+            raise HTTPException(
+                status_code=400,
+                detail="Codelba 该模型未开放 compliance_enabled / compliance_mode，请不要传 true。",
+            )
     for field in ("enhance_prompt", "enable_upsample", "watermark", "camerafixed", "return_last_frame"):
         if bool(getattr(payload, field, False)):
             raise HTTPException(status_code=400, detail=f"Codelba 文档未提供 {field} 参数。")
@@ -361,23 +537,22 @@ async def _resolve_references(refs, kind, limit, resolve_ref):
     ]
 
 
-async def build_codelba_video_request(payload, requested_model, resolve_ref=None):
+async def build_codelba_video_request(payload, requested_model, resolve_ref=None, catalog=None):
     model = str(requested_model or "").strip()
-    family = codelba_model_family(model)
-    if not family:
+    spec = resolve_codelba_spec(model, catalog)
+    if not spec:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Codelba 模型「{model or '(empty)'}」没有对应的请求体家族文档；"
-                "已实现 sd-2-c5、sd-2-c5-10、seedance2.0-14s。"
-                "未登记模型不会按其它家族字段静默提交。"
+                f"Codelba 模型「{model or '(empty)'}」没有可用的能力字段，也没有本地家族文档。"
+                "请先同步 /openapi/v1/models；未返回时长/画幅/参考上限的模型"
+                "不会按其它版本参数提交。"
             ),
         )
-    spec = CODELBA_FAMILY_SPECS[family]
     images = getattr(payload, "images", []) or []
     videos = getattr(payload, "videos", []) or []
     audios = getattr(payload, "audios", []) or []
-    _reject_resolution(payload)
+    _reject_resolution(payload, spec)
     _reject_unsupported_modes(payload, images, spec)
 
     image_urls = await _resolve_references(images, "图片", spec["max_images"], resolve_ref)
@@ -401,6 +576,9 @@ async def build_codelba_video_request(payload, requested_model, resolve_ref=None
         body["video_refs"] = video_urls
     if audio_urls:
         body["audio_refs"] = audio_urls
+    if spec.get("compliance_supported") and getattr(payload, "compliance_enabled", None) is True:
+        body["compliance_enabled"] = True
+        body["compliance_mode"] = str(getattr(payload, "compliance_mode", "") or "").strip() or "fishnet"
     return body
 
 

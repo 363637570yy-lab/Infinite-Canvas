@@ -359,10 +359,10 @@ const RECOMMENDED_APIS = [
         tagKeys:['api.tagVideoModels','api.tagSeedance'],
         icons:['VID'],
         summaryKey:'api.recommendCodelbaSummary',
-        advantages:['Seedance 2.0 异步视频', '参考图 / 视频 / 音频按模型家族发送', '完成后由后端带 Key 下载成片'],
+        advantages:['Seedance 异步视频', '改名后按 /models 能力字段组包', '参考图 / 视频 / 音频按目录上限发送', '完成后由后端带 Key 下载成片'],
         image_models:[],
         chat_models:[],
-        video_models:['sd-2-c5', 'sd-2-c5-10', 'seedance2.0-14s']
+        video_models:['sd2.5', 'seedance-2.0-fast-720p']
     }
 ];
 const RECOMMEND_GROUPS = [
