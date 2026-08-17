@@ -101,16 +101,21 @@ class MessageBuildTests(unittest.TestCase):
         self.assertIn("图1 / <Picture 1> = 皇帝_ref.png", messages[1]["content"])
         self.assertIn("臣妾参见皇上。", messages[1]["content"])
         self.assertIn("只输出该目标的提示词正文", messages[1]["content"])
+        self.assertIn("生成语言：英文", messages[0]["content"])
         self.assertIn("生成语言：英文", messages[1]["content"])
         self.assertNotIn("http://x/1.png", messages[1]["content"])
 
     def test_convert_messages_honor_chinese_output(self):
         ir = xinghua_ir()
         messages = vpt.build_convert_messages("h3-ref2va", ir, language="zh")
+        self.assertTrue(messages[0]["content"].startswith("生成语言：中文"))
+        self.assertIn("不要因为 skill 样例是英文就改回英文", messages[0]["content"])
         self.assertIn("生成语言：中文", messages[1]["content"])
         self.assertIn("不要翻译", messages[1]["content"])
+        self.assertNotIn("正文全英文", messages[0]["content"])
         self.assertEqual(vpt.normalize_output_language("中文"), "zh")
         self.assertEqual(vpt.normalize_output_language(""), "en")
+        self.assertGreater(vpt._content_units("镜头从门口缓缓推入客厅，保持户型图的空间顺序。" * 8), 200)
 
     def test_convert_image_urls_keep_slot_order(self):
         self.assertEqual(

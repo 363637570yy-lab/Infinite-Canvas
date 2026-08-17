@@ -360,7 +360,8 @@ def normalize_output_language(value):
 def output_language_instruction(language):
     if normalize_output_language(language) == "zh":
         return (
-            "生成语言：中文。描写、动作、场景、运镜说明用中文写。"
+            "生成语言：中文。描写、动作、场景、运镜、声音必须用中文写。"
+            "不要因为 skill 样例是英文就改回英文；样例只示范结构。"
             "段名、对齐行、标签和协议词必须保持 skill 规定的英文，不要翻译："
             "subject_definitions / summary / [reference generation] / fully_preserved / "
             "<Picture N> / <Subject N> / [Shot N] / At MM:SS.mmm / @Image N / is the first frame。"
@@ -374,7 +375,8 @@ def output_language_instruction(language):
 
 
 def build_convert_messages(target_id, ir, source_prompt="", language="en"):
-    system = load_target_skill(target_id)
+    # 语言指令放进 system，避免 skill 里的英文样例压过用户消息。
+    system = output_language_instruction(language) + "\n\n" + load_target_skill(target_id)
     prompt_text = str(source_prompt or ir.get("source_prompt") or "").strip()
     inventory = image_inventory_lines(ir)
     inventory_text = "\n".join(inventory) if inventory else "（没有参考图）"
@@ -460,6 +462,13 @@ def _input_dialogues(ir):
 
 def _has_cjk(text):
     return re.search(r"[\u4e00-\u9fff]", text) is not None
+
+
+def _content_units(text):
+    """拉丁词 + 汉字，避免中文描写被英文词数误判为过短。"""
+    latin = len(re.findall(r"[A-Za-z']+", str(text or "")))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", str(text or "")))
+    return latin + cjk
 
 
 def _check_time_codes(text, duration_s, errors):
@@ -580,7 +589,7 @@ def _validate_h3_ref2va(text, ir, errors, warnings):
     if retention and not any(marker in retention.lower() for marker in _RETENTION_MARKERS):
         warnings.append("retention_analysis 未使用官方关系标记（fully_preserved / partially_preserved / attribute_transfer / weak_reference）")
     detail = _section_body(text, "detailed_description", ["overall_soundscape"])
-    words = len(re.findall(r"[A-Za-z']+", detail))
+    words = _content_units(detail)
     if detail and words < 200:
         warnings.append(f"detailed_description 仅 {words} 词，官方 generation 任务建议 350–500 词")
     _check_time_codes(text, ir.get("duration_s"), errors)
@@ -621,9 +630,9 @@ def _validate_seedance_common(text, ir, errors, warnings, word_limit):
         errors.append("首尾帧声明必须一行一图，禁止合并声明")
     if _PICTURE_TAG.search(text) or _SUBJECT_TAG.search(text) or "[Shot" in text or _TIME_CODE.search(text) or "@图" in text:
         errors.append("残留了 H3 语法（<Picture>/<Subject>/[Shot]/时间码）或 @图N")
-    words = len(re.findall(r"[A-Za-z']+", text))
+    words = _content_units(text)
     if words > word_limit:
-        warnings.append(f"正文 {words} 个英文词，超出建议上限 {word_limit}")
+        warnings.append(f"正文 {words} 词，超出建议上限 {word_limit}")
     quoted = [m.group(1).strip() for m in _CJK_QUOTED.finditer(text) if _has_cjk(m.group(1))]
     if quoted and not _input_dialogues(ir):
         warnings.append("输出里有中文引号台词，但导演本没有台词")
