@@ -10662,11 +10662,16 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
         });
         if(!result.ok){
             console.warn('[提示词转换] 校验未通过，不派生节点', result.errors, result.warnings);
-            showErrorModal(`转换未通过校验：${(result.errors || [])[0] || '未知错误'}`, 'AI 提示词');
+            const errs = (result.errors || []).filter(Boolean);
+            showErrorModal(`转换未通过校验：${errs.join('；') || '未知错误'}`, 'AI 提示词');
             return;
         }
         deriveCanvasVideoPromptNodes(node, target, result);
-        if((result.warnings || []).length) console.warn('[提示词转换] 警告', result.warnings);
+        const warnings = (result.warnings || []).filter(Boolean);
+        if(warnings.length){
+            console.warn('[提示词转换] 提示', warnings);
+            showErrorModal(`已派生新节点，这些只是提示，可直接改提示词：${warnings.join('；')}`, 'AI 提示词');
+        }
         if(btn){ btn.disabled = false; btn.textContent = '已派生 ✓'; setTimeout(() => { btn.textContent = oldLabel; }, 2000); }
         return;
     } catch(e){
@@ -10707,12 +10712,6 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
             sourceNodeId: srcNode.id,
             language: result.language || srcNode.vptOutputLang || 'en',
             warnings: result.warnings || [],
-            // 瘦身中间稿摘要：只留简表要素，不存原文。
-            ir: {
-                shots: (result.ir?.shots || []).length,
-                subjects: (result.ir?.subjects || []).map(item => ({id: item.id, image: item.image})),
-                images: (result.ir?.images || []).map(item => ({slot: item.slot, name: item.name, referenced: item.referenced}))
-            },
             at: Date.now()
         }
     };

@@ -15598,14 +15598,15 @@ async function runVideoPromptTargetConversion(targetId, btn){
         });
         if(!result.ok){
             console.warn('[提示词转换] 校验未通过，不派生工作台', result.errors, result.warnings);
-            toast(`转换未通过校验：${(result.errors || [])[0] || '未知错误'}`);
+            const errs = (result.errors || []).filter(Boolean);
+            toast(`转换未通过校验：${errs.slice(0, 3).join('；') || '未知错误'}`);
             return;
         }
         deriveVideoPromptWorkbench(node, target, result);
-        const warnings = result.warnings || [];
+        const warnings = (result.warnings || []).filter(Boolean);
         if(warnings.length){
-            console.warn('[提示词转换] 警告', warnings);
-            toast(`已派生「${target.label}」工作台（${warnings.length} 条警告）：${warnings[0]}`);
+            console.warn('[提示词转换] 提示', warnings);
+            toast(`已派生「${target.label}」工作台，可手动改。提示：${warnings.slice(0, 3).join('；')}`);
         } else {
             toast(`已派生「${target.label}」工作台`);
         }
@@ -15639,12 +15640,6 @@ function deriveVideoPromptWorkbench(srcNode, target, result){
         sourceNodeId: srcNode.id,
         language: result.language || settings.vptOutputLang || 'en',
         warnings: result.warnings || [],
-        // 瘦身中间稿摘要：只留简表要素（镜头数、人物绑定、图槽），不存原文。
-        ir: {
-            shots: (result.ir?.shots || []).length,
-            subjects: (result.ir?.subjects || []).map(item => ({id: item.id, image: item.image})),
-            images: (result.ir?.images || []).map(item => ({slot: item.slot, name: item.name, referenced: item.referenced}))
-        },
         at: Date.now()
     };
     const runSettings = cloneSmartSettings(smartSettingsForNode(srcNode));

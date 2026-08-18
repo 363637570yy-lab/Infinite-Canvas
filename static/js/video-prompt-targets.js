@@ -127,19 +127,13 @@
         </div>`;
     }
 
-    // 派生工作台上的中间稿简表与校验警告（方案 §4 / §8）。node.videoPromptTarget 由 smart-canvas 派生时写入。
+    // 派生工作台上的目标、语言与校验警告。node.videoPromptTarget 由 smart-canvas 派生时写入。
     function metaRowHtml(node){
         const meta = node?.videoPromptTarget;
         if(!meta || !meta.target) return '';
         const spec = byId(meta.target);
         const parts = [`目标 ${spec?.label || meta.target}`];
         if(meta.language) parts.push(meta.language === 'zh' ? '中文' : '英文');
-        if(meta.ir){
-            if(meta.ir.shots) parts.push(`${meta.ir.shots} 镜`);
-            (meta.ir.subjects || []).forEach(subject => {
-                if(subject?.id) parts.push(`${subject.id}${subject.image ? '=' + subject.image : '（未绑定）'}`);
-            });
-        }
         const warnings = meta.warnings || [];
         const warnHtml = warnings.length
             ? `<span class="vpt-meta-warn" title="${esc(warnings.join('\n'))}">⚠ ${warnings.length} 条警告</span>`

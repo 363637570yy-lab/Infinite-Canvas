@@ -51,7 +51,7 @@ import codelba_protocol as codelba
 import grok2api_protocol as grok2api
 # 本地 H3 网关：画布只发时长/画质/比例，步数等配方在 H3 管理页。
 import h3_protocol as h3
-# 出片提示词目标转换：中间稿抽取、目标校验等纯逻辑（画布出片提示词适配方案）。
+# 出片提示词目标转换：图槽、消息构造、目标校验等纯逻辑。
 import video_prompt_targets as video_prompts
 
 QUIET_ACCESS_PATHS = {
@@ -2875,6 +2875,7 @@ class CanvasLLMRequest(BaseModel):
     provider: str = "comfly"
     ms_model: str = ""
     images: List[str] = []   # 可以是 /output/*.png、/assets/*.png 本地路径 或 http(s) URL 或 data URL
+    image_captions: List[str] = []  # 仅改词通道：与 images 对齐的【图N】说明，不出片
     videos: List[str] = []   # 可以是 /output/*.mp4、/assets/*.mp4 本地路径 或 http(s) URL 或 data URL
 
 class VideoPromptConvertRequest(BaseModel):
@@ -18713,17 +18714,25 @@ async def canvas_llm(payload: CanvasLLMRequest):
         if role in {"user", "assistant"} and content:
             upstream_messages.append({"role": role, "content": content})
     # 构造用户消息：有图片/视频时用 OpenAI/Gemini 多模态格式
-    image_inputs = [img for img in (payload.images or []) if is_image_reference_value(img)]
+    captions = [str(item or "").strip() for item in (payload.image_captions or [])]
+    image_pairs = []
+    for idx, img in enumerate(payload.images or []):
+        if not is_image_reference_value(img):
+            continue
+        image_pairs.append((img, captions[idx] if idx < len(captions) else ""))
+    image_inputs = [img for img, _caption in image_pairs]
     video_inputs = [video for video in (payload.videos or []) if is_video_reference_value(video)]
     if image_inputs or video_inputs:
         content_parts = [{"type": "text", "text": payload.message}]
         ok_imgs = 0
-        for img in image_inputs[:8]:
+        for img, caption in image_pairs[:8]:
             if not img or not isinstance(img, str):
                 continue
             ref_url = media_reference_to_url(img, max_image_size=1024)
             if not ref_url:
                 continue
+            if caption:
+                content_parts.append({"type": "text", "text": caption})
             content_parts.append({"type": "image_url", "image_url": {"url": ref_url}})
             ok_imgs += 1
         ok_videos = 0
@@ -18785,7 +18794,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
 async def video_prompt_targets_list():
     return {"targets": video_prompts.list_video_prompt_targets()}
 
-async def _video_prompt_llm_text(provider_id, model, messages, images=None):
+async def _video_prompt_llm_text(provider_id, model, messages, images=None, image_captions=None):
     """把转换消息映射成 canvas-llm 请求，在进程内复用其全部协议分支。"""
     system = ""
     history = []
@@ -18801,6 +18810,7 @@ async def _video_prompt_llm_text(provider_id, model, messages, images=None):
     if len(last_user["content"]) > LLM_MESSAGE_MAX_LENGTH:
         raise HTTPException(status_code=400, detail="导演本过长，转换消息超出文本通道上限，请精简后重试。")
     image_urls = [str(url).strip() for url in (images or []) if str(url or "").strip()]
+    captions = [str(item or "").strip() for item in (image_captions or []) if str(item or "").strip()]
     llm_payload = CanvasLLMRequest(
         message=last_user["content"],
         system_prompt=system,
@@ -18808,6 +18818,7 @@ async def _video_prompt_llm_text(provider_id, model, messages, images=None):
         messages=history,
         provider=provider_id or "comfly",
         images=image_urls,
+        image_captions=captions,
     )
     result = await canvas_llm(llm_payload)
     return video_prompts.strip_model_output((result or {}).get("text") or "")
@@ -18820,8 +18831,10 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not payload.prompt.strip():
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
-    ir = video_prompts.extract_canvas_ir(payload.prompt, images, payload.duration)
-    image_urls = video_prompts.convert_image_urls(images)
+    ctx = video_prompts.build_convert_context(payload.prompt, images, payload.duration)
+    attachments = video_prompts.convert_image_attachments(ctx)
+    image_urls = [url for url, _caption in attachments]
+    image_captions = [caption for _url, caption in attachments]
     chat_provider = video_prompts.pick_chat_provider(
         [public_provider(item) for item in load_api_providers()],
         payload.provider,
@@ -18836,26 +18849,32 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     language = video_prompts.normalize_output_language(payload.language)
     text = await _video_prompt_llm_text(
         chat_provider_id, chat_model,
-        video_prompts.build_convert_messages(target, ir, payload.prompt, language),
+        video_prompts.build_convert_messages(target, ctx, payload.prompt, language),
         images=image_urls,
+        image_captions=image_captions,
     )
-    checked = video_prompts.validate_target_output(target, text, ir, language)
+    checked = video_prompts.validate_target_output(target, text, ctx, language)
     if checked["errors"]:
         # 校验失败带着错误自动重跑一次；再失败则如实返回，前端不派生工作台。
         text = await _video_prompt_llm_text(
             chat_provider_id, chat_model,
-            video_prompts.build_repair_messages(target, ir, text, checked["errors"], language),
+            video_prompts.build_repair_messages(target, ctx, text, checked["errors"], language),
             images=image_urls,
+            image_captions=image_captions,
         )
-        checked = video_prompts.validate_target_output(target, text, ir, language)
+        checked = video_prompts.validate_target_output(target, text, ctx, language)
+    ok = not checked["errors"]
+    print(
+        f"[vpt-convert] target={target} lang={language} model={chat_model} "
+        f"ok={ok} errors={checked['errors'][:4]} hints={checked['warnings'][:4]}"
+    )
     return {
-        "ok": not checked["errors"],
+        "ok": ok,
         "target": target,
         "prompt": text,
         "language": language,
         "errors": checked["errors"],
-        "warnings": video_prompts.convert_input_warnings(ir, chat_model, image_urls) + checked["warnings"],
-        "ir": ir,
+        "warnings": video_prompts.convert_input_warnings(ctx, chat_model, image_urls) + checked["warnings"],
     }
 
 # --- 对话管理 ---
