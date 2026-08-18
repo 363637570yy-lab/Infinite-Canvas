@@ -505,40 +505,73 @@ function smartVideoFallbackHtml(url, attrs=''){
 function smartVideoPlayerHtml(url, attrs=''){
     const original = smartOriginalMediaUrl(url);
     const safe = escapeHtml(displayMediaUrl({url:original}));
-    return `<video src="${safe}" data-url="${escapeAttr(original)}" data-inline-video-active="1" controls autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
+    return `<video src="${safe}" data-url="${escapeAttr(original)}" data-inline-video-active="1" autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
+}
+function smartVideoCardWrap(el){
+    return el?.closest?.('.media-video-card,.video-thumb,.image-wrap,.thumb-item') || el?.parentElement || null;
+}
+function smartVideoPlayButtonHidden(video){
+    return Boolean(video && !video.paused && !video.ended);
+}
+function syncSmartVideoPlayButton(videoOrWrap){
+    const video = videoOrWrap?.tagName?.toLowerCase?.() === 'video'
+        ? videoOrWrap
+        : videoOrWrap?.querySelector?.('video[data-url]');
+    const wrap = smartVideoCardWrap(video || videoOrWrap);
+    if(!wrap) return;
+    const playing = smartVideoPlayButtonHidden(video);
+    wrap.classList.toggle('is-video-playing', playing);
+    const btn = wrap.querySelector('.smart-video-play');
+    if(btn) btn.style.display = playing ? 'none' : '';
+}
+function bindSmartVideoPlaybackUi(video){
+    if(!video || video.dataset.videoPlaybackUiBound === '1') return;
+    video.dataset.videoPlaybackUiBound = '1';
+    const sync = () => syncSmartVideoPlayButton(video);
+    video.addEventListener('play', sync);
+    video.addEventListener('playing', sync);
+    video.addEventListener('pause', sync);
+    video.addEventListener('ended', sync);
+    sync();
 }
 function smartActivateVideoPreview(target){
-    const root = target?.closest?.('.media-video-card,.video-thumb,.image-wrap,.thumb-item') || target?.parentElement || null;
-    const img = target?.matches?.('img[data-preview-kind="video"]') ? target : root?.querySelector?.('img[data-preview-kind="video"]');
-    if(!img){
-        const fallback = target?.matches?.('video[data-url]') ? target : root?.querySelector?.('video[data-url]');
-        if(fallback){
-            fallback.controls = true;
-            fallback.muted = false;
-            fallback.play?.().catch(() => {});
-            return true;
-        }
-        return false;
-    }
-    const original = smartOriginalMediaUrl(img.dataset.originalSrc || img.dataset.url || img.getAttribute('src') || '');
-    if(!original) return false;
+    const root = smartVideoCardWrap(target) || target?.parentElement || null;
+    const existing = (target?.matches?.('video[data-url]') ? target : null) || root?.querySelector?.('video[data-url]');
     const itemEl = target?.closest?.('[data-image-index]') || root?.closest?.('[data-image-index]') || root;
     const nodeEl = target?.closest?.('.image-node') || root?.closest?.('.image-node');
     const node = nodes.find(n => n.id === nodeEl?.dataset.id);
     const imageIndex = Number(itemEl?.dataset?.imageIndex ?? 0);
     const image = node?.images?.[imageIndex];
+    if(existing){
+        existing.muted = false;
+        bindSmartVideoPlaybackUi(existing);
+        if(image) image._inlineVideoActive = true;
+        if(!existing.paused && !existing.ended){
+            existing.pause?.();
+            syncSmartVideoPlayButton(existing);
+            return true;
+        }
+        existing.play?.().catch(() => {});
+        syncSmartVideoPlayButton(existing);
+        return true;
+    }
+    const img = target?.matches?.('img[data-preview-kind="video"]') ? target : root?.querySelector?.('img[data-preview-kind="video"]');
+    if(!img) return false;
+    const original = smartOriginalMediaUrl(img.dataset.originalSrc || img.dataset.url || img.getAttribute('src') || '');
+    if(!original) return false;
     if(image) image._inlineVideoActive = true;
     const tpl = document.createElement('template');
     tpl.innerHTML = smartVideoPlayerHtml(original);
     const video = tpl.content.firstElementChild;
     if(!video) return false;
     img.replaceWith(video);
-    video.parentElement?.querySelector?.('.smart-video-play')?.style?.setProperty('display', 'none');
+    bindSmartVideoPlaybackUi(video);
     video.addEventListener('ended', () => {
         if(image) image._inlineVideoActive = true;
         video.dataset.inlineVideoActive = '1';
     });
     video.play?.().catch(() => {});
+    syncSmartVideoPlayButton(video);
     return true;
 }
 function isSmartPreviewImage(img){
@@ -555,7 +588,12 @@ function applySmartPreviewImageFallback(img){
         const tpl = document.createElement('template');
         tpl.innerHTML = smartVideoFallbackHtml(original, img.dataset.videoFallbackAttrs || '');
         const el = tpl.content.firstElementChild;
-        if(el) img.replaceWith(el);
+        if(!el) return;
+        if(img.dataset.kind) el.dataset.kind = img.dataset.kind;
+        if(img.dataset.url && !el.dataset.url) el.dataset.url = img.dataset.url;
+        img.replaceWith(el);
+        bindSmartVideoPlaybackUi(el);
+        syncSmartVideoPlayButton(el);
         return;
     }
     if(original && img.getAttribute('src') !== original) img.src = original;
@@ -7010,7 +7048,7 @@ function audioRefsOnly(refs){
 function thumbMediaHtml(img){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="media-thumb file-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="${escapeAttr(mediaKindForItem(img))}"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i><span>${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</span></div>`;
     if(isAudioMediaItem(img)) return `<div class="media-thumb audio-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="audio"><i data-lucide="file-audio"></i><span>${escapeHtml(img.name || 'Audio')}</span></div>`;
-    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="播放"><i data-lucide="play"></i></button>`}</div>`;
+    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb${isInlineVideoActive(img) ? ' is-video-playing' : ''}">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="播放"><i data-lucide="play"></i></button></div>`;
     return smartPreviewImgHtml(img, 512, 'draggable="false"');
 }
 function imageResolutionLabel(img){
@@ -7081,7 +7119,7 @@ function updateImageResolutionBadgeElement(itemEl, img){
 function singleMediaHtml(img, w, h){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i></div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
     if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="file-audio"></i></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
-    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="播放"><i data-lucide="play"></i></button>`}</div>`;
+    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card${isInlineVideoActive(img) ? ' is-video-playing' : ''}" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="播放"><i data-lucide="play"></i></button></div>`;
     return smartPreviewImgHtml(img, 768, `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
 }
 function smartNodeHasLiveMedia(node){
@@ -7157,6 +7195,10 @@ function transplantSmartMediaElements(oldNodeEl, newNodeEl){
         newMedia.replaceWith(oldMedia);
         restoreMediaPlaybackState(oldMedia, state);
         requestAnimationFrame(() => restoreMediaPlaybackState(oldMedia, state));
+        if(selector === 'video'){
+            bindSmartVideoPlaybackUi(oldMedia);
+            syncSmartVideoPlayButton(oldMedia);
+        }
     });
 }
 function captureMediaPlaybackStates(){
@@ -7545,12 +7587,16 @@ function renderSmartCanvasLog(){
         </div>`;
     }).join('') : `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
     bindSmartPreviewImageFallbacks(smartLogList);
-    smartLogList.querySelectorAll('[data-url]').forEach(el => {
-        el.onclick = e => {
+    if(smartLogList.dataset.logThumbClickBound !== '1'){
+        smartLogList.dataset.logThumbClickBound = '1';
+        smartLogList.addEventListener('click', e => {
+            if(e.target.closest?.('[data-log-delete]')) return;
+            const el = e.target.closest?.('.log-thumbs [data-url], .log-thumbs [data-original-src]');
+            if(!el || !smartLogList.contains(el)) return;
             e.stopPropagation();
-            smartLogPreviewNode(el.dataset.url, el.dataset.kind || 'image');
-        };
-    });
+            smartLogPreviewNode(el.dataset.url || el.dataset.originalSrc, el.dataset.kind || 'image');
+        });
+    }
     const bindLogCopy = (selector, key) => {
         smartLogList.querySelectorAll(selector).forEach(el => {
             el.onclick = async e => {
@@ -8910,6 +8956,7 @@ function bindNodeEvents(){
                 smartActivateVideoPreview(btn);
             }, true);
         });
+        el.querySelectorAll('video[data-url]').forEach(bindSmartVideoPlaybackUi);
         el.querySelectorAll('.thumb-item,.image-wrap').forEach(item => {
             const thumbTarget = () => {
                 const targetNodeId = item.dataset.refNodeId || id;
@@ -8922,26 +8969,33 @@ function bindNodeEvents(){
                 e.preventDefault();
             });
             item.addEventListener('mousedown', e => {
-                if(e.target.closest('video,audio')) return;
+                if(e.target.closest('audio')) return;
                 if(e.button !== 0 || e.target.closest('.image-delete,.image-name-badge')) return;
+                const target = thumbTarget();
+                if(mediaKindForItem(target.image || {}) === 'video'){
+                    if(item.classList.contains('image-wrap')) e.stopPropagation();
+                    if(e.detail < 2) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    clearImageClickTimer();
+                    suppressImageClickUntil = Date.now() + 260;
+                    smartActivateVideoPreview(item);
+                    return;
+                }
                 if(e.detail < 2) return;
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
                 clearImageClickTimer();
                 suppressImageClickUntil = Date.now() + 260;
-                const target = thumbTarget();
-                if(mediaKindForItem(target.image || {}) === 'video'){
-                    smartActivateVideoPreview(item);
-                    return;
-                }
                 selectedId = id;
                 selectedIds = [];
                 selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
                 openImagePreviewSmart(target.targetNodeId, target.imageIndex);
             }, true);
             item.addEventListener('click', e => {
-                if(e.target.closest('video,audio')) return;
+                if(e.target.closest('audio')) return;
                 if(e.target.closest('.image-delete,.image-name-badge')) return;
                 e.preventDefault();
                 e.stopPropagation();
@@ -8979,7 +9033,7 @@ function bindNodeEvents(){
                 }, 220);
             });
         item.addEventListener('dblclick', e => {
-            if(e.target.closest('video,audio')) return;
+            if(e.target.closest('audio')) return;
             if(e.target.closest('.image-delete,.image-name-badge')) return;
             e.preventDefault();
             e.stopPropagation();
@@ -8999,7 +9053,7 @@ function bindNodeEvents(){
         });
         el.querySelectorAll('.thumb-item,.smart-group-single-thumb').forEach(item => {
             item.addEventListener('mousedown', e => {
-                if(e.target.closest('video,audio')) return;
+                if(e.target.closest('audio')) return;
                 if(e.button !== 0 || e.target.closest('.mini-x')) return;
                 if(e.detail >= 2) return;
                 const node = nodes.find(n => n.id === id);

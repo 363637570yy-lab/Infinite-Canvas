@@ -214,7 +214,9 @@
             }
             match.replaceWith(oldMedia);
             if (oldTag === 'video') {
-                oldMedia.parentElement?.querySelector?.('.canvas-video-play')?.style?.setProperty('display', 'none');
+                const playBtn = oldMedia.parentElement?.querySelector?.('.canvas-video-play');
+                if (playBtn) playBtn.style.display = playButtonHiddenForVideo(oldMedia) ? 'none' : '';
+                oldMedia.parentElement?.classList?.toggle('is-video-playing', playButtonHiddenForVideo(oldMedia));
             }
         });
     }
@@ -242,6 +244,7 @@
         video.replaceWith(img);
         const playBtn = wrap?.querySelector?.('.canvas-video-play');
         if (playBtn) playBtn.style.display = '';
+        wrap?.classList?.remove('is-video-playing');
         if (typeof helpers.onRestored === 'function') helpers.onRestored(img, wrap);
         return true;
     }
@@ -273,6 +276,10 @@
             }
         });
         return unloaded;
+    }
+
+    function playButtonHiddenForVideo(video) {
+        return Boolean(video && !video.paused && !video.ended);
     }
 
     function nodeHasReusableMedia(node) {
@@ -307,6 +314,7 @@
         deactivateVideo,
         enforceSingleLiveVideo,
         unloadOffscreenVideos,
+        playButtonHiddenForVideo,
         nodeHasReusableMedia
     };
 });
