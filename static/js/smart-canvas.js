@@ -15644,13 +15644,14 @@ async function runVideoPromptTargetConversion(targetId, btn){
     }
     const chatProvider = chatPick.provider;
     const chatModel = chatPick.model;
+    const durationS = vpt.normalizeDurationS ? vpt.normalizeDurationS(settings.videoDuration) : Math.max(1, Math.min(60, Number(settings.videoDuration) || 5));
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {
         const result = await vpt.convert({
             target: targetId,
             prompt,
-            duration: Math.max(1, Math.min(60, Number(settings.videoDuration) || 5)),
+            duration: durationS,
             images,
             provider: chatProvider,
             model: chatModel,
@@ -15662,7 +15663,7 @@ async function runVideoPromptTargetConversion(targetId, btn){
             toast(`转换未通过校验：${errs.slice(0, 3).join('；') || '未知错误'}`);
             return;
         }
-        deriveVideoPromptWorkbench(node, target, result);
+        deriveVideoPromptWorkbench(node, target, result, durationS);
         const warnings = (result.warnings || []).filter(Boolean);
         if(warnings.length){
             console.warn('[提示词转换] 提示', warnings);
@@ -15676,7 +15677,7 @@ async function runVideoPromptTargetConversion(targetId, btn){
         if(btn){ btn.disabled = false; btn.textContent = oldLabel; }
     }
 }
-function deriveVideoPromptWorkbench(srcNode, target, result){
+function deriveVideoPromptWorkbench(srcNode, target, result, durationS){
     pushUndo();
     const rect = nodeRect(srcNode);
     const copy = cloneSmartNode(srcNode, (Number(rect.width) || 260) + 120, 40);
@@ -15695,13 +15696,19 @@ function deriveVideoPromptWorkbench(srcNode, target, result){
     delete copy.isHistoryGroup;
     delete copy.blockedInputRefs;
     copy.inputNodeIds = [];
-    copy.videoPromptTarget = {
-        target: target.id,
-        sourceNodeId: srcNode.id,
-        language: result.language || settings.vptOutputLang || 'en',
-        warnings: result.warnings || [],
-        at: Date.now()
-    };
+    copy.videoPromptTarget = window.VideoPromptTargets?.buildOriginMeta
+        ? window.VideoPromptTargets.buildOriginMeta(target, result, {
+            sourceNodeId: srcNode.id,
+            duration_s: durationS ?? settings.videoDuration
+        })
+        : {
+            target: target.id,
+            sourceNodeId: srcNode.id,
+            language: result.language || settings.vptOutputLang || 'en',
+            warnings: result.warnings || [],
+            at: Date.now(),
+            duration_s: Math.max(1, Math.min(60, Number(durationS ?? settings.videoDuration) || 5))
+        };
     const runSettings = cloneSmartSettings(smartSettingsForNode(srcNode));
     runSettings.engine = 'api';
     runSettings.apiKind = 'video';

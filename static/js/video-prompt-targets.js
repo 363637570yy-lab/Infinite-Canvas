@@ -20,6 +20,9 @@
             '.vpt-btn[disabled]{opacity:.5;cursor:wait;}',
             '.vpt-meta{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;opacity:.78;margin-top:4px;}',
             '.vpt-meta-warn{color:#c8862d;cursor:help;}',
+            '.node-title-wrap{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1;overflow:hidden;}',
+            '.vpt-origin{display:inline-flex;flex-wrap:nowrap;gap:4px;align-items:center;min-width:0;}',
+            '.vpt-chip{flex:0 0 auto;font-size:10px;line-height:1;padding:3px 7px;border-radius:999px;border:1px solid rgba(128,128,148,.4);letter-spacing:0;text-transform:none;font-weight:700;white-space:nowrap;opacity:.88;}',
             '.vpt-chat-row{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}',
             '.vpt-chat-row select{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}',
             '.vpt-group{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}'
@@ -71,6 +74,52 @@
 
     function normalizeLang(value){
         return String(value || '').toLowerCase() === 'zh' ? 'zh' : 'en';
+    }
+
+    function normalizeDurationS(value){
+        const n = Number(value);
+        if(!Number.isFinite(n) || n <= 0) return 0;
+        return Math.max(1, Math.min(60, Math.round(n)));
+    }
+
+    function durationChipText(durationS){
+        const seconds = normalizeDurationS(durationS);
+        return seconds ? `按 ${seconds}s` : '';
+    }
+
+    // 派生节点落盘的来源：目标 + 改词时按几秒写稿。不记出片模型，也不记改词耗时。
+    function buildOriginMeta(target, result, extras){
+        const spec = typeof target === 'string' ? byId(target) : target;
+        const extra = extras || {};
+        const durationS = normalizeDurationS(extra.duration_s ?? result?.duration_s);
+        const meta = {
+            target: spec?.id || result?.target || String(target || '').trim(),
+            sourceNodeId: extra.sourceNodeId || '',
+            language: normalizeLang(result?.language || extra.language),
+            warnings: Array.isArray(result?.warnings) ? result.warnings : [],
+            at: Date.now()
+        };
+        if(durationS) meta.duration_s = durationS;
+        return meta;
+    }
+
+    function originMeta(node){
+        const meta = node?.videoPromptTarget;
+        return meta && meta.target ? meta : null;
+    }
+
+    function originChipsHtml(node, fallbackNode){
+        const meta = originMeta(node) || originMeta(fallbackNode);
+        if(!meta) return '';
+        const spec = byId(meta.target);
+        const label = spec?.label || meta.target;
+        const group = spec?.group || '';
+        const durationText = durationChipText(meta.duration_s);
+        const chips = [`<span class="vpt-chip" title="${esc(group ? `${group} · ${label}` : label)}">${esc(label)}</span>`];
+        if(durationText){
+            chips.push(`<span class="vpt-chip" title="改词时按 ${normalizeDurationS(meta.duration_s)} 秒写稿">${esc(durationText)}</span>`);
+        }
+        return `<span class="vpt-origin">${chips.join('')}</span>`;
     }
 
     function chatSelectHtml(providers, selectedProvider, selectedModel, selectedLang){
@@ -134,6 +183,8 @@
         const spec = byId(meta.target);
         const parts = [`目标 ${spec?.label || meta.target}`];
         if(meta.language) parts.push(meta.language === 'zh' ? '中文' : '英文');
+        const durationText = durationChipText(meta.duration_s);
+        if(durationText) parts.push(durationText);
         const warnings = meta.warnings || [];
         const warnHtml = warnings.length
             ? `<span class="vpt-meta-warn" title="${esc(warnings.join('\n'))}">⚠ ${warnings.length} 条警告</span>`
@@ -207,7 +258,7 @@
         return '';
     }
 
-    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang, firstLastExtraImagesMessage, rejectFirstLastExtraImages};
+    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang, normalizeDurationS, durationChipText, buildOriginMeta, originMeta, originChipsHtml, firstLastExtraImagesMessage, rejectFirstLastExtraImages};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

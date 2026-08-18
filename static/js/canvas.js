@@ -6194,6 +6194,9 @@ function renderNode(node){
     };
     const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
     const displayTitle = node.type === 'image' && node.url ? nodeTitleForMedia(node) : title;
+    const originHtml = (node.type === 'prompt' && window.VideoPromptTargets?.originChipsHtml)
+        ? window.VideoPromptTargets.originChipsHtml(node, canvasPromptOriginFallback(node))
+        : '';
     // 失败徽章只在一键运行模式中显示，单节点失败已通过 alert 提示
     const showStatus = ['generator','msgen','comfy','ltxDirector','llm','video','rh'].includes(node.type) && node.runStatus
         && (node.runStatus !== 'failed' || node._cascadeFailed);
@@ -6201,7 +6204,7 @@ function renderNode(node){
         const label = { queued:'排队中', running:'运行中', done:'完成', failed:'失败' }[node.runStatus] || '';
         return `<span class="node-run-status ${node.runStatus}"><span class="dot"></span>${escapeHtml(label)}${node._cascadeIdx?' '+node._cascadeIdx:''}</span>`;
     })() : '';
-    el.innerHTML = `<div class="node-head"><span class="node-title">${displayTitle}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
+    el.innerHTML = `<div class="node-head"><span class="node-title-wrap"><span class="node-title">${displayTitle}</span>${originHtml}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
     const body = document.createElement('div');
     body.className = 'node-body';
     if(node.type === 'image') {
@@ -10722,13 +10725,14 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
     }
     const providerId = chatPick.provider;
     const chatModel = chatPick.model;
+    const durationS = vpt.normalizeDurationS ? vpt.normalizeDurationS(node.duration) : Math.max(1, Math.min(60, Number(node.duration) || 5));
     const oldLabel = btn ? btn.textContent : '';
     if(btn){ btn.disabled = true; btn.textContent = '转换中…'; }
     try {
         const result = await vpt.convert({
             target: target.id,
             prompt,
-            duration: Math.max(1, Math.min(60, Number(node.duration) || 5)),
+            duration: durationS,
             images,
             provider: providerId,
             model: chatModel,
@@ -10740,7 +10744,7 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
             showErrorModal(`转换未通过校验：${errs.join('；') || '未知错误'}`, 'AI 提示词');
             return;
         }
-        deriveCanvasVideoPromptNodes(node, target, result);
+        deriveCanvasVideoPromptNodes(node, target, result, durationS);
         const warnings = (result.warnings || []).filter(Boolean);
         if(warnings.length){
             console.warn('[提示词转换] 提示', warnings);
@@ -10753,10 +10757,32 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
     }
     if(btn){ btn.disabled = false; btn.textContent = oldLabel; }
 }
-function deriveCanvasVideoPromptNodes(srcNode, target, result){
+function canvasPromptOriginFallback(promptNode){
+    if(!promptNode?.id) return null;
+    for(const conn of connections){
+        if(conn.from !== promptNode.id) continue;
+        const dest = nodes.find(n => n.id === conn.to);
+        if(dest?.videoPromptTarget?.target) return dest;
+    }
+    return null;
+}
+function deriveCanvasVideoPromptNodes(srcNode, target, result, durationS){
     const nx = (Number(srcNode.x) || 0) + 460;
     const ny = (Number(srcNode.y) || 0) + 60;
-    const promptNode = {id:uid('pr'), type:'prompt', x:nx - 340, y:ny - 190, text:String(result.prompt || '')};
+    const origin = window.VideoPromptTargets?.buildOriginMeta
+        ? window.VideoPromptTargets.buildOriginMeta(target, result, {
+            sourceNodeId: srcNode.id,
+            duration_s: durationS ?? srcNode.duration
+        })
+        : {
+            target: target.id,
+            sourceNodeId: srcNode.id,
+            language: result.language || srcNode.vptOutputLang || 'en',
+            warnings: result.warnings || [],
+            at: Date.now(),
+            duration_s: Math.max(1, Math.min(60, Number(durationS ?? srcNode.duration) || 5))
+        };
+    const promptNode = {id:uid('pr'), type:'prompt', x:nx - 340, y:ny - 190, text:String(result.prompt || ''), videoPromptTarget:{...origin}};
     const videoNode = {
         id:uid('vid'),
         type:'video',
@@ -10781,13 +10807,7 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result){
         vptChatProvider:srcNode.vptChatProvider || '',
         vptChatModel:srcNode.vptChatModel || '',
         vptOutputLang:srcNode.vptOutputLang || 'en',
-        videoPromptTarget:{
-            target: target.id,
-            sourceNodeId: srcNode.id,
-            language: result.language || srcNode.vptOutputLang || 'en',
-            warnings: result.warnings || [],
-            at: Date.now()
-        }
+        videoPromptTarget:{...origin}
     };
     const modelPick = window.VideoPromptTargets?.pickVideoModelPreset?.(target, apiProviders);
     if(modelPick){
