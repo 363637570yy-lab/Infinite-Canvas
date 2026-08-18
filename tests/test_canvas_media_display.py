@@ -105,6 +105,53 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertFalse(eval_module("api.shouldRestorePreviewSrc('', '/api/media-preview?w=768&url=%2Fa.png')"))
         self.assertTrue(eval_module("api.shouldRestorePreviewSrc('/output/a.png', '/api/media-preview?w=768&url=%2Fa.png')"))
         self.assertFalse(eval_module("api.shouldRestorePreviewSrc('/api/media-preview?w=768&url=%2Fa.png', '/api/media-preview?w=768&url=%2Fa.png')"))
+        placeholder = eval_module("api.PREVIEW_PLACEHOLDER_SRC")
+        self.assertTrue(str(placeholder).startswith("data:image/gif;base64,"))
+        self.assertTrue(eval_module("api.isPreviewPlaceholderSrc(api.PREVIEW_PLACEHOLDER_SRC)"))
+        self.assertTrue(eval_module("api.isPreviewPlaceholderSrc('')"))
+        self.assertFalse(eval_module("api.shouldRestorePreviewSrc(api.PREVIEW_PLACEHOLDER_SRC, '/api/media-preview?w=768&url=%2Fa.png')"))
+
+    def test_unmount_keeps_placeholder_src(self):
+        result = eval_module(
+            """(() => {
+                const classes = new Set();
+                const img = {
+                    classList: {
+                        add: (name) => classes.add(name),
+                        remove: (name) => classes.delete(name),
+                        contains: (name) => classes.has(name)
+                    },
+                    dataset: {},
+                    attrs: {src: '/api/media-preview?w=768&url=%2Foutput%2Fa.png'},
+                    getAttribute(name) { return this.attrs[name] || ''; },
+                    setAttribute(name, value) { this.attrs[name] = value; },
+                    removeAttribute(name) { delete this.attrs[name]; }
+                };
+                const changed = api.unmountPreviewImage(img);
+                return {
+                    changed,
+                    src: img.attrs.src,
+                    unmounted: img.dataset.mediaUnmounted,
+                    deferred: classes.has('canvas-media-deferred'),
+                    placeholder: api.isPreviewPlaceholderSrc(img.attrs.src)
+                };
+            })()"""
+        )
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["placeholder"])
+        self.assertEqual(result["unmounted"], "1")
+        self.assertTrue(result["deferred"])
+
+    def test_canvas_asset_thumbs_set_src_eagerly(self):
+        source = CANVAS_JS.read_text(encoding="utf-8")
+        css = (ROOT / "static" / "css" / "canvas.css").read_text(encoding="utf-8")
+        self.assertIn("canvasPreviewImgHtml(thumbUrl, 512, 'class=\"canvas-asset-thumb\" alt=\"\"', true)", source)
+        self.assertIn("canvasVideoPreviewHtml(item?.url || '', 512, 'class=\"canvas-asset-thumb\" alt=\"\"', true)", source)
+        self.assertIn("mountAllDeferredPreviews", source)
+        self.assertNotIn('alt="video output"', source)
+        self.assertNotIn('alt="generated output"', source)
+        self.assertIn(":has(> .output-img-wrap:only-child)", css)
+        self.assertIn(".canvas-asset-thumb { width:100%; height:100%; object-fit:cover; display:block; background:var(--soft-2); }", css)
 
     def test_canvas_wires_phase_two_hooks(self):
         source = CANVAS_JS.read_text(encoding="utf-8")

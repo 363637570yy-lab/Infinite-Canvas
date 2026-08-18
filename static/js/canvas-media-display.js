@@ -90,8 +90,16 @@
         return { start: n - eager, end: n, hidden: n - eager };
     }
 
+    // 1x1 透明 GIF：离屏卸载时保留合法 src，避免浏览器把无 src 的 img 画成带 alt 的碎图图标。
+    const PREVIEW_PLACEHOLDER_SRC = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+    function isPreviewPlaceholderSrc(src) {
+        const text = String(src || '');
+        return !text || text === PREVIEW_PLACEHOLDER_SRC;
+    }
+
     function shouldRestorePreviewSrc(src, preview) {
-        return Boolean(preview && src && src !== preview);
+        return Boolean(preview && src && src !== preview && !isPreviewPlaceholderSrc(src));
     }
 
     function restorePreviewSources(root) {
@@ -125,9 +133,19 @@
         if (!img) return false;
         img.classList.add('canvas-media-deferred');
         if (img.dataset) img.dataset.mediaUnmounted = '1';
-        if (!img.getAttribute('src')) return false;
-        img.removeAttribute('src');
+        const src = img.getAttribute('src') || '';
+        if (isPreviewPlaceholderSrc(src)) return false;
+        img.setAttribute('src', PREVIEW_PLACEHOLDER_SRC);
         return true;
+    }
+
+    function mountAllDeferredPreviews(root) {
+        if (!root || !root.querySelectorAll) return 0;
+        let mounted = 0;
+        root.querySelectorAll('img[data-preview-src]').forEach(img => {
+            if (mountPreviewImage(img)) mounted += 1;
+        });
+        return mounted;
     }
 
     function syncMountedPreviews(root, nodes, viewport, boardW, boardH, fallbackSizeFor) {
@@ -267,6 +285,8 @@
         VIEW_MARGIN_PX,
         FALLBACK_NODE_HEIGHT,
         OUTPUT_GRID_EAGER_COUNT,
+        PREVIEW_PLACEHOLDER_SRC,
+        isPreviewPlaceholderSrc,
         shouldSwapCanvasImageToOriginal,
         worldViewRect,
         nodeWorldRect,
@@ -281,6 +301,7 @@
         restorePreviewSources,
         mountPreviewImage,
         unmountPreviewImage,
+        mountAllDeferredPreviews,
         syncMountedPreviews,
         transplantReusableMedia,
         deactivateVideo,

@@ -51,11 +51,17 @@ function canvasMediaPreviewUrl(url, size=512){
     const width = Math.max(64, Math.min(2048, Math.round(Number(size) || 512)));
     return `/api/media-preview?w=${width}&url=${encodeURIComponent(raw)}`;
 }
-function canvasPreviewImgHtml(url, size=512, attrs=''){
+const CANVAS_PREVIEW_PLACEHOLDER_SRC = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+function canvasPreviewPlaceholderSrc(){
+    return window.CanvasMediaDisplay?.PREVIEW_PLACEHOLDER_SRC || CANVAS_PREVIEW_PLACEHOLDER_SRC;
+}
+function canvasPreviewImgHtml(url, size=512, attrs='', eager=false){
     const original = canvasOriginalMediaUrl(url);
     const preview = canvasMediaPreviewUrl(original, size);
-    // 先不写 src：由 syncMountedPreviews 在进视口后再挂上，避免离屏节点解码。
-    return `<img loading="lazy" decoding="async" class="canvas-media-deferred" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}"${attrs ? ` ${attrs}` : ''}>`;
+    // 画布节点默认先挂透明占位，进视口后再换成预览档。资产库/日志等面板必须 eager，否则永远不会被 syncMountedPreviews 挂上。
+    const src = eager ? preview : canvasPreviewPlaceholderSrc();
+    const cls = eager ? '' : 'canvas-media-deferred';
+    return `<img src="${escapeAttr(src)}" loading="lazy" decoding="async"${cls ? ` class="${cls}"` : ''} data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}"${attrs ? ` ${attrs}` : ''}>`;
 }
 function loadCanvasOriginalImageDimensions(url){
     const src = String(url || '');
@@ -67,10 +73,12 @@ function loadCanvasOriginalImageDimensions(url){
         img.src = src;
     });
 }
-function canvasVideoPreviewHtml(url, size=512, attrs=''){
+function canvasVideoPreviewHtml(url, size=512, attrs='', eager=false){
     const original = canvasOriginalMediaUrl(url);
     const preview = canvasMediaPreviewUrl(original, size);
-    return `<img loading="lazy" decoding="async" class="canvas-media-deferred" data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}" data-preview-kind="video"${attrs ? ` ${attrs}` : ''}>`;
+    const src = eager ? preview : canvasPreviewPlaceholderSrc();
+    const cls = eager ? '' : 'canvas-media-deferred';
+    return `<img src="${escapeAttr(src)}" loading="lazy" decoding="async"${cls ? ` class="${cls}"` : ''} data-preview-src="${escapeAttr(preview)}" data-original-src="${escapeAttr(original)}" data-url="${escapeAttr(original)}" data-preview-kind="video"${attrs ? ` ${attrs}` : ''}>`;
 }
 function canvasVideoFallbackHtml(url, attrs=''){
     const original = canvasOriginalMediaUrl(url);
@@ -137,6 +145,26 @@ function bindCanvasVideoPreviewTriggers(container){
             canvasActivateVideoPreview(btn.closest('.media-card,.image-preview-wrap,.output-img-wrap') || btn);
         }, true);
     });
+    const wraps = [...(container.querySelectorAll?.('.video-card,.output-img-wrap') || [])];
+    if(container.matches?.('.video-card,.output-img-wrap')) wraps.push(container);
+    wraps.forEach(wrap => {
+        if(wrap.dataset.videoWrapBound === '1') return;
+        if(!wrap.querySelector('img[data-preview-kind="video"], .canvas-video-play')) return;
+        wrap.dataset.videoWrapBound = '1';
+        wrap.addEventListener('mousedown', e => {
+            if(e.button !== 0 || e.target.closest?.('.output-del,.port,.resize-handle')) return;
+            if(!wrap.querySelector('img[data-preview-kind="video"], .canvas-video-play')) return;
+            e.stopPropagation();
+        }, true);
+        wrap.addEventListener('click', e => {
+            if(e.target.closest?.('.output-del')) return;
+            if(wrap.querySelector('video[data-url]:not([data-output-video-fallback])')) return;
+            if(!wrap.querySelector('img[data-preview-kind="video"]')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            canvasActivateVideoPreview(wrap);
+        });
+    });
 }
 function canvasActivateVideoPreview(img){
     if(!img) return false;
@@ -171,20 +199,28 @@ function isCanvasPreviewImage(img){
         && img.dataset.previewSrc !== img.dataset.originalSrc
         && img.getAttribute('src') !== img.dataset.originalSrc;
 }
+function applyCanvasPreviewImageFallback(img){
+    if(!img || img.classList.contains('canvas-media-deferred') || img.dataset.mediaUnmounted === '1') return;
+    const src = img.getAttribute('src') || '';
+    if(window.CanvasMediaDisplay?.isPreviewPlaceholderSrc?.(src) || src === CANVAS_PREVIEW_PLACEHOLDER_SRC) return;
+    const original = img.dataset.originalSrc || img.dataset.url || '';
+    if(img.dataset.previewKind === 'video'){
+        const video = document.createElement('template');
+        video.innerHTML = canvasVideoFallbackHtml(original, img.dataset.videoFallbackAttrs || '');
+        const el = video.content.firstElementChild;
+        if(!el) return;
+        img.replaceWith(el);
+        bindCanvasVideoPreviewTriggers(el.parentElement || el);
+        return;
+    }
+    if(original && src !== original) img.src = original;
+}
 function bindCanvasPreviewImageFallbacks(root=document){
     root.querySelectorAll?.('img[data-preview-src][data-original-src]:not([data-preview-fallback-bound])').forEach(img => {
         img.dataset.previewFallbackBound = '1';
-        img.addEventListener('error', () => {
-            if(img.classList.contains('canvas-media-deferred') || img.dataset.mediaUnmounted === '1') return;
-            const original = img.dataset.originalSrc || img.dataset.url || '';
-            if(img.dataset.previewKind === 'video'){
-                const video = document.createElement('template');
-                video.innerHTML = canvasVideoFallbackHtml(original, img.dataset.videoFallbackAttrs || '');
-                img.replaceWith(video.content.firstElementChild);
-                return;
-            }
-            if(original && img.getAttribute('src') !== original) img.src = original;
-        });
+        img.addEventListener('error', () => applyCanvasPreviewImageFallback(img));
+        // innerHTML 写入后 error 可能已同步触发，再补一次 complete 检查。
+        if(img.complete && !img.naturalWidth && img.getAttribute('src')) applyCanvasPreviewImageFallback(img);
     });
 }
 let canvasMediaViewportSyncTimer = 0;
@@ -195,7 +231,13 @@ function syncCanvasMediaDisplay(root=nodesEl, options={}){
     if(options.enforceSingle) display.enforceSingleLiveVideo(root, options.keepVideo || null, canvasMediaDisplayHelpers());
     const boardW = board?.clientWidth || 0;
     const boardH = board?.clientHeight || 0;
-    if(!boardW || !boardH) return;
+    if(!boardW || !boardH){
+        display.mountAllDeferredPreviews?.(root);
+        if(!options._retryBoard && typeof requestAnimationFrame === 'function'){
+            requestAnimationFrame(() => syncCanvasMediaDisplay(root, {...options, _retryBoard:true}));
+        }
+        return;
+    }
     if(options.unloadVideos !== false){
         display.unloadOffscreenVideos(root, nodes, viewport, boardW, boardH, node => defaultNodeSize(node?.type), canvasMediaDisplayHelpers());
     }
@@ -6351,16 +6393,8 @@ function bindOutputWrap(wrap, node){
             refreshNodes([node.id]);
         };
     }
-    if(playBtn && img){
-        playBtn.onmousedown = e => {
-            e.preventDefault();
-            e.stopPropagation();
-        };
-        playBtn.onclick = e => {
-            e.preventDefault();
-            e.stopPropagation();
-            canvasActivateVideoPreview(wrap);
-        };
+    if(playBtn || wrap.querySelector('img[data-preview-kind="video"]')){
+        bindCanvasVideoPreviewTriggers(wrap);
     }
     if(recoverQuery){
         recoverQuery.onmousedown = e => e.stopPropagation();
@@ -6752,7 +6786,7 @@ function canvasAssetThumbHtml(item){
     const url = escapeAttr(item?.url || '');
     const thumbUrl = item?.thumbnail || item?.url || '';
     if(kind === 'video'){
-        return `<div class="canvas-asset-thumb-wrap">${canvasVideoPreviewHtml(item?.url || '', 512, 'class="canvas-asset-thumb" alt=""')}<div class="canvas-asset-video-badge"><i data-lucide="play"></i><span>VIDEO</span></div></div>`;
+        return `<div class="canvas-asset-thumb-wrap">${canvasVideoPreviewHtml(item?.url || '', 512, 'class="canvas-asset-thumb" alt=""', true)}<div class="canvas-asset-video-badge"><i data-lucide="play"></i><span>VIDEO</span></div></div>`;
     }
     if(kind === 'audio'){
         return `<div class="canvas-asset-thumb-wrap canvas-asset-file-thumb"><i data-lucide="file-audio" class="w-6 h-6"></i><span>${escapeHtml(item?.name || 'audio')}</span></div>`;
@@ -6760,7 +6794,7 @@ function canvasAssetThumbHtml(item){
     if(kind === 'workflow'){
         return `<div class="canvas-asset-thumb-wrap canvas-asset-file-thumb workflow-thumb"><i data-lucide="workflow" class="w-6 h-6"></i><span>${escapeHtml(item?.name || 'workflow')}</span></div>`;
     }
-    return `<div class="canvas-asset-thumb-wrap">${canvasPreviewImgHtml(thumbUrl, 512, 'class="canvas-asset-thumb" alt=""')}</div>`;
+    return `<div class="canvas-asset-thumb-wrap">${canvasPreviewImgHtml(thumbUrl, 512, 'class="canvas-asset-thumb" alt=""', true)}</div>`;
 }
 function positionCanvasAssetHoverPreview(event){
     if(!canvasAssetHoverPreview || canvasAssetHoverPreview.hidden || canvasAssetHoverPreview.style.display === 'none') return;
@@ -7020,7 +7054,7 @@ function renderImageAssetManager(){
             <div class="asset-manager-grid">
                 ${items.length ? items.map(item => `<div class="asset-manager-card">
                     <input type="checkbox" data-manager-asset-check="${escapeAttr(item.id)}" ${managerSelectedAssetIds.has(item.id) ? 'checked' : ''}>
-                    ${canvasPreviewImgHtml(item.thumbnail || item.url || '', 512, 'alt=""')}
+                    ${canvasPreviewImgHtml(item.thumbnail || item.url || '', 512, 'alt=""', true)}
                     <span class="asset-manager-card-name" title="${escapeAttr(item.name || '')}">${escapeHtml(item.name || 'asset')}</span>
                     <div class="asset-manager-card-actions">
                         <button type="button" data-manager-asset-rename="${escapeAttr(item.id)}"><i data-lucide="pencil" class="w-3.5 h-3.5"></i><span>重命名</span></button>
@@ -12426,7 +12460,7 @@ function renderCanvasLog(){
             const safe = escapeAttr(url);
             if(isMissingAssetUrl(url)) return `<div class="missing-asset compact" data-url="${safe}"><i data-lucide="image-off" class="w-4 h-4"></i></div>`;
             const kind = mediaKindForOutputItem(item);
-            return kind === 'video' ? canvasVideoPreviewHtml(url, 256, 'alt="output"') : canvasPreviewImgHtml(url, 256, 'alt="output"');
+            return kind === 'video' ? canvasVideoPreviewHtml(url, 256, 'alt=""', true) : canvasPreviewImgHtml(url, 256, 'alt=""', true);
         }).join('');
         const date = new Date(log.createdAt || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
         const req = log.request || {};
@@ -12983,7 +13017,7 @@ function renderOutputMedia(item, useGridLayout=false, options={}){
         return `<div class="output-img-wrap canvas-output-placeholder" data-output-url="${safe}"${gridStyle}><div class="canvas-media-ph" data-url="${safe}"></div>${kind === 'video' ? '<div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div>' : ''}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'video'){
-        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="video output" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'audio'){
         return `<div class="output-img-wrap output-audio-wrap" data-output-url="${safe}"${gridStyle}><div class="output-audio-card"><i data-lucide="file-audio" class="w-7 h-7"></i><span>${escapeHtml(outputImageName(url))}</span><audio src="${safe}" data-url="${safe}" controls preload="metadata"></audio></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
@@ -12993,7 +13027,7 @@ function renderOutputMedia(item, useGridLayout=false, options={}){
         const label = kind === 'text' ? 'TEXT' : 'FILE';
         return `<div class="output-img-wrap output-file-wrap" data-output-url="${safe}"${gridStyle}><div class="output-file-card"><i data-lucide="${icon}" class="w-7 h-7"></i><span>${escapeHtml(meta.name || outputImageName(url))}</span><small>${label}</small></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
-    return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasPreviewImgHtml(url, useGridLayout ? 512 : 768, 'alt="generated output"')}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+    return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasPreviewImgHtml(url, useGridLayout ? 512 : 768, 'alt=""')}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
 }
 function outputGridLayout(node){
     const images = node?.images || [];
