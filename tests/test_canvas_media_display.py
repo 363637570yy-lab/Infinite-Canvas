@@ -194,6 +194,28 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertIn(".asset-thumb video { pointer-events:none; }", asset_css)
         self.assertIn(".canvas-asset-thumb-wrap video { pointer-events:none; }", canvas_css)
 
+    def test_output_media_click_opens_lightbox(self):
+        source = CANVAS_JS.read_text(encoding="utf-8")
+        css = CANVAS_CSS.read_text(encoding="utf-8")
+        self.assertIn("ensureCanvasVideoPreviewDelegation", source)
+        self.assertIn("_canvasVideoEnlarge", source)
+        self.assertIn("bindCanvasInputItemLightbox", source)
+        self.assertIn("outputLightboxIgnoreCloseUntil", source)
+        self.assertIn("url = canvasOriginalMediaUrl(url)", source)
+        self.assertIn('controls autoplay playsinline', source)
+        self.assertIn("existing.controls = true", source)
+        self.assertIn("if(playBtn){", source)
+        self.assertIn("canvasActivateVideoPreview(wrap)", source)
+        self.assertIn("openOutputLightbox(url, canvasNodeFromEl(wrap))", source)
+        self.assertIn(".output-img-wrap.is-video-playing video", css)
+        self.assertNotIn("if(img.dataset.previewKind === 'video'){\n                canvasActivateVideoPreview(wrap);", source)
+
+    def test_smart_video_dblclick_opens_preview(self):
+        source = SMART_JS.read_text(encoding="utf-8")
+        self.assertIn("openImagePreviewSmart(target.targetNodeId, target.imageIndex)", source)
+        self.assertIn("previewCurrentVideo", source)
+        self.assertGreaterEqual(source.count("openImagePreviewSmart(target.targetNodeId, target.imageIndex)"), 2)
+
     def test_canvas_wires_phase_two_hooks(self):
         source = CANVAS_JS.read_text(encoding="utf-8")
         css = (ROOT / "static" / "css" / "canvas.css").read_text(encoding="utf-8")

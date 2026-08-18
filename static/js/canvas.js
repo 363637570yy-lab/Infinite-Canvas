@@ -88,10 +88,41 @@ function canvasVideoFallbackHtml(url, attrs=''){
 function canvasVideoPlayerHtml(url, attrs=''){
     const original = canvasOriginalMediaUrl(url);
     const src = canvasDisplayMediaUrl(original);
-    return `<video src="${escapeAttr(src)}" data-url="${escapeAttr(original)}" autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
+    return `<video src="${escapeAttr(src)}" data-url="${escapeAttr(original)}" controls autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
 }
 function canvasVideoCardWrap(el){
     return el?.closest?.('.media-card,.image-preview-wrap,.output-img-wrap') || el?.parentElement || null;
+}
+function canvasMediaUrlFromEl(el){
+    if(!el) return '';
+    const wrap = canvasVideoCardWrap(el) || el;
+    const media = wrap.querySelector?.('img[data-url], img[data-original-src], video[data-url]') || el;
+    return canvasOriginalMediaUrl(
+        wrap.dataset?.outputUrl
+        || el.dataset?.url
+        || el.dataset?.originalSrc
+        || media?.dataset?.url
+        || media?.dataset?.originalSrc
+        || ''
+    );
+}
+function assignCanvasVideoEnlarge(root, onEnlarge){
+    if(!root || typeof onEnlarge !== 'function') return;
+    root._canvasVideoEnlarge = onEnlarge;
+    if(root.matches?.('.media-card,.image-preview-wrap,.output-img-wrap,.video-card')){
+        root._canvasVideoEnlarge = onEnlarge;
+    }
+    root.querySelectorAll?.('.media-card,.image-preview-wrap,.output-img-wrap,.video-card').forEach(el => {
+        el._canvasVideoEnlarge = onEnlarge;
+    });
+}
+function canvasVideoEnlargeFromEl(el){
+    const wrap = canvasVideoCardWrap(el) || el;
+    return wrap?._canvasVideoEnlarge || el?._canvasVideoEnlarge || null;
+}
+function canvasNodeFromEl(el){
+    const nodeEl = el?.closest?.('.node');
+    return (typeof nodes !== 'undefined' ? nodes : []).find(n => n.id === nodeEl?.dataset.id) || null;
 }
 function canvasVideoPlayButtonHidden(video){
     return window.CanvasMediaDisplay?.playButtonHiddenForVideo
@@ -132,67 +163,83 @@ function canvasMediaDisplayHelpers(){
                 if(node) bindOutputWrap(wrap, node);
                 return;
             }
-            bindCanvasVideoPreviewTriggers(wrap || img?.parentElement);
+            const root = wrap || img?.parentElement;
+            const nodeEl = root?.closest?.('.node') || img?.closest?.('.node');
+            const node = nodes.find(n => n.id === nodeEl?.dataset.id);
+            bindCanvasVideoPreviewTriggers(root);
         }
     };
 }
-function bindCanvasVideoPreviewTriggers(container){
-    if(!container) return;
-    const imgs = container.matches?.('img[data-preview-kind="video"]')
-        ? [container]
-        : [...(container.querySelectorAll?.('img[data-preview-kind="video"]') || [])];
-    imgs.forEach(img => {
-        if(img.dataset.videoPreviewBound === '1') return;
-        img.dataset.videoPreviewBound = '1';
-        img.addEventListener('mousedown', e => {
-            if(e.button !== 0) return;
+function ensureCanvasVideoPreviewDelegation(){
+    if(!nodesEl || nodesEl.dataset.videoPreviewDelegated === '1') return;
+    nodesEl.dataset.videoPreviewDelegated = '1';
+    nodesEl.addEventListener('mousedown', e => {
+        if(e.button !== 0) return;
+        if(e.target.closest?.('.output-del,.port,.resize-handle')) return;
+        if(e.target.closest?.('.canvas-video-play, img[data-preview-kind="video"]')){
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-        }, true);
-        img.addEventListener('click', e => {
+            return;
+        }
+        const wrap = e.target.closest?.('.video-card,.output-img-wrap');
+        if(wrap?.querySelector?.('img[data-preview-kind="video"], .canvas-video-play, video[data-url]')){
+            e.stopPropagation();
+        }
+    }, true);
+    nodesEl.addEventListener('click', e => {
+        if(e.target.closest?.('.output-del')) return;
+        const playBtn = e.target.closest?.('.canvas-video-play');
+        const wrap = e.target.closest?.('.output-img-wrap,.media-card,.image-preview-wrap');
+        if(!wrap || !nodesEl.contains(wrap)) return;
+        if(playBtn){
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-            canvasActivateVideoPreview(e.currentTarget || img);
-        }, true);
-    });
-    const buttons = [...(container.querySelectorAll?.('.canvas-video-play') || [])];
-    if(container.matches?.('.canvas-video-play')) buttons.push(container);
-    buttons.forEach(btn => {
-        if(btn.dataset.videoPreviewBound === '1') return;
-        btn.dataset.videoPreviewBound = '1';
-        btn.addEventListener('mousedown', e => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-        }, true);
-        btn.addEventListener('click', e => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-            canvasActivateVideoPreview(btn.closest('.media-card,.image-preview-wrap,.output-img-wrap') || btn);
-        }, true);
-    });
-    const wraps = [...(container.querySelectorAll?.('.video-card,.output-img-wrap') || [])];
-    if(container.matches?.('.video-card,.output-img-wrap')) wraps.push(container);
-    wraps.forEach(wrap => {
-        if(wrap.dataset.videoWrapBound === '1') return;
-        if(!wrap.querySelector('img[data-preview-kind="video"], .canvas-video-play, video[data-url]')) return;
-        wrap.dataset.videoWrapBound = '1';
-        wrap.addEventListener('mousedown', e => {
-            if(e.button !== 0 || e.target.closest?.('.output-del,.port,.resize-handle')) return;
-            if(!wrap.querySelector('img[data-preview-kind="video"], .canvas-video-play, video[data-url]')) return;
-            e.stopPropagation();
-        }, true);
-        wrap.addEventListener('click', e => {
-            if(e.target.closest?.('.output-del')) return;
-            if(!wrap.querySelector('img[data-preview-kind="video"], video[data-url], .canvas-video-play')) return;
-            e.preventDefault();
-            e.stopPropagation();
             canvasActivateVideoPreview(wrap);
-        });
-    });
+            return;
+        }
+        if(e.target.closest?.('video')) return;
+        const url = canvasMediaUrlFromEl(wrap);
+        if(wrap.classList.contains('output-img-wrap') && url){
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            const enlarge = canvasVideoEnlargeFromEl(wrap);
+            if(enlarge) enlarge(url, e);
+            else openOutputLightbox(url, canvasNodeFromEl(wrap));
+            return;
+        }
+        if(wrap.querySelector('img[data-preview-kind="video"], video[data-url], .canvas-video-play')){
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            canvasActivateVideoPreview(wrap);
+        }
+    }, true);
+    nodesEl.addEventListener('dblclick', e => {
+        if(e.target.closest?.('.output-del,.canvas-video-play')) return;
+        const wrap = e.target.closest?.('.output-img-wrap,.media-card,.image-preview-wrap');
+        if(!wrap || !nodesEl.contains(wrap)) return;
+        const url = canvasMediaUrlFromEl(wrap);
+        if(!url) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const enlarge = canvasVideoEnlargeFromEl(wrap);
+        if(enlarge){
+            enlarge(url, e);
+            return;
+        }
+        const node = canvasNodeFromEl(wrap);
+        if(node?.type === 'image') openImageNodePreview(node.id);
+        else openOutputLightbox(url, node);
+    }, true);
+}
+function bindCanvasVideoPreviewTriggers(container, options={}){
+    if(!container) return;
+    ensureCanvasVideoPreviewDelegation();
+    if(typeof options.onEnlarge === 'function') assignCanvasVideoEnlarge(container, options.onEnlarge);
     container.querySelectorAll?.('video[data-url]').forEach(bindCanvasVideoPlaybackUi);
     if(container.matches?.('video[data-url]')) bindCanvasVideoPlaybackUi(container);
 }
@@ -202,6 +249,7 @@ function canvasActivateVideoPreview(img){
     const existing = (img.matches?.('video[data-url]') ? img : null) || wrap.querySelector?.('video[data-url]');
     if(existing){
         existing.muted = false;
+        existing.controls = true;
         bindCanvasVideoPlaybackUi(existing);
         if(!existing.paused && !existing.ended){
             existing.pause?.();
@@ -530,6 +578,7 @@ let currentOutputCompareUrl = '';
 let currentOutputMeta = null;
 let currentOutputLightboxOutId = '';
 let currentOutputLightboxUrl = '';
+let outputLightboxIgnoreCloseUntil = 0;
 const missingAssetUrls = new Set();
 let outputTimer = null;
 let loopContext = null;
@@ -6395,11 +6444,7 @@ function bindOutputWrap(wrap, node){
         img.onclick = e => {
             e.stopPropagation();
             if(img.dataset.dragging) return;
-            if(img.dataset.previewKind === 'video'){
-                canvasActivateVideoPreview(wrap);
-                return;
-            }
-            openOutputLightbox(img.dataset.url, node);
+            openOutputLightbox(canvasMediaUrlFromEl(img) || wrap.dataset.outputUrl || img.dataset.url, node);
         };
     } else if(wrap.classList.contains('canvas-output-placeholder') && wrap.dataset.outputPlaceholderBound !== '1'){
         wrap.dataset.outputPlaceholderBound = '1';
@@ -6407,7 +6452,7 @@ function bindOutputWrap(wrap, node){
             if(e.target.closest?.('.output-del')) return;
             e.stopPropagation();
             const url = wrap.dataset.outputUrl;
-            if(url) openOutputLightbox(url, node);
+            if(url) openOutputLightbox(canvasOriginalMediaUrl(url) || url, node);
         });
     }
     if(video) bindCanvasVideoPlaybackUi(video);
@@ -6435,7 +6480,9 @@ function bindOutputWrap(wrap, node){
         };
     }
     if(playBtn || video || wrap.querySelector('img[data-preview-kind="video"], video[data-url]')){
-        bindCanvasVideoPreviewTriggers(wrap);
+        bindCanvasVideoPreviewTriggers(wrap, {
+            onEnlarge: url => openOutputLightbox(url || wrap.dataset.outputUrl, node)
+        });
     }
     if(recoverQuery){
         recoverQuery.onmousedown = e => e.stopPropagation();
@@ -8778,6 +8825,17 @@ function renderPromptPreview(container, promptInputs){
     if(!container) return;
     container.innerHTML = promptInputs.length ? `<div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Prompts</div>${promptInputs.map(src => `<div class="text-[11px] text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 line-clamp-2">${escapeHtml(src.label)}</div>`).join('')}` : '';
 }
+function bindCanvasInputItemLightbox(item, url, node){
+    const original = canvasOriginalMediaUrl(url);
+    if(!item || !original || isMissingAssetUrl(original)) return;
+    item.style.cursor = 'zoom-in';
+    item.addEventListener('click', e => {
+        if(item.dataset.dragging === '1' || e.target.closest?.('button')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openOutputLightbox(original, node || null);
+    });
+}
 function renderImageInputList(list, node, imageInputs, emptyText=null){
     if(!list) return;
     list.innerHTML = imageInputs.length ? '' : `<div class="text-[11px] text-gray-300 py-2">${escapeHtml(emptyText || tr('canvas.inputImagesEmpty'))}</div>`;
@@ -8786,15 +8844,16 @@ function renderImageInputList(list, node, imageInputs, emptyText=null){
         item.className = 'input-item';
         item.draggable = true;
         item.dataset.sourceId = src.id;
-        const previewHtml = src.preview && !isMissingAssetUrl(src.preview) ? canvasPreviewImgHtml(src.preview, 256) : (src.preview ? missingAssetHtml(src.preview, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
+        const previewHtml = src.preview && !isMissingAssetUrl(src.preview) ? canvasPreviewImgHtml(src.preview, 256, '', true) : (src.preview ? missingAssetHtml(src.preview, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
         item.innerHTML = `<span class="input-index">${i + 1}</span>${previewHtml}<span class="input-label">${escapeHtml(src.label)}</span>`;
         item.ondragstart = e => {
             e.stopPropagation();
             internalDrag = true;
+            item.dataset.dragging = '1';
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('application/x-canvas-input', src.id);
         };
-        item.ondragend = () => { internalDrag = false; };
+        item.ondragend = () => { internalDrag = false; setTimeout(() => { delete item.dataset.dragging; }, 0); };
         item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
         item.ondrop = e => {
             e.preventDefault();
@@ -8802,8 +8861,10 @@ function renderImageInputList(list, node, imageInputs, emptyText=null){
             reorderInput(node, e.dataTransfer.getData('application/x-canvas-input'), src.id);
             internalDrag = false;
         };
+        bindCanvasInputItemLightbox(item, src.preview, node);
         list.appendChild(item);
     });
+    bindCanvasPreviewImageFallbacks(list);
     refreshIcons();
 }
 function renderVideoImageInputs(list, node, imageInputs){
@@ -8817,11 +8878,11 @@ function renderVideoImageInputs(list, node, imageInputs){
         const kind = mediaKindForRef(src.refs?.[0] || {url:src.preview || ''});
         const frameLabel = kind === 'image' && node.useFrameRoles && i === 0 ? tr('canvas.videoRoleFirstFrame') : kind === 'image' && node.useFrameRoles && i === 1 ? tr('canvas.videoRoleLastFrame') : '';
         const previewHtml = kind === 'video'
-            ? canvasVideoPreviewHtml(src.preview || src.refs?.[0]?.url || '', 256)
+            ? canvasVideoPreviewHtml(src.preview || src.refs?.[0]?.url || '', 256, '', true)
             : kind === 'audio'
             ? `<div class="video-input-audio"><i data-lucide="file-audio" class="w-6 h-6"></i><span>${escapeHtml(src.label || 'Audio')}</span></div>`
             : src.preview && !isMissingAssetUrl(src.preview)
-            ? canvasPreviewImgHtml(src.preview, 256)
+            ? canvasPreviewImgHtml(src.preview, 256, '', true)
             : (src.preview ? missingAssetHtml(src.preview, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
         const typeLabel = kind === 'audio' ? `音频${i + 1}` : kind === 'video' ? `视频${i + 1}` : `图${i + 1}`;
         item.innerHTML = `
@@ -8832,12 +8893,14 @@ function renderVideoImageInputs(list, node, imageInputs){
             </div>
             ${frameLabel ? `<div class="video-frame-label">${frameLabel}</div>` : ''}
         `;
-        item.ondragstart = e => { e.stopPropagation(); internalDrag = true; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('application/x-canvas-input', src.id); };
-        item.ondragend = () => { internalDrag = false; };
+        item.ondragstart = e => { e.stopPropagation(); internalDrag = true; item.dataset.dragging = '1'; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('application/x-canvas-input', src.id); };
+        item.ondragend = () => { internalDrag = false; setTimeout(() => { delete item.dataset.dragging; }, 0); };
         item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
         item.ondrop = e => { e.preventDefault(); e.stopPropagation(); reorderInput(node, e.dataTransfer.getData('application/x-canvas-input'), src.id); internalDrag = false; };
+        bindCanvasInputItemLightbox(item, src.preview || src.refs?.[0]?.url || '', node);
         list.appendChild(item);
     });
+    bindCanvasPreviewImageFallbacks(list);
     refreshIcons();
 }
 function comfyWorkflowOptions(selected){
@@ -9022,18 +9085,19 @@ function renderComfyImages(list, node, imageInputs){
         const icon = kind === 'video' ? 'file-video' : kind === 'audio' ? 'file-audio' : 'image';
         const label = kind === 'image' ? `${tr('canvas.image')} ${i + 1}` : `${nodeTitleForMedia({mediaKind:kind})} ${i + 1}`;
         const previewHtml = kind === 'video' && src.preview && !isMissingAssetUrl(src.preview)
-            ? canvasVideoPreviewHtml(src.preview, 256)
+            ? canvasVideoPreviewHtml(src.preview, 256, '', true)
             : kind === 'audio'
                 ? `<i data-lucide="${icon}" class="w-6 h-6 text-slate-400"></i>`
-                : (src.preview && !isMissingAssetUrl(src.preview) ? canvasPreviewImgHtml(src.preview, 256) : (src.preview ? missingAssetHtml(src.preview, true) : `<i data-lucide="${icon}" class="w-6 h-6 text-slate-400"></i>`));
+                : (src.preview && !isMissingAssetUrl(src.preview) ? canvasPreviewImgHtml(src.preview, 256, '', true) : (src.preview ? missingAssetHtml(src.preview, true) : `<i data-lucide="${icon}" class="w-6 h-6 text-slate-400"></i>`));
         item.innerHTML = `<span class="input-index">${i + 1}</span>${previewHtml}<span class="input-label">${escapeHtml(label)}</span>`;
         item.ondragstart = e => {
             e.stopPropagation();
             internalDrag = true;
+            item.dataset.dragging = '1';
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('application/x-canvas-input', src.id);
         };
-        item.ondragend = () => { internalDrag = false; };
+        item.ondragend = () => { internalDrag = false; setTimeout(() => { delete item.dataset.dragging; }, 0); };
         item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
         item.ondrop = e => {
             e.preventDefault();
@@ -9041,8 +9105,10 @@ function renderComfyImages(list, node, imageInputs){
             reorderInput(node, e.dataTransfer.getData('application/x-canvas-input'), src.id);
             internalDrag = false;
         };
+        bindCanvasInputItemLightbox(item, src.preview || firstRef?.url || '', node);
         list.appendChild(item);
     });
+    bindCanvasPreviewImageFallbacks(list);
 }
 const RH_KNOWN_FIELD_OPTIONS = {
     aspectRatio:['1:1','16:9','9:16','4:3','3:4','4:5','5:4','3:2','2:3','21:9','9:21'],
@@ -9479,9 +9545,9 @@ async function rhBuildWorkflowRequestExtras(node, media, nodeInfoList){
 }
 function rhMediaPreviewHtml(ref, kind){
     const safe = escapeAttr(ref?.url || '');
-    if(kind === 'video') return canvasVideoPreviewHtml(ref?.url || '', 256);
+    if(kind === 'video') return canvasVideoPreviewHtml(ref?.url || '', 256, '', true);
     if(kind === 'audio') return `<i data-lucide="file-audio" class="w-6 h-6 text-slate-400"></i>`;
-    return safe && !isMissingAssetUrl(safe) ? canvasPreviewImgHtml(safe, 256) : `<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>`;
+    return safe && !isMissingAssetUrl(safe) ? canvasPreviewImgHtml(safe, 256, '', true) : `<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>`;
 }
 function renderRhBody(node){
     const wrap = document.createElement('div');
@@ -9688,8 +9754,10 @@ function renderRhInputs(list, node, media){
         const item = document.createElement('div');
         item.className = 'input-item rh-input-item';
         item.innerHTML = `<span class="input-index">${i + 1}</span>${rhMediaPreviewHtml(ref, kind)}<span class="input-label">${escapeHtml(nodeTitleForMedia({mediaKind:kind}))}</span>`;
+        bindCanvasInputItemLightbox(item, ref?.url || '', node);
         list.appendChild(item);
     });
+    bindCanvasPreviewImageFallbacks(list);
 }
 function renderRhPromptFields(container, node, fields){
     if(!container) return;
@@ -12562,7 +12630,7 @@ function renderCanvasLog(){
             const el = e.target.closest?.('.log-thumbs [data-url], .log-thumbs [data-original-src]');
             if(!el || !list.contains(el)) return;
             e.stopPropagation();
-            openOutputLightbox(el.dataset.url || el.dataset.originalSrc, null);
+            openOutputLightbox(canvasOriginalMediaUrl(el.dataset.url || el.dataset.originalSrc), null);
         });
     }
     const bindCanvasLogCopy = (selector, key) => {
@@ -13079,7 +13147,7 @@ function renderOutputMedia(item, useGridLayout=false, options={}){
         return `<div class="output-img-wrap canvas-output-placeholder" data-output-url="${safe}"${gridStyle}><div class="canvas-media-ph" data-url="${safe}"></div>${kind === 'video' ? '<div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div>' : ''}${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'video'){
-        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="" data-video-fallback-attrs="data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+        return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'audio'){
         return `<div class="output-img-wrap output-audio-wrap" data-output-url="${safe}"${gridStyle}><div class="output-audio-card"><i data-lucide="file-audio" class="w-7 h-7"></i><span>${escapeHtml(outputImageName(url))}</span><audio src="${safe}" data-url="${safe}" controls preload="metadata"></audio></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
@@ -13831,10 +13899,12 @@ function initOutputCompareEvents(){
     window.addEventListener('touchend', () => { outputCompareDrag = false; });
 }
 function openOutputLightbox(url, out){
+    url = canvasOriginalMediaUrl(url);
     if(!url) return;
     resetOutputPreviewZoom();
     currentOutputLightboxOutId = out?.id || '';
     currentOutputLightboxUrl = url;
+    outputLightboxIgnoreCloseUntil = Date.now() + 450;
     const meta = outputMetaFor(url, out);
     markOutputViewed(out, url);
     setupOutputPromptPanel(meta);
@@ -13863,7 +13933,14 @@ function openOutputLightbox(url, out){
                 ? `${outputLightboxVideo.videoWidth} x ${outputLightboxVideo.videoHeight}`
                 : 'Video', meta);
         };
+        nodesEl?.querySelectorAll?.('video[data-url]').forEach(video => {
+            if(canvasOriginalMediaUrl(video.dataset.url) !== url) return;
+            try { video.pause(); } catch(e) {}
+            syncCanvasVideoPlayButton(video);
+        });
+        outputLightboxVideo.autoplay = true;
         outputLightboxVideo.src = canvasDisplayMediaUrl(url, outputDownloadName(url));
+        outputLightboxVideo.play?.().catch(() => {});
         outputPreview.ondblclick = null;
         outputDownloadBtn.onclick = e => {
             e.stopPropagation();
@@ -13897,6 +13974,7 @@ function openOutputLightbox(url, out){
     refreshIcons();
 }
 function closeOutputLightbox(){
+    if(Date.now() < outputLightboxIgnoreCloseUntil) return;
     outputLightbox.classList.remove('open');
     setOutputCompareMode(false);
     outputLightboxImg.src = '';

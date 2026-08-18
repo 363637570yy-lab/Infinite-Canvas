@@ -505,7 +505,7 @@ function smartVideoFallbackHtml(url, attrs=''){
 function smartVideoPlayerHtml(url, attrs=''){
     const original = smartOriginalMediaUrl(url);
     const safe = escapeHtml(displayMediaUrl({url:original}));
-    return `<video src="${safe}" data-url="${escapeAttr(original)}" data-inline-video-active="1" autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
+    return `<video src="${safe}" data-url="${escapeAttr(original)}" data-inline-video-active="1" controls autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
 }
 function smartVideoCardWrap(el){
     return el?.closest?.('.media-video-card,.video-thumb,.image-wrap,.thumb-item') || el?.parentElement || null;
@@ -8980,7 +8980,10 @@ function bindNodeEvents(){
                     e.stopImmediatePropagation();
                     clearImageClickTimer();
                     suppressImageClickUntil = Date.now() + 260;
-                    smartActivateVideoPreview(item);
+                    selectedId = id;
+                    selectedIds = [];
+                    selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+                    openImagePreviewSmart(target.targetNodeId, target.imageIndex);
                     return;
                 }
                 if(e.detail < 2) return;
@@ -9041,10 +9044,6 @@ function bindNodeEvents(){
             clearImageClickTimer();
             suppressImageClickUntil = Date.now() + 260;
             const target = thumbTarget();
-            if(mediaKindForItem(target.image || {}) === 'video'){
-                smartActivateVideoPreview(item);
-                return;
-            }
             selectedId = id;
             selectedIds = [];
             selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
