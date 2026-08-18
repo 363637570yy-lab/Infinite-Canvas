@@ -15577,6 +15577,8 @@ async function runVideoPromptTargetConversion(targetId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
+    const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
+    if(extra){ toast(extra); return; }
     const chatPick = vpt.pickChatProvider(apiProviders, settings.vptChatProvider, settings.vptChatModel);
     if(!chatPick || !chatPick.provider || !chatPick.model){
         toast('请先选择文字平台和模型，再生成优化节点');
@@ -15700,6 +15702,10 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, targetN
             }
             return item;
         });
+        if(runSettings.videoUseFrameRoles && refImages.length > 2){
+            throw new Error(window.VideoPromptTargets?.firstLastExtraImagesMessage?.(refImages.length, '生成')
+                || `首尾帧只接受最多 2 张图（图1 首帧、图2 尾帧），当前 ${refImages.length} 张。请去掉多余参考图后再生成。`);
+        }
         const manualVideo = manualSmartVideoLink(runSettings)?.url || '';
         const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
         let refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean).slice(0, 3);

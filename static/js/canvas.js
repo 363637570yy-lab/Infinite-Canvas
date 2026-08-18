@@ -10641,6 +10641,8 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
         url: ref.url || '',
         role: useFrameRoles && i === 0 ? 'first_frame' : (useFrameRoles && i === 1 ? 'last_frame' : '')
     }));
+    const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
+    if(extra){ showErrorModal(extra, 'AI 提示词'); return; }
     const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
     if(!chatPick || !chatPick.provider || !chatPick.model){
         showErrorModal('请先选择文字平台和模型，再生成优化节点。', 'AI 提示词');
@@ -10747,6 +10749,12 @@ async function runVideoNode(nodeId, opts={}){
     const grok2api = isGrok2apiVideoProvider(node.apiProvider);
     if(!grok2api && node.useFrameRoles && refs[0]) refs[0] = {...refs[0], role:'first_frame'};
     if(!grok2api && node.useFrameRoles && refs[1]) refs[1] = {...refs[1], role:'last_frame'};
+    if(node.useFrameRoles && refs.length > 2){
+        const extra = window.VideoPromptTargets?.firstLastExtraImagesMessage?.(refs.length, '生成')
+            || `首尾帧只接受最多 2 张图（图1 首帧、图2 尾帧），当前 ${refs.length} 张。请去掉多余参考图后再生成。`;
+        showErrorModal(extra, tr('canvas.videoFailed'));
+        return;
+    }
     if(!prompt && !refs.length){ alert(tr('canvas.needPromptOrImage')); return; }
     let out = outputForNode(node, 460);
     const pendingId = uid('p');

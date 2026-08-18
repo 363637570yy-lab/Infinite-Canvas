@@ -18153,6 +18153,12 @@ def log_video_request_entry(provider, payload):
 async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
     log_video_request_entry(provider, payload)
+    extra = video_prompts.reject_first_last_extra_images(
+        [{"url": getattr(ref, "url", ""), "role": getattr(ref, "role", "")} for ref in (payload.images or [])],
+        require_roles=True,
+    )
+    if extra:
+        raise HTTPException(status_code=400, detail=extra)
     if not str(payload.prompt or "").strip() and not (is_grok2api_provider(provider) and payload.images):
         raise HTTPException(status_code=422, detail="文本生视频必须提供 prompt；Grok2API 图生视频可以只提供参考图。")
     if is_jimeng_provider(provider):
@@ -18831,6 +18837,9 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not payload.prompt.strip():
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
+    extra = video_prompts.reject_first_last_extra_images(images, target=target)
+    if extra:
+        raise HTTPException(status_code=400, detail=extra)
     ctx = video_prompts.build_convert_context(payload.prompt, images, payload.duration)
     attachments = video_prompts.convert_image_attachments(ctx)
     image_urls = [url for url, _caption in attachments]

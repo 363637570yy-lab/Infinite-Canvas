@@ -90,11 +90,53 @@ class ConvertContextTests(unittest.TestCase):
         )
 
 
+class FirstLastImageLimitTests(unittest.TestCase):
+    def test_fl2va_convert_rejects_more_than_two_images(self):
+        images = [
+            {"name": "a.png", "url": "http://x/1.png", "role": "first_frame"},
+            {"name": "b.png", "url": "http://x/2.png", "role": "last_frame"},
+            {"name": "c.png", "url": "http://x/3.png"},
+        ]
+        message = vpt.reject_first_last_extra_images(images, target="h3-fl2va")
+        self.assertIn("最多 2 张图", message)
+        self.assertIn("当前 3 张", message)
+        self.assertIn("转换", message)
+
+    def test_fl2va_convert_allows_two_images(self):
+        self.assertEqual(
+            vpt.reject_first_last_extra_images(TWO_IMAGES, target="h3-fl2va"),
+            "",
+        )
+
+    def test_generate_rejects_extra_images_only_when_frame_roles_present(self):
+        unlabeled = [
+            {"url": "http://x/1.png"},
+            {"url": "http://x/2.png"},
+            {"url": "http://x/3.png"},
+        ]
+        self.assertEqual(vpt.reject_first_last_extra_images(unlabeled, require_roles=True), "")
+        labeled = [
+            {"url": "http://x/1.png", "role": "first_frame"},
+            {"url": "http://x/2.png", "role": "last_frame"},
+            {"url": "http://x/3.png"},
+        ]
+        message = vpt.reject_first_last_extra_images(labeled, require_roles=True)
+        self.assertIn("最多 2 张图", message)
+        self.assertIn("生成", message)
+
+    def test_other_targets_are_not_limited(self):
+        images = [{"url": f"http://x/{i}.png"} for i in range(4)]
+        self.assertEqual(vpt.reject_first_last_extra_images(images, target="seedance-2.5"), "")
+        self.assertEqual(vpt.reject_first_last_extra_images(images, target="h3-ref2va"), "")
+
+
 class MessageBuildTests(unittest.TestCase):
     def test_targets_listed_in_button_order(self):
         ids = [item["id"] for item in vpt.list_video_prompt_targets()]
         self.assertEqual(ids, ["seedance-2.0", "seedance-2.5", "h3-ref2va", "h3-fl2va"])
         presets = {item["id"]: item["preset"] for item in vpt.list_video_prompt_targets()}
+        self.assertEqual(presets["seedance-2.0"], {"multimodal": True})
+        self.assertEqual(presets["seedance-2.5"], {"multimodal": True})
         self.assertEqual(presets["h3-ref2va"], {"multimodal": True})
         self.assertEqual(presets["h3-fl2va"], {"frame_roles": True})
         groups = [(item["group"], item["label"]) for item in vpt.list_video_prompt_targets()]

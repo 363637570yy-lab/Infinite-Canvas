@@ -187,7 +187,27 @@
         return null;
     }
 
-    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang};
+    function firstLastExtraImagesMessage(count, action){
+        return `首尾帧只接受最多 2 张图（图1 首帧、图2 尾帧），当前 ${count} 张。请去掉多余参考图后再${action || '生成'}，或改用「多参提示词」。`;
+    }
+
+    function rejectFirstLastExtraImages(images, opts){
+        const options = opts || {};
+        const count = (images || []).filter(item => item && (item.url || item.name)).length;
+        if(count <= 2) return '';
+        if(options.target === 'h3-fl2va') return firstLastExtraImagesMessage(count, options.action || '转换');
+        if(options.requireRoles){
+            const hasRole = (images || []).some(item => {
+                const role = String(item?.role || '').toLowerCase();
+                return role === 'first_frame' || role === 'last_frame' || role === 'first' || role === 'last';
+            });
+            if(!hasRole) return '';
+            return firstLastExtraImagesMessage(count, options.action || '生成');
+        }
+        return '';
+    }
+
+    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang, firstLastExtraImagesMessage, rejectFirstLastExtraImages};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

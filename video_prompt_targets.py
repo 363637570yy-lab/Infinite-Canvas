@@ -12,6 +12,7 @@ PROMPTS_DIR = Path(__file__).resolve().parent / "prompts" / "video-targets"
 
 # 顺序即前端按钮顺序。model_hints 只用于派生工作台的默认选中（软默认，可改），
 # 不做能力分类；preset 是派生工作台需要预置的勾选。
+# 多图参考目标统一勾全能参考，首尾帧目标统一勾首尾帧；不按中转站分支。
 VIDEO_PROMPT_TARGETS = {
     "seedance-2.0": {
         "label": "2.0提示词",
@@ -19,7 +20,7 @@ VIDEO_PROMPT_TARGETS = {
         "skill": "seedance-2.0.md",
         "family": "seedance",
         "model_hints": ["sd2.0", "seedance-2.0", "seedance2.0", "seedance_2.0", "seedance-v2"],
-        "preset": {},
+        "preset": {"multimodal": True},
     },
     "seedance-2.5": {
         "label": "2.5提示词",
@@ -27,7 +28,7 @@ VIDEO_PROMPT_TARGETS = {
         "skill": "seedance-2.5.md",
         "family": "seedance",
         "model_hints": ["sd2.5", "seedance-2.5", "seedance2.5", "seedance_2.5", "seedance-v2.5"],
-        "preset": {},
+        "preset": {"multimodal": True},
     },
     "h3-ref2va": {
         "label": "多参提示词",
@@ -118,6 +119,59 @@ def _normalize_image_role(value):
     if role in {"", "reference", "ref"}:
         return "reference"
     return role
+
+
+FIRST_LAST_IMAGE_MAX = 2
+FIRST_LAST_FRAME_ROLES = {"first_frame", "last_frame"}
+
+
+def image_slot_count(images):
+    count = 0
+    for item in images or []:
+        if isinstance(item, str):
+            if item.strip():
+                count += 1
+            continue
+        row = item or {}
+        if str(row.get("url") or "").strip() or str(row.get("name") or "").strip():
+            count += 1
+    return count
+
+
+def has_first_last_roles(images):
+    for item in images or []:
+        role = ""
+        if isinstance(item, dict):
+            role = item.get("role")
+        else:
+            role = getattr(item, "role", "")
+        if _normalize_image_role(role) in FIRST_LAST_FRAME_ROLES:
+            return True
+    return False
+
+
+def first_last_extra_images_message(count, action="生成"):
+    return (
+        f"首尾帧只接受最多 {FIRST_LAST_IMAGE_MAX} 张图（图1 首帧、图2 尾帧），"
+        f"当前 {count} 张。请去掉多余参考图后再{action}，或改用「多参提示词」。"
+    )
+
+
+def reject_first_last_extra_images(images, *, target="", require_roles=False, action=""):
+    """首尾帧超过 2 张图时返回提示，否则空串。不看中转站，只看项目合同。"""
+    is_fl2va = str(target or "").strip() == "h3-fl2va"
+    if is_fl2va:
+        verb = action or "转换"
+    elif require_roles:
+        if not has_first_last_roles(images):
+            return ""
+        verb = action or "生成"
+    else:
+        return ""
+    count = image_slot_count(images)
+    if count > FIRST_LAST_IMAGE_MAX:
+        return first_last_extra_images_message(count, verb)
+    return ""
 
 
 def build_convert_context(prompt, images, duration_s):
