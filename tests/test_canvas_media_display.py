@@ -14,6 +14,25 @@ SMART_CSS = ROOT / "static" / "css" / "smart-canvas.css"
 ASSET_CSS = ROOT / "static" / "css" / "asset-manager.css"
 
 
+def function_source(text: str, name: str) -> str:
+    token = f"function {name}("
+    start = text.find(token)
+    if start < 0:
+        raise AssertionError(f"missing function {name}")
+    depth = 0
+    in_fn = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+            in_fn = True
+        elif char == "}":
+            depth -= 1
+            if in_fn and depth == 0:
+                return text[start : index + 1]
+    raise AssertionError(f"unclosed function {name}")
+
+
 def eval_module(expr: str):
     script = f"""
 const api = require({json.dumps(str(MODULE))});
@@ -228,6 +247,32 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertNotIn("mount:index < eager", source)
         self.assertIn("content-visibility: auto", css)
         self.assertIn("canvas-media-display.js", html)
+
+    def test_minimap_pan_skips_dom_layout_reads(self):
+        source = CANVAS_JS.read_text(encoding="utf-8")
+        estimated = function_source(source, "estimatedNodeRect")
+        apply_viewport = function_source(source, "applyViewport")
+        render_fn = function_source(source, "render")
+        refresh_fn = function_source(source, "refreshNodes")
+        self.assertNotIn("querySelector", estimated)
+        self.assertNotIn("offsetWidth", estimated)
+        self.assertNotIn("offsetHeight", estimated)
+        self.assertIn("nodeWorldRect", estimated)
+        self.assertIn("updateMinimapViewport()", apply_viewport)
+        self.assertIn("canvasMinimapViewOutsideBounds", apply_viewport)
+        self.assertIn("scheduleMinimapRender()", render_fn)
+        self.assertIn("scheduleMinimapRender()", refresh_fn)
+
+    def test_box_select_uses_data_rects_not_full_render(self):
+        source = CANVAS_JS.read_text(encoding="utf-8")
+        finish = function_source(source, "finishSelection")
+        bounds = function_source(source, "nodeBounds")
+        self.assertIn("estimatedNodeRect", finish)
+        self.assertIn("refreshSelectionVisuals()", finish)
+        self.assertNotIn("render()", finish)
+        self.assertNotIn("querySelectorAll", finish)
+        self.assertNotIn("getBoundingClientRect()", bounds)
+        self.assertIn("estimatedNodeRect", bounds)
 
 
 if __name__ == "__main__":

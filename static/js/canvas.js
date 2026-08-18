@@ -1337,24 +1337,42 @@ function canvasWheelZoomFactor(event, pageSize){
 }
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
-    scheduleMinimapRender();
+    // 平移缩放只动视口框；全量重建小地图点会按节点数 querySelector/offsetWidth，节点一多就掉帧。
+    const view = currentWorldViewRect();
+    if(!minimapState || canvasMinimapViewOutsideBounds(view, minimapState.bounds)) scheduleMinimapRender();
+    else updateMinimapViewport();
     scheduleCanvasMediaViewportSync(nodesEl, 120);
 }
 function estimatedNodeRect(n){
-    const el = nodesEl?.querySelector?.(`.node[data-id="${CSS.escape(n.id)}"]`);
-    const size = defaultNodeSize(n.type);
-    const w = el?.offsetWidth || n.w || size.w || 260;
-    const h = el?.offsetHeight || n.h || size.h || 160;
-    return {x:n.x || 0, y:n.y || 0, w, h};
+    const size = defaultNodeSize(n?.type);
+    const display = window.CanvasMediaDisplay;
+    if(display?.nodeWorldRect){
+        const r = display.nodeWorldRect(n, size);
+        return {x:r.x, y:r.y, w:r.w, h:r.h};
+    }
+    const w = Number(n?.w) > 0 ? Number(n.w) : (size.w || 260);
+    const storedH = Number(n?.h);
+    const h = storedH > 0 ? storedH : Math.max(size.h || 0, 160);
+    return {x:Number(n?.x) || 0, y:Number(n?.y) || 0, w, h};
+}
+function canvasMinimapViewOutsideBounds(view, bounds){
+    if(!view || !bounds) return true;
+    return view.x < bounds.x
+        || view.y < bounds.y
+        || (view.x + view.w) > (bounds.x + bounds.w)
+        || (view.y + view.h) > (bounds.y + bounds.h);
 }
 function currentWorldViewRect(){
-    const rect = board.getBoundingClientRect();
     const scale = viewport.scale || 1;
+    const display = window.CanvasMediaDisplay;
+    if(display?.worldViewRect){
+        return display.worldViewRect(viewport, board?.clientWidth || 0, board?.clientHeight || 0);
+    }
     return {
         x:-viewport.x / scale,
         y:-viewport.y / scale,
-        w:rect.width / scale,
-        h:rect.height / scale
+        w:(board?.clientWidth || 0) / scale,
+        h:(board?.clientHeight || 0) / scale
     };
 }
 function minimapBounds(){
@@ -6058,6 +6076,7 @@ function render(){
     syncCanvasMediaDisplay(nodesEl, {restorePreview:true, enforceSingle:true});
     restoreMediaPlaybackStates(mediaStates);
     refreshOutputTimer();
+    scheduleMinimapRender();
 }
 function refreshNodes(ids=[]){
     const uniqueIds = [...new Set((ids || []).filter(Boolean))];
@@ -6088,6 +6107,7 @@ function refreshNodes(ids=[]){
     bindCanvasPreviewImageFallbacks(nodesEl);
     syncCanvasMediaDisplay(nodesEl, {restorePreview:true, enforceSingle:true});
     refreshOutputTimer();
+    scheduleMinimapRender();
 }
 function refreshRunNodes(node, out=null){
     refreshNodes([node?.id, out?.id]);
@@ -14022,9 +14042,7 @@ function groupSelectedImages(){
 function nodeBounds(ids){
     const rects = ids.map(id => {
         const n = nodes.find(item => item.id === id);
-        const el = nodesEl.querySelector(`.node[data-id="${id}"]`);
-        if(!n) return null;
-        return {x:n.x, y:n.y, w:el?.offsetWidth || n.w || 260, h:el?.offsetHeight || n.h || 220};
+        return n ? estimatedNodeRect(n) : null;
     }).filter(Boolean);
     const x1 = Math.min(...rects.map(r => r.x));
     const y1 = Math.min(...rects.map(r => r.y));
@@ -14059,16 +14077,27 @@ function finishSelection(){
     const rect = selectionBox.getBoundingClientRect();
     selectionBox.style.display = 'none';
     selected.clear();
-    nodesEl.querySelectorAll('.node').forEach(el => {
-        const r = el.getBoundingClientRect();
-        const overlaps = r.left < rect.right && r.right > rect.left && r.top < rect.bottom && r.bottom > rect.top;
-        if(overlaps) selected.add(el.dataset.id);
+    const a = screenToWorld(rect.left, rect.top);
+    const b = screenToWorld(rect.right, rect.bottom);
+    const worldBox = {
+        x:Math.min(a.x, b.x),
+        y:Math.min(a.y, b.y),
+        w:Math.abs(b.x - a.x),
+        h:Math.abs(b.y - a.y)
+    };
+    const overlap = window.CanvasMediaDisplay?.rectsOverlap;
+    (nodes || []).forEach(n => {
+        const r = estimatedNodeRect(n);
+        const hits = overlap
+            ? overlap(r, worldBox, 0)
+            : (r.x < worldBox.x + worldBox.w && r.x + r.w > worldBox.x && r.y < worldBox.y + worldBox.h && r.y + r.h > worldBox.y);
+        if(hits) selected.add(n.id);
     });
     selectDrag = null;
     document.body.classList.remove('canvas-selecting');
     window.onmousemove = null;
     window.onmouseup = null;
-    render();
+    refreshSelectionVisuals();
     if(workflowTransferModal?.classList.contains('open')) updateWorkflowTransferMeta();
 }
 function renderSelectionHub(){
