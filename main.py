@@ -9906,20 +9906,13 @@ def is_gpt_image_2_model(model):
         or compact.endswith("gptimage2")
     )
 
-def should_use_responses_for_image_refs(image_request_mode, model, image_refs, mask_refs=None):
-    """GPT-Image-2 参考生图走 Responses，不走 multipart /images/edits。
+def should_use_responses_for_image_refs(image_request_mode, model=None, image_refs=None, mask_refs=None):
+    """只有平台明确开了 OpenAI RS 才走 Responses。
 
-    生图工作台和 FHL 都是这条路径：CPA/中转对长 edits 不稳，Responses 用 input_image
-    公网 URL 或 data URL，background 轮询。有 mask 时仍走官方 edits 涂抹。
+    对齐 qnvideo-gzt：默认 Images API（无参考图 /images/generations，有参考图 /images/edits）。
+    不按模型名把 GPT-Image-2 强行改到 /v1/responses；多数中转只接 Images API。
     """
-    mode = str(image_request_mode or "").strip().lower()
-    if mode == "openai-responses":
-        return True
-    if mode != "openai":
-        return False
-    if mask_refs:
-        return False
-    return is_gpt_image_2_model(model) and bool(image_refs)
+    return str(image_request_mode or "").strip().lower() == "openai-responses"
 
 def normalize_gpt_image_2_size(size):
     width, height = parse_size_pair(size)
