@@ -4311,6 +4311,11 @@ async def responses_input_image_url(ref, require_public_url=False) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
+    if text.startswith("data:image/") and ";base64," in text:
+        if require_public_url:
+            raise HTTPException(status_code=400, detail="RS 参考图是内联 data URL，当前渠道要求公网 URL，无法传给上游。")
+        data_url = reference_to_data_url(ref if isinstance(ref, dict) else {"url": text}, max_size=1536)
+        return data_url if data_url.startswith("data:") else ""
     local_path = text
     if re.match(r"^https?://", text, re.I):
         parsed = urllib.parse.urlsplit(text)
@@ -4409,6 +4414,22 @@ RESPONSES_REJECT_STATUSES = {400, 404, 405, 415, 422}
 RESPONSES_POLL_INTERVAL = 5.0
 RESPONSES_POLL_MAX_SECONDS = 1500.0
 
+def responses_is_content_reject(text):
+    """400 可能是 background 参数不被支持，也可能是内容审核已受理后拒绝。
+    后者不能改走 stream / 同步重试，避免上游已扣费后再打一次。"""
+    if isinstance(text, (bytes, bytearray)):
+        text = text.decode("utf-8", "replace")
+    lower = str(text or "").lower()
+    return any(token in lower for token in (
+        "rejected by the safety system",
+        "safety_violations",
+        "image_generation_user_error",
+        "content_policy_violation",
+        "content policy",
+        "inputtextsensitivecontentdetected",
+        "policyviolation",
+    ))
+
 async def post_openai_responses(client, url, headers, body):
     """RS / Responses 请求。图片编辑经常超过 120 秒，非流式请求会被中转前面的
     Cloudflare 读超时掐断（Error 524）。策略按可靠性排序：
@@ -4424,6 +4445,8 @@ async def post_openai_responses(client, url, headers, body):
         print(f"RS background 请求传输失败，改走流式：{e}")
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code in RESPONSES_REJECT_STATUSES:
+        if responses_is_content_reject(resp.text):
+            return resp
         print(f"RS background 模式被拒（{resp.status_code}），改走流式：{resp.text[:200]}")
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code >= 400:
@@ -4490,7 +4513,7 @@ async def post_openai_responses_stream(client, url, headers, body):
                 content = await resp.aread()
                 # 个别中转不支持 responses 流式（对 stream 参数直接报错）→ 回退一次非流式。
                 # 仅对“请求被拒绝”类状态码回退，5xx/超时不重试，避免上游已开始生成后重复扣费。
-                if resp.status_code in {400, 404, 405, 415, 422}:
+                if resp.status_code in {400, 404, 405, 415, 422} and not responses_is_content_reject(content):
                     print(f"RS 流式请求被拒（{resp.status_code}），回退非流式：{content[:200]!r}")
                     return await client.post(url, headers=headers, json=body)
                 return httpx.Response(resp.status_code, headers=resp.headers, content=content, request=request)
@@ -9883,6 +9906,21 @@ def is_gpt_image_2_model(model):
         or compact.endswith("gptimage2")
     )
 
+def should_use_responses_for_image_refs(image_request_mode, model, image_refs, mask_refs=None):
+    """GPT-Image-2 参考生图走 Responses，不走 multipart /images/edits。
+
+    生图工作台和 FHL 都是这条路径：CPA/中转对长 edits 不稳，Responses 用 input_image
+    公网 URL 或 data URL，background 轮询。有 mask 时仍走官方 edits 涂抹。
+    """
+    mode = str(image_request_mode or "").strip().lower()
+    if mode == "openai-responses":
+        return True
+    if mode != "openai":
+        return False
+    if mask_refs:
+        return False
+    return is_gpt_image_2_model(model) and bool(image_refs)
+
 def normalize_gpt_image_2_size(size):
     width, height = parse_size_pair(size)
     if not width or not height:
@@ -11541,7 +11579,8 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     refs = [ref for ref in (reference_images or []) if ref.get("url")]
     mask_refs = [ref for ref in refs if str(ref.get("role") or "").strip().lower() == "mask" or str(ref.get("name") or "").lower().endswith("_mask.png")]
     image_refs = [ref for ref in refs if ref not in mask_refs]
-    request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if (is_gpt2 or is_apimart or image_request_mode in {"openai-json", "openai-video-proxy", "openai-responses"}) else AI_REQUEST_TIMEOUT
+    use_responses_edit = should_use_responses_for_image_refs(image_request_mode, model, image_refs, mask_refs)
+    request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if (is_gpt2 or is_apimart or use_responses_edit or image_request_mode in {"openai-json", "openai-video-proxy", "openai-responses"}) else AI_REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
         async def post_openai_edits(edit_files=None):
@@ -11602,7 +11641,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                     headers=api_headers(provider=provider, model=model),
                     json=body,
                 )
-        elif image_request_mode == "openai-responses":
+        elif use_responses_edit:
             tool = {"type": "image_generation"}
             tool["action"] = "edit" if image_refs else "generate"
             if size and str(size).strip().lower() != "auto":
@@ -11716,9 +11755,13 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             # 2) edits 失败 → 非 GPT-Image-2 可回退到 /images/generations + JSON image:[urls/base64]（grsai 风格）
             if response is None:
                 if is_gpt2:
+                    friendly = friendly_image_error_detail(edit_failed_text, size, model)
                     raise HTTPException(
                         status_code=502,
-                        detail=f"GPT-Image-2 编辑接口 /images/edits 调用失败：{edit_failed_text[:300] or edit_failed_status}。已停止自动重试，避免上游可能已扣费后再次请求。"
+                        detail=(
+                            friendly
+                            or f"GPT-Image-2 编辑接口 /images/edits 调用失败：{edit_failed_text[:300] or edit_failed_status}。"
+                        ) + "已停止自动重试，避免上游可能已扣费后再次请求。"
                     )
                 print(f"/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON")
                 image_payload = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
@@ -11750,6 +11793,9 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             resp_text = (exc.response.text or "")[:800]
+            friendly = friendly_image_error_detail(resp_text, size, model)
+            if friendly:
+                raise HTTPException(status_code=exc.response.status_code, detail=friendly) from exc
             provider_name = provider.get("name") or provider["id"]
             raise HTTPException(
                 status_code=exc.response.status_code,
@@ -11772,7 +11818,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         try:
             return extract_image(raw), raw
         except HTTPException as exc:
-            if image_request_mode == "openai-responses":
+            if use_responses_edit:
                 fallback_image = responses_output_text_image(raw)
                 if fallback_image:
                     return fallback_image, raw
@@ -14871,6 +14917,11 @@ async def build_online_image_result(payload: OnlineImageRequest):
         return local_urls, local_items, raw_item
     try:
         generated = await asyncio.gather(*(generate_one() for _ in range(count)))
+    except HTTPException as exc:
+        friendly = friendly_image_error_detail(str(exc.detail), request_size, model)
+        if friendly and friendly not in str(exc.detail):
+            raise HTTPException(status_code=exc.status_code, detail=friendly) from exc
+        raise
     except httpx.HTTPStatusError as exc:
         log_net_error(f"生图 HTTP状态错误 provider={provider.get('id')} model={model} size={request_size}", exc)
         text = exc.response.text or ''

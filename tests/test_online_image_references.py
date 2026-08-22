@@ -55,6 +55,7 @@ class FakeResponse:
 class FakeAsyncClient:
     def __init__(self, *args, **kwargs):
         self.posts = []
+        self.response = None
 
     async def __aenter__(self):
         return self
@@ -64,7 +65,7 @@ class FakeAsyncClient:
 
     async def post(self, url, **kwargs):
         self.posts.append({"url": url, **kwargs})
-        return FakeResponse()
+        return self.response if self.response is not None else FakeResponse()
 
 
 class ImageReferenceRecognitionTests(unittest.TestCase):
@@ -168,6 +169,147 @@ class OpenAiEditReferenceTests(unittest.IsolatedAsyncioTestCase):
                 await main.build_online_image_result(payload)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("没有一张被识别为图片", ctx.exception.detail)
+
+
+SAFETY_REJECT_TEXT = (
+    '{"error":{"message":"Your request was rejected by the safety system. '
+    'safety_violations=[sexual].","type":"image_generation_user_error","param":null}}'
+)
+
+
+class ResponsesImageEditRoutingTests(unittest.TestCase):
+    def test_gpt_image_2_with_refs_uses_responses(self):
+        self.assertTrue(main.should_use_responses_for_image_refs(
+            "openai", "gpt-image-2", [{"url": PNG_DATA_URL}], []
+        ))
+
+    def test_plain_openai_model_still_uses_edits(self):
+        self.assertFalse(main.should_use_responses_for_image_refs(
+            "openai", "test-image", [{"url": PNG_DATA_URL}], []
+        ))
+
+    def test_mask_keeps_official_edits(self):
+        self.assertFalse(main.should_use_responses_for_image_refs(
+            "openai", "gpt-image-2", [{"url": PNG_DATA_URL}], [{"url": PNG_DATA_URL, "role": "mask"}]
+        ))
+
+    def test_openai_responses_mode_always_uses_responses(self):
+        self.assertTrue(main.should_use_responses_for_image_refs(
+            "openai-responses", "any-model", [], []
+        ))
+
+    def test_safety_text_is_not_a_background_param_reject(self):
+        self.assertTrue(main.responses_is_content_reject(SAFETY_REJECT_TEXT))
+        self.assertFalse(main.responses_is_content_reject('{"error":{"message":"Unknown parameter: background"}}'))
+
+
+class GptImage2ResponsesEditTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gpt_image_2_reference_posts_responses_edit_not_edits(self):
+        client = FakeAsyncClient()
+        with patch.object(main, "get_api_provider", return_value=openai_provider()), \
+             patch.object(main, "api_headers", return_value={"Authorization": "Bearer x"}), \
+             patch.object(main, "extract_image", return_value={"type": "b64", "value": "AA"}), \
+             patch.object(main.httpx, "AsyncClient", return_value=client):
+            image, _raw = await main.generate_ai_image(
+                "keep the character",
+                "1024x1024",
+                "auto",
+                "gpt-image-2",
+                [{"url": PNG_DATA_URL, "kind": "image"}],
+                "test-openai",
+            )
+        self.assertEqual(image["type"], "b64")
+        self.assertEqual(len(client.posts), 1)
+        self.assertTrue(client.posts[0]["url"].endswith("/responses"))
+        body = client.posts[0]["json"]
+        self.assertEqual(body["tools"][0]["action"], "edit")
+        self.assertEqual(body["tools"][0]["type"], "image_generation")
+        content = body["input"][0]["content"]
+        self.assertEqual(content[0]["type"], "input_text")
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertTrue(str(content[1]["image_url"]).startswith("data:image/"))
+        self.assertTrue(body.get("background"))
+
+    async def test_gpt_image_2_mask_still_posts_edits(self):
+        client = FakeAsyncClient()
+        with patch.object(main, "get_api_provider", return_value=openai_provider()), \
+             patch.object(main, "api_headers", return_value={"Authorization": "Bearer x"}), \
+             patch.object(main, "extract_image", return_value={"type": "b64", "value": "AA"}), \
+             patch.object(main.httpx, "AsyncClient", return_value=client):
+            await main.generate_ai_image(
+                "inpaint",
+                "1024x1024",
+                "auto",
+                "gpt-image-2",
+                [
+                    {"url": PNG_DATA_URL, "kind": "image"},
+                    {"url": PNG_DATA_URL, "kind": "image", "role": "mask", "name": "hole_mask.png"},
+                ],
+                "test-openai",
+            )
+        self.assertEqual(len(client.posts), 1)
+        self.assertTrue(client.posts[0]["url"].endswith("/images/edits"))
+
+    async def test_unreadable_gpt_image_2_refs_fail_before_responses_post(self):
+        client = FakeAsyncClient()
+        with patch.object(main, "get_api_provider", return_value=openai_provider()), \
+             patch.object(main, "api_headers", return_value={"Authorization": "Bearer x"}), \
+             patch.object(main.httpx, "AsyncClient", return_value=client):
+            with self.assertRaises(HTTPException) as ctx:
+                await main.generate_ai_image(
+                    "keep the character",
+                    "1024x1024",
+                    "auto",
+                    "gpt-image-2",
+                    [{"url": "https://192.168.1.8/missing.png", "kind": "image"}],
+                    "test-openai",
+                )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("input_image", ctx.exception.detail)
+        self.assertEqual(client.posts, [])
+
+    async def test_safety_reject_does_not_retry_responses(self):
+        client = FakeAsyncClient()
+        client.response = FakeResponse(status_code=400, text=SAFETY_REJECT_TEXT)
+
+        async def boom_stream(*_args, **_kwargs):
+            raise AssertionError("safety 400 must not fall back to stream")
+
+        with patch.object(main, "post_openai_responses_stream", side_effect=boom_stream):
+            resp = await main.post_openai_responses(
+                client,
+                "https://api.example.com/v1/responses",
+                {"Authorization": "Bearer x"},
+                {"model": "gpt-image-2"},
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(len(client.posts), 1)
+
+
+class FriendlySafetyErrorTests(unittest.IsolatedAsyncioTestCase):
+    def test_safety_violations_become_chinese(self):
+        detail = main.friendly_image_error_detail(SAFETY_REJECT_TEXT, "1024x1024", "gpt-image-2")
+        self.assertIn("内容安全", detail)
+        self.assertNotIn("safety_violations", detail)
+
+    async def test_build_online_image_result_rewrites_http_exception(self):
+        payload = main.OnlineImageRequest(
+            prompt="keep the character",
+            provider_id="test-openai",
+            model="gpt-image-2",
+            reference_images=[main.AIReference(url=PNG_DATA_URL, kind="image")],
+        )
+
+        async def boom(*_args, **_kwargs):
+            raise HTTPException(status_code=400, detail=SAFETY_REJECT_TEXT)
+
+        with patch.object(main, "get_api_provider", return_value=openai_provider()), \
+             patch.object(main, "generate_ai_image", side_effect=boom):
+            with self.assertRaises(HTTPException) as ctx:
+                await main.build_online_image_result(payload)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("内容安全", ctx.exception.detail)
+        self.assertNotIn("safety_violations", ctx.exception.detail)
 
 
 if __name__ == "__main__":
