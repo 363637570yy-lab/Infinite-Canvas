@@ -8322,43 +8322,101 @@ def convert_output_to_jpg(url, quality=88):
         print(f"转换 JPG 失败: {e}")
         return url
 
-def reference_to_data_url(ref, max_size=None):
-    """把本地输出文件转为 data URL（base64）。max_size 限制最长边像素，避免 payload 过大。"""
-    path = output_file_from_url(ref.get("url", ""))
-    if not path:
-        return ref.get("url", "")
+def _compress_image_to_data_url(raw, mime="", max_size=None):
+    """把图片字节压到 data URL。max_size 是最长边像素；压失败则退回原字节。"""
+    if not raw:
+        return ""
     if max_size:
         try:
-            with Image.open(path) as img:
+            with Image.open(BytesIO(raw)) as img:
                 img.load()
-                w, h = img.size
-                if max(w, h) > max_size:
+                if max(img.size) > max_size:
                     img.thumbnail((max_size, max_size), Image.LANCZOS)
-                if img.mode not in ("RGB", "RGBA"):
+                if img.mode not in {"RGB", "RGBA"}:
                     img = img.convert("RGB")
                 buf = BytesIO()
                 fmt = "PNG" if img.mode == "RGBA" else "JPEG"
                 img.save(buf, format=fmt, quality=88 if fmt == "JPEG" else None)
                 encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-                mime = "image/png" if fmt == "PNG" else "image/jpeg"
-                return f"data:{mime};base64,{encoded}"
+                out_mime = "image/png" if fmt == "PNG" else "image/jpeg"
+                return f"data:{out_mime};base64,{encoded}"
         except Exception as e:
             print(f"reference resize failed, fallback to raw: {e}")
-    with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("ascii")
-    return f"data:{content_type_for_path(path)};base64,{encoded}"
+    declared = str(mime or "image/png").split(";")[0].strip() or "image/png"
+    return f"data:{declared};base64,{base64.b64encode(raw).decode('ascii')}"
+
+def reference_to_data_url(ref, max_size=None):
+    """把参考图转为 data URL。本地文件和 data URL 可按最长边压缩；公网 URL 原样返回。"""
+    url = ref.get("url", "") if isinstance(ref, dict) else str(ref or "")
+    url = str(url or "").strip()
+    path = output_file_from_url(url)
+    if path:
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return url
+        return _compress_image_to_data_url(raw, content_type_for_path(path), max_size)
+    if url.startswith("data:image/") and ";base64," in url:
+        if not max_size:
+            return url
+        header, encoded = url.split(";base64,", 1)
+        mime = header.replace("data:", "", 1) or "image/png"
+        try:
+            raw = base64.b64decode(encoded)
+        except Exception:
+            return url
+        return _compress_image_to_data_url(raw, mime, max_size)
+    return url
+
+def prepared_image_reference_part(ref, max_size=1536):
+    """把参考图收成 multipart 可用的 (filename, bytes, mime)。读不到返回 None，由调用方大声失败。"""
+    payload = ref if isinstance(ref, dict) else {"url": str(ref or "")}
+    data_url = reference_to_data_url(payload, max_size=max_size)
+    if not (isinstance(data_url, str) and data_url.startswith("data:") and ";base64," in data_url):
+        return None
+    header, encoded = data_url.split(";base64,", 1)
+    mime = header.replace("data:", "", 1) or "image/png"
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if "jpeg" in mime or mime.endswith("jpg"):
+        ext = ".jpg"
+    elif "webp" in mime:
+        ext = ".webp"
+    else:
+        ext = ".png"
+    name = str(payload.get("name") or f"reference{ext}")
+    if not os.path.splitext(name)[1]:
+        name = f"{name}{ext}"
+    return (name, raw, mime)
+
+_IMAGE_REFERENCE_EXTS = {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heic", "heif"}
+_VIDEO_REFERENCE_EXTS = {"mp4", "webm", "mov", "m4v", "avi", "mkv"}
 
 def is_image_reference(ref):
     if not isinstance(ref, dict):
         return False
     kind = str(ref.get("kind") or "").strip().lower()
     mime = str(ref.get("mime") or "").strip().lower()
-    url = str(ref.get("url") or "").strip().lower()
+    url = str(ref.get("url") or "").strip()
+    url_l = url.lower()
     if kind:
         return kind == "image"
     if mime:
         return mime.startswith("image/")
-    return bool(re.search(r"\.(png|jpe?g|webp|gif|bmp|tiff?)(\?|#|$)", url))
+    if url_l.startswith("data:image/"):
+        return True
+    path = url_l.split("?", 1)[0].split("#", 1)[0]
+    ext = os.path.splitext(path)[1].lstrip(".")
+    if ext in _VIDEO_REFERENCE_EXTS:
+        return False
+    if ext in _IMAGE_REFERENCE_EXTS:
+        return True
+    return path.startswith(("/output/", "/assets/", "/api/storage-files/"))
 
 def image_references(refs):
     return [ref for ref in (refs or []) if is_image_reference(ref)]
@@ -10201,10 +10259,17 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
     model_name = gemini_model_name(model)
     endpoint = gemini_endpoint_url(provider, model_name)
     parts = [{"text": prompt.strip()}]
+    attached = 0
     for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
         part = gemini_reference_part(ref)
         if part:
             parts.append(part)
+            attached += 1
+    if reference_images and attached == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"已选择 {len(reference_images)} 张参考图，但没有一张能转为 Gemini inlineData/fileUri，已阻止按纯文生继续。",
+        )
     body = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
@@ -10239,6 +10304,11 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
     }
     images = [volcengine_image_payload(ref) for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]]
     images = [value for value in images if value]
+    if (reference_images or []) and not images:
+        raise HTTPException(
+            status_code=400,
+            detail=f"已选择 {len(reference_images)} 张参考图，但没有一张能读取为图片，已阻止按纯文生继续。",
+        )
     if images:
         body["image"] = images
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
@@ -11543,10 +11613,17 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             input_text = f"{size_instruction}\n\n{prompt}" if size_instruction else prompt
             content = [{"type": "input_text", "text": input_text}]
             force_public_refs = is_fhl_provider(provider)
+            attached = 0
             for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
                 image_url = await responses_input_image_url(ref, require_public_url=force_public_refs)
                 if image_url:
                     content.append({"type": "input_image", "image_url": image_url})
+                    attached += 1
+            if image_refs and attached == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"已选择 {len(image_refs)} 张参考图，但没有一张能转为 Responses input_image，已阻止按纯文生继续。",
+                )
             body = {
                 "model": model,
                 "input": [{"role": "user", "content": content}],
@@ -11561,7 +11638,14 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             # 文生图只传 extra_body.response_format，图生图把参考图放进 extra_body.image。
             extra_body = {"response_format": "url"}
             if image_refs:
-                extra_body["image"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
+                extra_body["image"] = [value for value in (
+                    reference_to_data_url(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]
+                ) if value]
+                if not extra_body["image"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"已选择 {len(image_refs)} 张参考图，但没有一张能读取为图片，已阻止按纯文生继续。",
+                    )
             body = {"model": model, "prompt": prompt, "size": size, "extra_body": extra_body}
             response = await client.post(gen_url, headers=api_headers(provider=provider, model=model), json=body)
         elif is_apimart:
@@ -11576,7 +11660,14 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 "resolution": apimart_image_resolution_for_model(model, resolution),
             }
             if image_refs:
-                body["image_urls"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
+                body["image_urls"] = [value for value in (
+                    reference_to_data_url(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]
+                ) if value]
+                if not body["image_urls"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"已选择 {len(image_refs)} 张参考图，但没有一张能读取为图片，已阻止按纯文生继续。",
+                    )
             response = await client.post(gen_url, headers=api_headers(provider=provider, model=model), json=body)
             if (
                 response.status_code >= 400
@@ -11593,39 +11684,35 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             if response.status_code >= 400 and images_api_unsupported(response):
                 response = await post_openai_edits()
         elif image_refs:
-            # 1) OpenAI 协议的图生图/编辑用 multipart 提交到 /images/edits；
-            # GPT-Image-2 参考图不能走 /images/generations JSON，否则部分平台会忽略原图或报 Images API unsupported。
+            # 1) OpenAI 协议的图生图/编辑用 multipart 提交到 /images/edits。
+            # 参考图先按与 JSON 路径相同的像素预算压缩，避免大原图把 edits 拖到超时或被网关掐断。
+            # 一张都读不到就大声失败，禁止空 files 仍去 POST（上游会当文生图并照常扣费）。
             files = []
-            opened = []
             edit_failed_status = None
             edit_failed_text = ""
+            for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
+                part = prepared_image_reference_part(ref)
+                if part:
+                    files.append(("image", part))
+            if mask_refs:
+                mask_part = prepared_image_reference_part(mask_refs[0])
+                if mask_part:
+                    files.append(("mask", mask_part))
+            if not files:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"已选择 {len(image_refs)} 张参考图，但没有一张能读取为图片，已阻止向 /images/edits 发送空请求。",
+                )
             try:
-                for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
-                    path = output_file_from_url(ref.get("url", ""))
-                    if not path:
-                        continue
-                    fh = open(path, "rb")
-                    opened.append(fh)
-                    files.append(("image", (os.path.basename(path), fh, content_type_for_path(path))))
-                if mask_refs:
-                    mask_path = output_file_from_url(mask_refs[0].get("url", ""))
-                    if mask_path:
-                        fh = open(mask_path, "rb")
-                        opened.append(fh)
-                        files.append(("mask", (os.path.basename(mask_path), fh, content_type_for_path(mask_path))))
-                try:
-                    response = await post_openai_edits(files)
-                    if response.status_code >= 400:
-                        edit_failed_status = response.status_code
-                        edit_failed_text = response.text[:500]
-                        response = None
-                except httpx.HTTPError as e:
-                    edit_failed_status = -1
-                    edit_failed_text = str(e)
+                response = await post_openai_edits(files)
+                if response.status_code >= 400:
+                    edit_failed_status = response.status_code
+                    edit_failed_text = response.text[:500]
                     response = None
-            finally:
-                for fh in opened:
-                    fh.close()
+            except httpx.HTTPError as e:
+                edit_failed_status = -1
+                edit_failed_text = str(e)
+                response = None
             # 2) edits 失败 → 非 GPT-Image-2 可回退到 /images/generations + JSON image:[urls/base64]（grsai 风格）
             if response is None:
                 if is_gpt2:
@@ -14727,6 +14814,11 @@ async def build_online_image_result(payload: OnlineImageRequest):
         if str(ref.url or "").strip() or str(ref.file_id or "").strip()
     ]
     image_refs = refs if is_grok2api_provider(provider) else image_references(refs)
+    if refs and not image_refs and not is_grok2api_provider(provider):
+        raise HTTPException(
+            status_code=400,
+            detail=f"已选择 {len(refs)} 张参考图，但没有一张被识别为图片，已阻止按纯文生继续。",
+        )
     count = max(1, min(8, int(payload.n or 1)))
     operation = str(getattr(payload, "operation", "") or "").strip().lower()
     if operation == "upscale":
