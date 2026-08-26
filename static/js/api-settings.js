@@ -160,13 +160,15 @@ function isEmptyOrExampleBaseUrl(value){
     const lower = String(value || '').trim().toLowerCase();
     return !lower || lower.includes('api.example.com');
 }
-function applyMinimaxSpeechProtocolDefaults(item){
+function applyMinimaxSpeechProtocolDefaults(item, options){
     if(!item) return;
     if(isEmptyOrExampleBaseUrl(item.base_url)) item.base_url = MINIMAX_SPEECH_CN_BASE_URL;
-    item.chat_models = unique([...(item.chat_models || []), ...MINIMAX_OFFICIAL_CHAT_MODELS]);
-    item.image_models = unique([...(item.image_models || []), ...MINIMAX_OFFICIAL_IMAGE_MODELS]);
-    item.video_models = unique([...(item.video_models || []), ...MINIMAX_OFFICIAL_VIDEO_MODELS]);
-    item.audio_models = unique([...(item.audio_models || []), ...MINIMAX_OFFICIAL_SPEECH_MODELS]);
+    const seedModels = Boolean(options && options.seedModels);
+    if(!seedModels) return;
+    if(!(item.chat_models || []).length) item.chat_models = MINIMAX_OFFICIAL_CHAT_MODELS.slice();
+    if(!(item.image_models || []).length) item.image_models = MINIMAX_OFFICIAL_IMAGE_MODELS.slice();
+    if(!(item.video_models || []).length) item.video_models = MINIMAX_OFFICIAL_VIDEO_MODELS.slice();
+    if(!(item.audio_models || []).length) item.audio_models = MINIMAX_OFFICIAL_SPEECH_MODELS.slice();
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -956,7 +958,7 @@ function updateProtocolFromInput(){
     item.protocol = API_PROTOCOLS.includes(value) ? value : 'openai';
     if(CLI_PROTOCOLS.has(item.protocol)) item.base_url = '';
     applyCliProtocolDefaults(item, item.protocol);
-    if(isMinimaxSpeechProtocol(item.protocol)) applyMinimaxSpeechProtocolDefaults(item);
+    if(isMinimaxSpeechProtocol(item.protocol)) applyMinimaxSpeechProtocolDefaults(item, {seedModels:true});
     document.body.classList.toggle('show-jimeng', item.protocol === 'jimeng');
     document.body.classList.toggle('show-codex', item.protocol === 'codex');
     document.body.classList.toggle('show-gemini-cli', item.protocol === 'gemini-cli');
@@ -3987,11 +3989,12 @@ async function saveProviders(){
         item.image_models = unique(item.image_models || []);
         item.chat_models = unique(item.chat_models || []);
         item.video_models = unique(item.video_models || []);
+        item.audio_models = unique(item.audio_models || []);
         applyAutoModelProtocols(item);
         item.model_protocols = sanitizeModelProtocols(item);
         const modelNameSource = (item.model_names && typeof item.model_names === 'object') ? item.model_names : {};
         const modelNameMap = {};
-        [...item.image_models, ...item.chat_models, ...item.video_models].forEach(model => {
+        [...item.image_models, ...item.chat_models, ...item.video_models, ...item.audio_models].forEach(model => {
             const raw = String(model || '').trim();
             const label = String(modelNameSource[raw] || modelDisplayName(raw, item) || '').trim();
             if(raw && label && label !== raw) modelNameMap[raw] = label;
@@ -4031,6 +4034,7 @@ async function saveProviders(){
                 image_models:item.image_models || [],
                 chat_models:item.chat_models || [],
                 video_models:item.video_models || [],
+                audio_models:item.audio_models || [],
                 model_names:(item.model_names && typeof item.model_names === 'object') ? item.model_names : {},
                 model_protocols:(item.model_protocols && typeof item.model_protocols === 'object') ? item.model_protocols : {},
                 ms_loras:item.id === 'modelscope' ? (item.ms_loras || []) : [],

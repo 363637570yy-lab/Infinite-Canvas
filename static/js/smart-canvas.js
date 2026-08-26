@@ -15678,17 +15678,14 @@ function bindSmartCharacterVoicePanel(){
     const nameInput = panel.querySelector('[data-cv="name"]');
     const textInput = panel.querySelector('[data-cv="text"]');
     const genBtn = panel.querySelector('[data-cv="generate"]');
-    let lastVoiceLabel = cv.selectedVoiceName ? cv.selectedVoiceName(panel, settings.videoVoiceId) : '';
     const persist = () => {
         if(providerSel) settings.videoSpeechProvider = providerSel.value;
         if(modelSel) settings.videoSpeechModel = modelSel.value;
         if(voiceSel) settings.videoVoiceId = voiceSel.value;
         if(textInput) settings.videoVoiceSampleText = textInput.value;
         if(nameInput){
-            const voiceName = cv.selectedVoiceName ? cv.selectedVoiceName(panel, voiceSel?.value) : '';
-            settings.videoVoiceSampleName = cv.displaySampleName
-                ? cv.displaySampleName(nameInput.value, voiceName, voiceSel?.value)
-                : (nameInput.value || '').trim();
+            const label = String(nameInput.value || '').trim();
+            settings.videoVoiceSampleName = cv.isGenericSampleName?.(label) ? '' : label;
         }
         persistActiveSmartSettings();
         scheduleSave();
@@ -15698,16 +15695,6 @@ function bindSmartCharacterVoicePanel(){
         el.onchange = persist;
         el.oninput = persist;
     });
-    if(voiceSel){
-        voiceSel.onchange = () => {
-            const nextLabel = cv.selectedVoiceName ? cv.selectedVoiceName(panel, voiceSel.value) : '';
-            if(nameInput && (cv.isGenericSampleName?.(nameInput.value) || nameInput.value.trim() === lastVoiceLabel)){
-                nameInput.value = nextLabel;
-            }
-            lastVoiceLabel = nextLabel;
-            persist();
-        };
-    }
     if(providerSel && !cv.voiceCache[providerSel.value]){
         cv.fetchVoices(providerSel.value).then(data => {
             if(!settings.videoSpeechModel) settings.videoSpeechModel = data.default_model || settings.videoSpeechModel;
@@ -15731,8 +15718,8 @@ function bindSmartCharacterVoicePanel(){
             try {
                 const voiceName = cv.selectedVoiceName ? cv.selectedVoiceName(panel, settings.videoVoiceId) : '';
                 const sampleName = cv.displaySampleName
-                    ? cv.displaySampleName(nameInput?.value || settings.videoVoiceSampleName, voiceName, settings.videoVoiceId)
-                    : (nameInput?.value || settings.videoVoiceSampleName || voiceName);
+                    ? cv.displaySampleName(nameInput?.value || settings.videoVoiceSampleName, voiceName, '')
+                    : (nameInput?.value || settings.videoVoiceSampleName || '');
                 const sample = await cv.generateSample({
                     provider_id: settings.videoSpeechProvider,
                     model: settings.videoSpeechModel || '',

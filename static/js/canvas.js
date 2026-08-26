@@ -6296,7 +6296,11 @@ function renderNode(node){
         else openGeneratorNodeMenu(node.id, e.clientX, e.clientY);
     };
     const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : node.type === 'voice' ? trOr('canvas.voiceNode', '音色', 'Voice') : tr('canvas.apiGenerate');
-    const displayTitle = node.type === 'image' && node.url ? nodeTitleForMedia(node) : title;
+    const displayTitle = node.type === 'image' && node.url
+        ? nodeTitleForMedia(node)
+        : (node.type === 'voice' && window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)
+            ? node.name
+            : title);
     const originHtml = (node.type === 'prompt' && window.VideoPromptTargets?.originChipsHtml)
         ? window.VideoPromptTargets.originChipsHtml(node, canvasPromptOriginFallback(node))
         : '';
@@ -6307,7 +6311,43 @@ function renderNode(node){
         const label = { queued:'排队中', running:'运行中', done:'完成', failed:'失败' }[node.runStatus] || '';
         return `<span class="node-run-status ${node.runStatus}"><span class="dot"></span>${escapeHtml(label)}${node._cascadeIdx?' '+node._cascadeIdx:''}</span>`;
     })() : '';
-    el.innerHTML = `<div class="node-head"><span class="node-title-wrap"><span class="node-title">${displayTitle}</span>${originHtml}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
+    el.innerHTML = `<div class="node-head"><span class="node-title-wrap"><span class="node-title">${escapeHtml(displayTitle)}</span>${originHtml}</span><div style="display:flex;align-items:center;gap:8px">${statusHtml}<button onclick="deleteNodeFromButton('${node.id}', event)" class="text-gray-300 hover:text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button></div></div>`;
+    if(node.type === 'voice'){
+        const titleEl = el.querySelector('.node-title');
+        if(titleEl){
+            titleEl.style.cursor = 'text';
+            titleEl.title = '双击写成角色名，和角色图同名';
+            titleEl.ondblclick = ev => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const input = document.createElement('input');
+                input.className = 'voice-title-input';
+                input.maxLength = 40;
+                input.value = window.CharacterVoice?.isGenericSampleName?.(node.name) ? '' : String(node.name || '');
+                input.placeholder = trOr('canvas.voiceNode', '音色', 'Voice');
+                input.onmousedown = e => e.stopPropagation();
+                input.onclick = e => e.stopPropagation();
+                const commit = () => {
+                    const next = String(input.value || '').trim();
+                    node.name = next || trOr('canvas.voiceNode', '音色', 'Voice');
+                    if(window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)){
+                        node.voiceSampleName = node.name;
+                    }
+                    render();
+                    scheduleSave();
+                };
+                input.onkeydown = e => {
+                    e.stopPropagation();
+                    if(e.key === 'Enter'){ e.preventDefault(); commit(); }
+                    if(e.key === 'Escape'){ e.preventDefault(); render(); }
+                };
+                input.onblur = commit;
+                titleEl.replaceWith(input);
+                input.focus();
+                input.select();
+            };
+        }
+    }
     const body = document.createElement('div');
     body.className = 'node-body';
     if(node.type === 'image') {
@@ -6431,7 +6471,7 @@ function renderNode(node){
     if(node.type === 'voice'){
         const voiceBody = window.CharacterVoice?.renderBody?.(node, {
             providers: apiProviders,
-            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。名称建议和角色图同名，改写时按名称绑到对应人物。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Name it after the character image so the rewriter can bind the voice. This is not per-line TTS.'),
+            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。双击标题写成角色名，和角色图同名。下面只选 MiniMax 音色。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Double-click the title to name the character. Pick MiniMax timbre below. This is not per-line TTS.'),
             onChange(){ scheduleSave(); },
             onRefresh(){ render(); scheduleSave(); },
             showError: showErrorModal

@@ -37,6 +37,27 @@ class MiniMaxSpeechRoutingTests(unittest.TestCase):
             "video_models": ["MiniMax-H3"],
         })
         self.assertEqual(saved["audio_models"], ["speech-2.8-hd", "speech-2.8-turbo"])
+        subset = main.normalize_provider({
+            "id": "minimax-official",
+            "name": "MiniMax",
+            "base_url": "https://api.minimaxi.com",
+            "protocol": "minimax-speech",
+            "image_models": ["image-01"],
+            "chat_models": [],
+            "video_models": ["MiniMax-H3"],
+            "audio_models": ["speech-2.8-hd"],
+        })
+        self.assertEqual(subset["image_models"], ["image-01"])
+        self.assertEqual(subset["chat_models"], [])
+        self.assertEqual(subset["video_models"], ["MiniMax-H3"])
+        self.assertEqual(subset["audio_models"], ["speech-2.8-hd"])
+        payload = main.ApiProviderPayload(
+            id="minimax-official",
+            audio_models=["speech-2.8-hd"],
+            image_models=["image-01"],
+        )
+        self.assertEqual(payload.audio_models, ["speech-2.8-hd"])
+        self.assertEqual(payload.image_models, ["image-01"])
 
     def test_urls_strip_version_suffix(self):
         self.assertEqual(
@@ -170,7 +191,10 @@ class MiniMaxT2ARequestTests(unittest.TestCase):
         )
         self.assertEqual(speech.sample_display_name("林小夏", "girl", "少女音色"), "林小夏")
         self.assertEqual(speech.sample_display_name("音色", "girl", "少女音色"), "少女音色")
-        self.assertEqual(speech.sample_display_name("", "girl-voice-id", ""), "girl-voice-id")
+        self.assertEqual(speech.sample_display_name("female-shaonv", "female-shaonv", "少女音色"), "少女音色")
+        self.assertEqual(speech.sample_display_name("", "girl-voice-id", ""), "角色样音")
+        self.assertTrue(speech.looks_like_voice_id("female-shaonv"))
+        self.assertFalse(speech.looks_like_voice_id("少女"))
         self.assertLessEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), speech.MINIMAX_SAMPLE_TEXT_MAX)
         self.assertGreaterEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), 40)
 
@@ -333,3 +357,14 @@ class MiniMaxFetchModelsTests(unittest.TestCase):
         self.assertIn("MiniMax-H3", data["video_models"])
         self.assertIn("image-01", data["image_models"])
         self.assertGreaterEqual(data["total"], 11)
+
+    def test_api_settings_keeps_saved_minimax_subset(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parents[1] / "static/js/api-settings.js").read_text(encoding="utf-8")
+        self.assertIn("seedModels", js)
+        self.assertIn("audio_models:item.audio_models || []", js)
+        self.assertNotIn(
+            "item.image_models = unique([...(item.image_models || []), ...MINIMAX_OFFICIAL_IMAGE_MODELS]);",
+            js,
+        )
+        self.assertIn("applyMinimaxSpeechProtocolDefaults(item, {seedModels:true})", js)

@@ -105,7 +105,7 @@
         "canvas.comfyGenerate": { zh: "ComfyUI 生成", en: "ComfyUI Generate" },
         "canvas.videoGenerateNode": { zh: "视频生成", en: "Video Generate" },
         "canvas.voiceNode": { zh: "音色", en: "Voice" },
-        "canvas.voiceHint": { zh: "生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。名称建议和角色图同名，改写时按名称绑到对应人物。不是按台词配音。", en: "Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Name it after the character image so the rewriter can bind the voice. This is not per-line TTS." },
+        "canvas.voiceHint": { zh: "生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。双击标题写成角色名，和角色图同名。下面只选 MiniMax 音色。不是按台词配音。", en: "Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Double-click the title to name the character. Pick MiniMax timbre below. This is not per-line TTS." },
         "canvas.rhGenerate": { zh: "RunningHub生成", en: "RunningHub Generate" },
         "canvas.rhModeApp": { zh: "AI应用", en: "AI App" },
         "canvas.rhModeWorkflow": { zh: "工作流", en: "Workflow" },

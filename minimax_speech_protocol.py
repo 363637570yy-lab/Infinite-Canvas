@@ -332,6 +332,18 @@ def t2a_text(value, default=MINIMAX_DEFAULT_SAMPLE_TEXT, limit=MINIMAX_SAMPLE_TE
     return text
 
 
+def looks_like_voice_id(value):
+    text = str(value or "").strip()
+    if not text or " " in text:
+        return False
+    if any("\u4e00" <= ch <= "\u9fff" for ch in text):
+        return False
+    parts = text.split("-")
+    if len(parts) < 2:
+        return False
+    return all(part.isalnum() for part in parts)
+
+
 def sample_display_name(name="", voice_id="", voice_name=""):
     """Human label for a sample clip. Disk files stay unique; this is what H3 rewrite sees."""
     text = str(name or "").strip()
@@ -342,11 +354,14 @@ def sample_display_name(name="", voice_id="", voice_name=""):
         not text
         or lowered in {item.lower() for item in _GENERIC_SAMPLE_NAMES}
         or lowered.startswith("voice_sample_")
+        or looks_like_voice_id(text)
     )
     if generic:
-        text = str(voice_name or "").strip() or str(voice_id or "").strip() or "角色样音"
+        text = str(voice_name or "").strip()
         if text.lower().endswith(".mp3"):
             text = text[:-4].strip()
+        if not text or looks_like_voice_id(text) or text.lower() in {item.lower() for item in _GENERIC_SAMPLE_NAMES}:
+            text = "角色样音"
     return text[:MINIMAX_SAMPLE_NAME_MAX]
 
 

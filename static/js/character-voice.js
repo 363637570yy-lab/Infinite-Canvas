@@ -4,6 +4,7 @@
     const PROTOCOL = 'minimax-speech';
     const NODE_TYPE = 'voice';
     const DEFAULT_TEXT = '清晨窗边风很轻，一二三四五，东南西北中。山、川、江、河。请保持声线稳定，吐字清晰，别加快也别放慢。';
+    const OLD_DEFAULT_TEXT = '这是用于视频角色音色参考的样音，请保持声线稳定、吐字清晰。';
     const GENERIC_NAMES = ['', '音色', '角色样音', 'Voice', 'Audio', 'sample', '读取音色…', '读取音色'];
     const voiceCache = {};
 
@@ -11,23 +12,39 @@
         return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[ch]));
     }
 
+    function looksLikeVoiceId(name){
+        const text = String(name || '').trim();
+        if(!text || /\s/.test(text) || /[\u4e00-\u9fff]/.test(text)) return false;
+        return /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/i.test(text);
+    }
+
     function isGenericSampleName(name){
         const text = String(name || '').trim();
         if(!text) return true;
         if(GENERIC_NAMES.includes(text)) return true;
-        return /^voice_sample_[0-9a-f]{8,}/i.test(text);
+        if(/^voice_sample_[0-9a-f]{8,}/i.test(text)) return true;
+        return looksLikeVoiceId(text);
     }
 
     function selectedVoiceName(panel, voiceId){
         const sel = panel?.querySelector?.('[data-cv="voice"]');
         const label = String(sel?.selectedOptions?.[0]?.textContent || '').trim();
-        return label || String(voiceId || '').trim();
+        if(label && !isGenericSampleName(label) && !looksLikeVoiceId(label)) return label;
+        return '';
     }
 
     function displaySampleName(name, voiceName, voiceId){
         const text = String(name || '').trim().replace(/\.mp3$/i, '');
         if(!isGenericSampleName(text)) return text.slice(0, 40);
-        return String(voiceName || voiceId || '角色样音').trim().slice(0, 40) || '角色样音';
+        const voice = String(voiceName || '').trim();
+        if(voice && !isGenericSampleName(voice)) return voice.slice(0, 40);
+        return '角色样音';
+    }
+
+    function sampleText(value){
+        const text = String(value || '').trim();
+        if(!text || text === OLD_DEFAULT_TEXT) return DEFAULT_TEXT;
+        return text;
     }
 
     function injectStyles(){
@@ -37,14 +54,16 @@
         style.textContent = [
             '.character-voice-panel{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;}',
             '.character-voice-panel select,.character-voice-panel input,.character-voice-panel textarea{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}',
-            '.character-voice-panel .cv-name{flex:1 1 160px;min-width:120px;max-width:none;}',
-            '.character-voice-panel .cv-text{flex:1 1 180px;min-width:140px;max-width:none;min-height:64px;resize:vertical;}',
+            '.character-voice-panel .cv-name{flex:0 0 auto;width:100%;max-width:220px;height:28px;}',
+            '.character-voice-panel .cv-text{flex:1 1 180px;min-width:140px;max-width:none;min-height:42px;max-height:88px;resize:vertical;}',
+            '.voice-title-input{width:118px;font-size:12px;font-weight:700;line-height:1.2;padding:2px 6px;border-radius:6px;border:1px solid rgba(128,128,148,.45);background:transparent;color:inherit;}',
             '.character-voice-panel .cv-generate{font-size:11px;line-height:1;padding:6px 10px;border-radius:999px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;cursor:pointer;}',
             '.character-voice-panel .cv-generate:disabled{opacity:.5;cursor:wait;}',
             '.character-voice-sample{flex-basis:100%;display:flex;gap:8px;align-items:center;font-size:11px;opacity:.86;}',
             '.character-voice-sample audio{height:28px;max-width:220px;}',
             '.character-voice-panel.standalone{flex-direction:column;align-items:stretch;margin-top:0;}',
-            '.character-voice-panel.standalone select,.character-voice-panel.standalone input,.character-voice-panel.standalone textarea,.character-voice-panel.standalone .cv-text,.character-voice-panel.standalone .cv-name{max-width:none;width:100%;}',
+            '.character-voice-panel.standalone select,.character-voice-panel.standalone input,.character-voice-panel.standalone textarea,.character-voice-panel.standalone .cv-text{max-width:none;width:100%;flex:0 0 auto;}',
+            '.character-voice-panel.standalone .cv-text{min-height:42px;}',
             '.character-voice-panel.standalone .cv-generate{align-self:flex-start;}',
             '.character-voice-panel.standalone .character-voice-sample audio{max-width:100%;width:100%;}',
             '.voice-node-body{display:flex;flex-direction:column;gap:8px;padding:2px 0;}',
@@ -97,9 +116,9 @@
         return {
             url,
             name: displaySampleName(
-                node?.voiceSampleName || node?.runSettings?.videoVoiceSampleName,
+                node?.name || node?.voiceSampleName || node?.runSettings?.videoVoiceSampleName,
                 '',
-                node?.voiceId || node?.runSettings?.videoVoiceId
+                ''
             ),
             kind: 'audio',
             role: 'character_voice',
@@ -184,19 +203,21 @@
         const model = state.model || models[0] || '';
         const voiceId = state.voiceId || voices[0]?.voice_id || '';
         const voiceName = (voices.find(item => item.voice_id === voiceId) || {}).voice_name || '';
-        const text = state.text || DEFAULT_TEXT;
+        const text = sampleText(state.text);
         const sampleName = displaySampleName(state.sampleName, voiceName, voiceId);
+        const customName = isGenericSampleName(state.sampleName) ? '' : String(state.sampleName || '').trim();
         const sampleUrl = state.sampleUrl || '';
         const extraClass = state.standalone ? ' standalone' : '';
         if(!providers.length){
             return `<div class="character-voice-panel${extraClass}"><span class="vpt-row-label">请先在 API 设置接入 MiniMax 语音协议并保存 Key</span></div>`;
         }
+        const nameField = state.standalone ? '' : `<input class="cv-name" data-cv="name" type="text" maxlength="40" value="${esc(customName)}" placeholder="角色名，和参考图同名">`;
         return `<div class="character-voice-panel${extraClass}" data-character-voice-panel="1">
             <select class="cv-provider" data-cv="provider">${providers.map(p => `<option value="${esc(p.id)}" ${p.id === providerId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</select>
             <select class="cv-model" data-cv="model">${(models.length ? models : ['speech-2.8-hd']).map(m => `<option value="${esc(m)}" ${m === model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
             <select class="cv-voice" data-cv="voice">${voices.length ? voices.map(v => `<option value="${esc(v.voice_id)}" ${v.voice_id === voiceId ? 'selected' : ''}>${esc(v.voice_name || v.voice_id)}</option>`).join('') : '<option value="">读取音色…</option>'}</select>
-            <input class="cv-name" data-cv="name" type="text" maxlength="40" value="${esc(sampleName)}" placeholder="样音名称，建议和角色图同名" title="用来匹配角色图。例如角色图叫少女.png，这里就写少女">
-            <textarea class="cv-text" data-cv="text" maxlength="200" rows="3" title="样音试听文本，不要写成整段台词">${esc(text)}</textarea>
+            ${nameField}
+            <textarea class="cv-text" data-cv="text" maxlength="200" rows="2" title="样音试听文本，不要写成整段台词">${esc(text)}</textarea>
             <button type="button" class="cv-generate" data-cv="generate">生成样音</button>
             ${sampleUrl ? `<div class="character-voice-sample"><audio src="${esc(sampleUrl)}" controls preload="metadata"></audio><span>${esc(sampleName)}</span></div>` : ''}
         </div>`;
@@ -208,7 +229,7 @@
             providerId: src.speechProviderId || src.videoSpeechProvider || '',
             model: src.speechModel || src.videoSpeechModel || '',
             voiceId: src.voiceId || src.videoVoiceId || '',
-            text: src.voiceSampleText || src.videoVoiceSampleText || DEFAULT_TEXT,
+            text: sampleText(src.voiceSampleText || src.videoVoiceSampleText || DEFAULT_TEXT),
             sampleUrl: src.voiceSampleUrl || src.videoVoiceSampleUrl || src.url || '',
             sampleName: src.voiceSampleName || src.videoVoiceSampleName || src.name || ''
         };
@@ -217,15 +238,15 @@
     function applySampleToNode(node, sample, fields){
         if(!node) return;
         const url = sample.url;
-        const name = displaySampleName(fields?.sampleName || sample.name, fields?.voiceName, sample.voice_id || fields?.voiceId);
+        const name = displaySampleName(node.name || fields?.sampleName || sample.name, fields?.voiceName, '');
         node.voiceSampleUrl = url;
-        node.voiceSampleName = name;
+        node.voiceSampleName = isGenericSampleName(node.name) ? name : node.name;
         node.voiceId = sample.voice_id || fields.voiceId || node.voiceId;
         node.speechModel = sample.model || fields.model || node.speechModel;
         node.speechProviderId = fields.providerId || node.speechProviderId;
         if(node.type === NODE_TYPE){
             node.url = url;
-            node.name = name;
+            if(isGenericSampleName(node.name)) node.name = '音色';
             node.mediaKind = 'audio';
         } else {
             node.characterVoice = true;
@@ -234,7 +255,7 @@
 
     function applySampleToSettings(settings, sample, fields){
         if(!settings) return;
-        const name = displaySampleName(fields?.sampleName || sample.name, fields?.voiceName, sample.voice_id || fields?.voiceId);
+        const name = displaySampleName(fields?.sampleName || settings.videoVoiceSampleName || sample.name, fields?.voiceName, '');
         settings.videoVoiceSampleUrl = sample.url;
         settings.videoVoiceSampleName = name;
         settings.videoVoiceId = sample.voice_id || fields.voiceId || settings.videoVoiceId;
@@ -267,7 +288,7 @@
         if(!url) return null;
         return {
             url,
-            name: displaySampleName(node.name || node.voiceSampleName, '', node.voiceId),
+            name: displaySampleName(node.name || node.voiceSampleName, '', ''),
             role: 'character_voice',
             kind: 'audio',
             sourceType: NODE_TYPE
@@ -298,16 +319,14 @@
         const textInput = panel.querySelector('[data-cv="text"]');
         const genBtn = panel.querySelector('[data-cv="generate"]');
         panel.onmousedown = e => e.stopPropagation();
-        let lastVoiceLabel = selectedVoiceName(panel, node.voiceId);
         const persist = () => {
             if(providerSel) node.speechProviderId = providerSel.value;
             if(modelSel) node.speechModel = modelSel.value;
             if(voiceSel) node.voiceId = voiceSel.value;
             if(textInput) node.voiceSampleText = textInput.value;
-            if(nameInput){
-                const label = displaySampleName(nameInput.value, selectedVoiceName(panel, voiceSel?.value), voiceSel?.value);
-                node.voiceSampleName = label;
-                if(node.type === NODE_TYPE) node.name = label;
+            if(nameInput && node.type !== NODE_TYPE){
+                const label = String(nameInput.value || '').trim();
+                node.voiceSampleName = isGenericSampleName(label) ? '' : label;
             }
             hooks?.onChange?.();
         };
@@ -318,31 +337,13 @@
             el.onchange = persist;
             el.oninput = persist;
         });
-        if(voiceSel){
-            voiceSel.onchange = () => {
-                const nextLabel = selectedVoiceName(panel, voiceSel.value);
-                if(nameInput && (isGenericSampleName(nameInput.value) || nameInput.value.trim() === lastVoiceLabel)){
-                    nameInput.value = nextLabel;
-                }
-                lastVoiceLabel = nextLabel;
-                persist();
-            };
-        }
         if(providerSel && !voiceCache[providerSel.value]){
             fetchVoices(providerSel.value).then(data => {
                 if(!node.speechModel) node.speechModel = data.default_model || node.speechModel;
                 if(!node.voiceId && data.voices?.[0]) node.voiceId = data.voices[0].voice_id;
-                const first = (data.voices || []).find(item => item.voice_id === node.voiceId) || data.voices?.[0];
-                if(first && isGenericSampleName(node.voiceSampleName || node.name)){
-                    node.voiceSampleName = first.voice_name || first.voice_id;
-                    if(node.type === NODE_TYPE) node.name = node.voiceSampleName;
-                }
                 persist();
                 hooks?.onRefresh?.();
             }).catch(err => showError(err.message || '读取音色失败', '音色'));
-        }
-        if(nameInput && !isGenericSampleName(nameInput.value) && isGenericSampleName(node.voiceSampleName || node.name)){
-            persist();
         }
         if(genBtn){
             genBtn.onmousedown = e => e.stopPropagation();
@@ -358,12 +359,12 @@
                 genBtn.textContent = '合成中…';
                 try {
                     const voiceName = selectedVoiceName(panel, node.voiceId);
-                    const sampleName = displaySampleName(nameInput?.value || node.voiceSampleName, voiceName, node.voiceId);
+                    const sampleName = displaySampleName(node.name || nameInput?.value || node.voiceSampleName, voiceName, '');
                     const sample = await generateSample({
                         provider_id: node.speechProviderId,
                         model: node.speechModel || '',
                         voice_id: node.voiceId,
-                        text: node.voiceSampleText || DEFAULT_TEXT,
+                        text: sampleText(node.voiceSampleText || DEFAULT_TEXT),
                         name: sampleName
                     });
                     applySampleToNode(node, sample, {
@@ -389,7 +390,7 @@
         injectStyles();
         const wrap = document.createElement('div');
         wrap.className = 'voice-node-body generator-body';
-        const hint = hooks?.hint || '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。名称建议和角色图同名，改写时按名称绑到对应人物。不是按台词配音。';
+        const hint = hooks?.hint || '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。双击标题写成角色名，和角色图同名。下面只选 MiniMax 音色。不是按台词配音。';
         wrap.innerHTML = `<div class="voice-node-hint">${esc(hint)}</div>` + panelHtml({
             ...readStateFrom(node),
             providers: hooks?.providers || [],
@@ -404,7 +405,9 @@
         NODE_TYPE,
         DEFAULT_TEXT,
         isGenericSampleName,
+        looksLikeVoiceId,
         displaySampleName,
+        sampleText,
         selectedVoiceName,
         speechProviders,
         mergeAudios,
