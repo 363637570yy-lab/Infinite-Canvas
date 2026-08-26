@@ -247,6 +247,7 @@ body.theme-dark .node-run-status.failed { background:rgba(239,68,68,.22); color:
 .gen-run-row .comfy-run { flex:0 0 40px; margin-top:0; }
 .gen-run-row .llm-run { flex:0 0 36px; margin-top:0; }
 .video-node { width:380px; }
+.voice-node { width:380px; }
 .video-input-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
 .video-input-head .tool-btn { height:28px; min-width:0; padding:0 10px; font-size:10px; white-space:nowrap; }
 .video-input-actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; }

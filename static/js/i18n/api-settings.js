@@ -49,7 +49,7 @@
         "api.videoModels": { zh: "视频模型", en: "Video Models" },
         "api.videoHint": { zh: "无限画布视频生成节点使用。", en: "Used by Infinite Canvas video generation nodes." },
         "api.audioModels": { zh: "语音模型", en: "Speech Models" },
-        "api.audioHint": { zh: "无限画布「角色音色」样音使用，不用于出视频。", en: "Used by Canvas Character Voice samples, not video generation." },
+        "api.audioHint": { zh: "无限画布「音色」节点样音使用，不用于出视频。", en: "Used by Canvas Voice nodes for samples, not video generation." },
         "api.model": { zh: "模型", en: "Model" },
         "api.noModels": { zh: "暂无模型", en: "No models" },
         "api.modelsTitle": { zh: "模型列表", en: "Model List" },

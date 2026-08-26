@@ -2972,12 +2972,8 @@ function renderApiVideoParams(){
         ${renderVideoAspectControl()}
         ${renderVideoDurationControl()}
         ${grok2api ? '' : `
-        ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
-        ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
         ${showSmartCharacterVoice(settings.videoProvider) ? renderVideoToggleControl('videoCharacterVoice', trOr('smart.videoCharacterVoice', '角色音色', 'Character Voice')) : ''}
-        ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
-        ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
         ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
@@ -3016,12 +3012,8 @@ function renderVolcengineVideoParams(){
         ${renderVideoResolutionControl()}
         ${renderVideoAspectControl()}
         ${renderVideoDurationControl()}
-        ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
-        ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
         ${showSmartCharacterVoice(settings.videoProvider) ? renderVideoToggleControl('videoCharacterVoice', trOr('smart.videoCharacterVoice', '角色音色', 'Character Voice')) : ''}
-        ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
-        ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
         ${renderVideoTrustedAssetControl()}
@@ -15953,10 +15945,10 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, targetN
             images: refImages,
             videos: refVideos,
             audios: refAudios,
-            enhance_prompt: grok2api ? false : Boolean(runSettings.videoEnhancePrompt),
-            enable_upsample: grok2api ? false : Boolean(runSettings.videoEnableUpsample),
-            watermark: grok2api ? false : Boolean(runSettings.videoWatermark),
-            camerafixed: grok2api ? false : Boolean(runSettings.videoCameraFixed),
+            enhance_prompt: false,
+            enable_upsample: false,
+            watermark: false,
+            camerafixed: false,
             generate_audio: grok2api ? false : Boolean(runSettings.videoGenerateAudio),
             multimodal: grok2api ? false : Boolean(runSettings.videoMultimodal),
             trusted_asset: grok2api ? false : useAssetUris

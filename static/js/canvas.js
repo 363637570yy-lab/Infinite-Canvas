@@ -871,24 +871,6 @@ function isGrok2apiVideoProvider(providerId){
     const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
     return String(provider?.protocol || '').trim().toLowerCase() === 'grok2api';
 }
-function isH3VideoProvider(providerId){
-    const id = String(providerId || '').trim().toLowerCase();
-    const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
-    return String(provider?.protocol || '').trim().toLowerCase() === 'h3';
-}
-function isMiniMaxOfficialProvider(providerId){
-    const id = String(providerId || '').trim().toLowerCase();
-    const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
-    const protocol = String(provider?.protocol || '').trim().toLowerCase();
-    return protocol === 'minimax-speech' || protocol === 'minimax';
-}
-function videoNodeShowsCharacterVoice(node){
-    if(!node) return false;
-    if(node.characterVoice) return true;
-    if(isH3VideoProvider(node.apiProvider)) return true;
-    if(isMiniMaxOfficialProvider(node.apiProvider)) return true;
-    return Boolean(window.CharacterVoice?.speechProviders?.(apiProviders)?.length);
-}
 function resolveVideoProviderId(id){
     const providers = videoApiProviders();
     return providers.find(p => p.id === id)?.id || providers[0]?.id || 'comfly';
@@ -2805,6 +2787,19 @@ function addVideoNode(point){
         running:false
     });
 }
+function addVoiceNode(point){
+    const p = point || defaultPoint(120, 0);
+    const cv = window.CharacterVoice;
+    return addNode(cv?.createNodeData ? cv.createNodeData(p, uid('voice')) : {
+        id:uid('voice'),
+        type:'voice',
+        x:p.x,
+        y:p.y,
+        url:'',
+        name:'音色',
+        mediaKind:'audio'
+    });
+}
 function addRhNode(point){
     const p = point || defaultPoint(180, 0);
     return addNode({
@@ -3381,6 +3376,11 @@ function linkCreateOptions(state){
     const node = nodes.find(n => n.id === state?.originId);
     if(!node) return [];
     if(state.originKind === 'out'){
+        if(node.type === 'voice'){
+            return [
+                {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
+            ];
+        }
         if(['image','prompt','loop','group','promptGroup','llm','output'].includes(node.type)){
             return [
                 {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
@@ -3397,6 +3397,7 @@ function linkCreateOptions(state){
     if(CANVAS_GENERATOR_TYPES.includes(node.type) || node.type === 'llm'){
         return [
             {type:'image', label:tr('canvas.imageCard'), icon:'image-plus'},
+            ...(node.type === 'video' ? [{type:'voice', label:trOr('canvas.voiceNode', '音色', 'Voice'), icon:'file-audio'}] : []),
             {type:'prompt', label:tr('canvas.prompt'), icon:'text-cursor-input'},
             {type:'loop', label:tr('canvas.loopNode'), icon:'repeat-2'},
             {type:'group', label:tr('canvas.group'), icon:'group'},
@@ -3760,6 +3761,7 @@ function createNodeByType(type, point){
     if(type === 'generator') return addGeneratorNode(point);
     if(type === 'msgen') return addMsGenNode(point);
     if(type === 'video') return addVideoNode(point);
+    if(type === 'voice') return addVoiceNode(point);
     if(type === 'rh') return addRhNode(point);
     if(type === 'comfy') return addComfyNode(point);
     if(type === 'ltxDirector') return addLTXDirectorNode(point);
@@ -3775,6 +3777,7 @@ function menuAdd(type){
     if(type === 'generator') addGeneratorNode(menuPoint);
     if(type === 'msgen') addMsGenNode(menuPoint);
     if(type === 'video') addVideoNode(menuPoint);
+    if(type === 'voice') addVoiceNode(menuPoint);
     if(type === 'rh') addRhNode(menuPoint);
     if(type === 'comfy') addComfyNode(menuPoint);
     if(type === 'ltxDirector') addLTXDirectorNode(menuPoint);
@@ -6292,7 +6295,7 @@ function renderNode(node){
         if(node.type === 'output') openOutputNodeMenu(node.id, e.clientX, e.clientY);
         else openGeneratorNodeMenu(node.id, e.clientX, e.clientY);
     };
-    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : tr('canvas.apiGenerate');
+    const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : node.type === 'voice' ? trOr('canvas.voiceNode', '音色', 'Voice') : tr('canvas.apiGenerate');
     const displayTitle = node.type === 'image' && node.url ? nodeTitleForMedia(node) : title;
     const originHtml = (node.type === 'prompt' && window.VideoPromptTargets?.originChipsHtml)
         ? window.VideoPromptTargets.originChipsHtml(node, canvasPromptOriginFallback(node))
@@ -6425,6 +6428,16 @@ function renderNode(node){
     if(node.type === 'generator') body.appendChild(renderGeneratorBody(node));
     if(node.type === 'msgen') body.appendChild(renderMsGenBody(node));
     if(node.type === 'video') body.appendChild(renderVideoBody(node));
+    if(node.type === 'voice'){
+        const voiceBody = window.CharacterVoice?.renderBody?.(node, {
+            providers: apiProviders,
+            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. This is not per-line TTS.'),
+            onChange(){ scheduleSave(); },
+            onRefresh(){ render(); scheduleSave(); },
+            showError: showErrorModal
+        });
+        if(voiceBody) body.appendChild(voiceBody);
+    }
     if(node.type === 'rh') body.appendChild(renderRhBody(node));
     if(node.type === 'comfy') body.appendChild(renderComfyBody(node));
     if(node.type === 'ltxDirector') body.appendChild(renderLTXDirectorBody(node));
@@ -6449,7 +6462,7 @@ function renderNode(node){
         startNodeDrag(e, node);
     };
     const canInput = ['generator','comfy','ltxDirector','output','llm','msgen','video','rh'].includes(node.type) || (node.type === 'loop' && (node.imageInput || node.showPrompt));
-    const canOutput = ['image','prompt','loop','group','promptGroup','generator','comfy','ltxDirector','llm','msgen','video','rh','output'].includes(node.type);
+    const canOutput = ['image','prompt','loop','group','promptGroup','generator','comfy','ltxDirector','llm','msgen','video','rh','output','voice'].includes(node.type);
     if(canInput) el.insertAdjacentHTML('beforeend', `<div class="port in" title="${tr('canvas.connectHere')}"></div>`);
     if(canOutput) el.insertAdjacentHTML('beforeend', `<div class="port out" title="${tr('canvas.dragConnect')}"></div>`);
     el.insertAdjacentHTML('beforeend', `<div class="resize-handle" title="${tr('canvas.resize')}"></div>`);
@@ -6622,6 +6635,7 @@ function defaultNodeSize(type){
     if(type === 'generator') return {w:380, h:0};
     if(type === 'msgen') return {w:380, h:0};
     if(type === 'video') return {w:400, h:0};
+    if(type === 'voice') return {w:380, h:0};
     if(type === 'rh') return {w:430, h:0};
     if(type === 'comfy') return {w:420, h:460};
     if(type === 'ltxDirector') return {w:1000, h:800};
@@ -8765,19 +8779,10 @@ function renderVideoBody(node){
             </div>
             <div class="gen-settings-row" style="flex-wrap:wrap">
                 ${grok2api ? '' : `
-                <button type="button" class="setting-check ${node.enhancePrompt ? 'active' : ''}" data-video-toggle="enhancePrompt"><span class="check-dot"></span>${tr('canvas.videoEnhancePrompt')}</button>
-                <button type="button" class="setting-check ${node.enableUpsample ? 'active' : ''}" data-video-toggle="enableUpsample"><span class="check-dot"></span>${tr('canvas.videoUpsample')}</button>
-                <button type="button" class="setting-check ${node.watermark ? 'active' : ''}" data-video-toggle="watermark"><span class="check-dot"></span>${tr('canvas.videoWatermark')}</button>
-                <button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>
                 <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
-                ${videoNodeShowsCharacterVoice(node) ? `<button type="button" class="setting-check ${node.characterVoice ? 'active' : ''}" data-video-toggle="characterVoice"><span class="check-dot"></span>${trOr('canvas.videoCharacterVoice', '角色音色', 'Character Voice')}</button>` : ''}
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
-            ${node.characterVoice && window.CharacterVoice ? window.CharacterVoice.panelHtml({
-                ...window.CharacterVoice.readStateFrom(node),
-                providers: apiProviders
-            }) : ''}
             ${window.VideoPromptTargets ? (node.videoPromptTarget ? window.VideoPromptTargets.metaRowHtml(node) : window.VideoPromptTargets.buttonRowHtml(apiProviders, node.vptChatProvider, node.vptChatModel, node.vptOutputLang)) : ''}
         </div>
         <div class="gen-run-row">
@@ -8824,7 +8829,6 @@ function renderVideoBody(node){
             scheduleSave();
         };
     });
-    bindCanvasCharacterVoicePanel(wrap, node);
     wrap.querySelectorAll('[data-vpt-chat]').forEach(sel => {
         sel.onmousedown = e => e.stopPropagation();
         sel.onclick = e => e.stopPropagation();
@@ -10522,6 +10526,10 @@ function generatedImageRefs(node){
 }
 function mediaRefsFromNode(node){
     if(!node) return [];
+    if(node.type === 'voice'){
+        const ref = window.CharacterVoice?.mediaRef?.(node);
+        return ref ? [ref] : [];
+    }
     if(node.type === 'image' && node.url){
         const kind = mediaKindForNode(node);
         return [{url:node.url, name:node.name || kind, role:node.role || '', kind}];
@@ -10625,6 +10633,10 @@ function generatorSources(gen){
             return {id:n.id, type:'promptGroup', label:`提示词 ${prompts.length} 个`, refs:[], prompt:prompts.join('\n\n')};
         }
         if(n.type === 'llm' && (n.mode || 'node') === 'node' && n.outputText) return {id:n.id, type:'llm', label:(n.outputText || 'LLM').slice(0, 32), refs:[], prompt:n.outputText || ''};
+        if(n.type === 'voice'){
+            const source = window.CharacterVoice?.generatorSource?.(n);
+            if(source) return source;
+        }
         return null;
     }).flat().filter(Boolean);
 }
@@ -10671,6 +10683,7 @@ function refreshGeneratorInputViews(){
         const imageInputs = sources
             .map(src => ({...src, refs:imageRefsOnly(src.refs || [])}))
             .filter(src => src.refs?.length);
+        const videoMediaInputs = sources.filter(src => src.refs?.some(ref => ['image','video','audio'].includes(mediaKindForRef(ref))));
         renderPromptPreview(el.querySelector('.prompt-list'), sources.filter(src => src.prompt && !src.refs?.length));
         if(gen.type === 'generator') renderImageInputList(el.querySelector('.input-list'), gen, imageInputs);
         if(gen.type === 'msgen') renderImageInputList(el.querySelector('.ms-img-list'), gen, imageInputs);
@@ -10679,7 +10692,7 @@ function refreshGeneratorInputViews(){
             ltxSyncConnectedImagesToTimeline(gen);
             renderComfyImages(el.querySelector('.input-list'), gen, imageInputs);
         }
-        if(gen.type === 'video') renderVideoImageInputs(el.querySelector('.video-img-list'), gen, imageInputs);
+        if(gen.type === 'video') renderVideoImageInputs(el.querySelector('.video-img-list'), gen, videoMediaInputs);
         if(gen.type === 'rh'){
             const media = rhMediaSources(gen);
             if(rhCurrentKind(gen) === 'model') renderPromptPreview(el.querySelector('.rh-prompt-list'), media.sources.filter(src => src.prompt && !src.refs?.length));
@@ -10832,102 +10845,6 @@ async function runGeneratorLegacy(genId, opts={}){
         showErrorModal(err.message || tr('canvas.generationFailed'), tr('canvas.apiFailed'));
     }
 }
-function attachCanvasVoiceSampleNode(videoNode, sample){
-    const url = String(sample?.url || '').trim();
-    if(!videoNode || !url) return null;
-    const name = sample.name || '角色样音';
-    let audioNode = videoNode.voiceSampleNodeId ? nodes.find(n => n.id === videoNode.voiceSampleNodeId) : null;
-    if(audioNode && audioNode.type === 'image'){
-        audioNode.url = url;
-        audioNode.name = name;
-        audioNode.mediaKind = 'audio';
-    } else {
-        audioNode = {
-            id: uid('img'),
-            type: 'image',
-            x: (Number(videoNode.x) || 0) - 220,
-            y: Number(videoNode.y) || 0,
-            url,
-            name,
-            mediaKind: 'audio'
-        };
-        nodes.push(audioNode);
-        videoNode.voiceSampleNodeId = audioNode.id;
-    }
-    if(!connections.some(c => c.from === audioNode.id && c.to === videoNode.id)){
-        connections.push({id: uid('c'), from: audioNode.id, to: videoNode.id});
-    }
-    return audioNode;
-}
-function bindCanvasCharacterVoicePanel(wrap, node){
-    const cv = window.CharacterVoice;
-    if(!cv || !node?.characterVoice) return;
-    const panel = wrap.querySelector('[data-character-voice-panel]');
-    if(!panel) return;
-    panel.onmousedown = e => e.stopPropagation();
-    const providerSel = panel.querySelector('[data-cv="provider"]');
-    const modelSel = panel.querySelector('[data-cv="model"]');
-    const voiceSel = panel.querySelector('[data-cv="voice"]');
-    const textInput = panel.querySelector('[data-cv="text"]');
-    const genBtn = panel.querySelector('[data-cv="generate"]');
-    const persist = () => {
-        if(providerSel) node.speechProviderId = providerSel.value;
-        if(modelSel) node.speechModel = modelSel.value;
-        if(voiceSel) node.voiceId = voiceSel.value;
-        if(textInput) node.voiceSampleText = textInput.value;
-        scheduleSave();
-    };
-    [providerSel, modelSel, voiceSel, textInput].forEach(el => {
-        if(!el) return;
-        el.onmousedown = e => e.stopPropagation();
-        el.onclick = e => e.stopPropagation();
-        el.onchange = persist;
-        el.oninput = persist;
-    });
-    if(providerSel && !cv.voiceCache[providerSel.value]){
-        cv.fetchVoices(providerSel.value).then(data => {
-            if(!node.speechModel) node.speechModel = data.default_model || node.speechModel;
-            if(!node.voiceId && data.voices?.[0]) node.voiceId = data.voices[0].voice_id;
-            persist();
-            render();
-        }).catch(err => showErrorModal(err.message || '读取音色失败', '角色音色'));
-    }
-    if(genBtn){
-        genBtn.onmousedown = e => e.stopPropagation();
-        genBtn.onclick = async e => {
-            e.stopPropagation();
-            persist();
-            if(!node.speechProviderId || !node.voiceId){
-                showErrorModal('请先选择 MiniMax 平台和音色', '角色音色');
-                return;
-            }
-            const old = genBtn.textContent;
-            genBtn.disabled = true;
-            genBtn.textContent = '合成中…';
-            try {
-                const sample = await cv.generateSample({
-                    provider_id: node.speechProviderId,
-                    model: node.speechModel || '',
-                    voice_id: node.voiceId,
-                    text: node.voiceSampleText || cv.DEFAULT_TEXT
-                });
-                cv.applySampleToNode(node, sample, {
-                    providerId: node.speechProviderId,
-                    model: node.speechModel,
-                    voiceId: node.voiceId
-                });
-                attachCanvasVoiceSampleNode(node, sample);
-                if(sample.warning) showErrorModal(sample.warning, '角色音色');
-                render();
-                scheduleSave();
-            } catch(err){
-                showErrorModal(err.message || '样音合成失败', '角色音色');
-            }
-            genBtn.disabled = false;
-            genBtn.textContent = old;
-        };
-    }
-}
 // --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
 // 领域逻辑在 static/js/video-prompt-targets.js 与后端 video_prompt_targets.py；
 // 这里只做经典画布接线：收集导演本与媒体、调转换接口、派生「转换稿提示词节点 + 新视频节点」。
@@ -10951,16 +10868,19 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
     }));
     const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
     if(extra){ showErrorModal(extra, 'AI 提示词'); return; }
-    const characterVoice = Boolean(node.characterVoice);
+    const connectedAudios = audioRefsOnly(mediaRefs);
+    const characterVoice = window.CharacterVoice
+        ? window.CharacterVoice.usesCharacterVoice(node, connectedAudios)
+        : Boolean(node.characterVoice);
     if(characterVoice && target.id === 'h3-fl2va'){
         showErrorModal('角色音色请用 minimax优化 的「多参提示词」，首尾帧绑不住人物声线。', 'AI 提示词');
         return;
     }
     const audios = window.CharacterVoice
-        ? window.CharacterVoice.convertAudios(node, audioRefsOnly(mediaRefs))
-        : audioRefsOnly(mediaRefs).map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''}));
+        ? window.CharacterVoice.convertAudios(node, connectedAudios)
+        : connectedAudios.map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''}));
     if(characterVoice && target.id === 'h3-ref2va' && !audios.length){
-        showErrorModal('勾选角色音色时请先生成或挂上一条样音。', 'AI 提示词');
+        showErrorModal('请先连接音色节点并生成样音。', 'AI 提示词');
         return;
     }
     const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
@@ -11040,11 +10960,10 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result, durationS){
         duration:srcNode.duration,
         aspectRatio:srcNode.aspectRatio || '16:9',
         resolution:srcNode.resolution || '',
-        // 转换稿已是目标制式，上游「优化提示词」会破坏结构，派生节点固定关闭。
         enhancePrompt:false,
-        enableUpsample:Boolean(srcNode.enableUpsample),
-        watermark:Boolean(srcNode.watermark),
-        cameraFixed:Boolean(srcNode.cameraFixed),
+        enableUpsample:false,
+        watermark:false,
+        cameraFixed:false,
         generateAudio:Boolean(srcNode.generateAudio),
         characterVoice:Boolean(srcNode.characterVoice),
         speechProviderId:srcNode.speechProviderId || '',
@@ -11135,13 +11054,13 @@ async function runVideoNode(nodeId, opts={}){
                     ? [manualVideoUrlForNode(node)]
                     : videoRefs.map(ref => tempShUploadedUrlForNode(node, ref.url)),
                 audios:(window.CharacterVoice
-                    ? window.CharacterVoice.mergeAudios(audioRefs, node.voiceSampleUrl, node.voiceSampleName)
+                    ? window.CharacterVoice.collectVideoAudios(node, audioRefs)
                     : audioRefs
-                ).map(ref => ref.url).filter(Boolean),
-                enhance_prompt:grok2api ? false : Boolean(node.enhancePrompt),
-                enable_upsample:grok2api ? false : Boolean(node.enableUpsample),
-                watermark:grok2api ? false : Boolean(node.watermark),
-                camerafixed:grok2api ? false : Boolean(node.cameraFixed),
+                ).map(ref => ref.url || ref).filter(Boolean),
+                enhance_prompt:false,
+                enable_upsample:false,
+                watermark:false,
+                camerafixed:false,
                 generate_audio:grok2api ? false : Boolean(node.generateAudio),
                 multimodal:grok2api ? false : Boolean(node.multimodal)
             })
@@ -14857,6 +14776,7 @@ function canConnect(fromId, toId){
     }
     if(to.type === 'llm') return ['prompt','loop','promptGroup','llm','image','group','output'].includes(from.type);
     if(from.type === 'llm') return CANVAS_GENERATOR_TYPES.includes(to.type);
+    if(from.type === 'voice') return to.type === 'video';
     return CANVAS_GENERATOR_TYPES.includes(to.type) && ['image','prompt','loop','group','promptGroup','output','llm'].includes(from.type);
 }
 function sanitizeConnections(){

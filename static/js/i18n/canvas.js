@@ -104,6 +104,8 @@
         "canvas.modelscopeGenerate": { zh: "Modelscope生成", en: "Modelscope Generate" },
         "canvas.comfyGenerate": { zh: "ComfyUI 生成", en: "ComfyUI Generate" },
         "canvas.videoGenerateNode": { zh: "视频生成", en: "Video Generate" },
+        "canvas.voiceNode": { zh: "音色", en: "Voice" },
+        "canvas.voiceHint": { zh: "生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。不是按台词配音。", en: "Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. This is not per-line TTS." },
         "canvas.rhGenerate": { zh: "RunningHub生成", en: "RunningHub Generate" },
         "canvas.rhModeApp": { zh: "AI应用", en: "AI App" },
         "canvas.rhModeWorkflow": { zh: "工作流", en: "Workflow" },

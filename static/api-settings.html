@@ -168,7 +168,7 @@
                                     <span class="ms-line">Key 优先用 <b>Token Plan 订阅 Key</b>。官方文档写语言走订阅 Key；<span class="inline-code">MiniMax-H3</span> 视频文档指向按量购买，套餐不含视频时出片会失败，不要改成 OpenAI 兼容去碰。</span>
                                     <span class="ms-line">验证只打 <span class="inline-code">POST /v1/get_voice</span> 和 <span class="inline-code">GET /v1/models</span>，不调用 T2A、生图或 <span class="inline-code">POST /v2/video_generation</span>。</span>
                                     <span class="ms-line">模型目录来自官方枚举：聊天 <span class="inline-code">MiniMax-M3</span> 等、视频 <span class="inline-code">MiniMax-H3</span>、图片 <span class="inline-code">image-01</span>、语音 <span class="inline-code">speech-2.8-hd</span>。不要把 <span class="inline-code">MiniMax-M2</span> 勾进视频。</span>
-                                    <span class="ms-line">角色音色：勾选后生成一条样音，再发给官方 H3 的 <span class="inline-code">reference_audio</span>，或继续走局域网 H3 网关。不会按每句台词重复合成。Hailuo 02/2.3 与音乐模型本轮未接。</span>
+                                    <span class="ms-line">音色节点生成一条样音，连到视频节点后当作音频1 / 官方 H3 的 <span class="inline-code">reference_audio</span>，或继续走局域网 H3 网关。不会按每句台词重复合成。Hailuo 02/2.3 与音乐模型本轮未接。</span>
                                 </div>
                             </label>
                             <label class="field full api-key-field">
@@ -456,7 +456,7 @@
                             <div class="block-head">
                                 <div>
                                     <div class="block-title" data-i18n="api.audioModels">语音模型</div>
-                                    <div class="block-desc" data-i18n="api.audioHint">无限画布「角色音色」样音使用，不用于出视频。</div>
+                                    <div class="block-desc" data-i18n="api.audioHint">无限画布「音色」节点样音使用，不用于出视频。</div>
                                 </div>
                                 <button class="ghost-btn" type="button" onclick="addModel('audio')"><i data-lucide="plus" class="w-3.5 h-3.5"></i><span data-i18n="api.model">模型</span></button>
                             </div>
