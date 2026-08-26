@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest import mock
 
 import minimax_speech_protocol as speech
 import main
@@ -273,3 +274,41 @@ class MiniMaxOfficialH3VideoTests(unittest.TestCase):
         self.assertEqual(speech.h3_task_id({"task_id": "424010985738629"}), "424010985738629")
         self.assertEqual(speech.h3_task_state(raw), ("success", "succeeded"))
         self.assertEqual(speech.h3_result_url(raw), "https://cdn.example/out.mp4")
+
+
+class MiniMaxFetchModelsTests(unittest.TestCase):
+    def test_fetch_models_includes_official_speech_catalog(self):
+        catalog = speech.merge_official_catalog()
+
+        async def fake_probe(client, base_url, api_key, group_id=""):
+            return {
+                "ok": True,
+                "status": 200,
+                "image_models": catalog["image"],
+                "chat_models": catalog["chat"],
+                "video_models": catalog["video"],
+                "audio_models": catalog["audio"],
+                "speech_models": catalog["speech_models"],
+                "unknown_models": [],
+                "all": catalog["all"],
+                "voices": [],
+                "voice_count": 0,
+                "model_count": len(catalog["all"]),
+                "message": "ok",
+                "raw": {},
+            }
+
+        async def run_fetch():
+            with mock.patch("main.probe_minimax_speech_endpoint", fake_probe):
+                return await main.fetch_models_from_upstream(
+                    "https://api.minimaxi.com",
+                    "test-key",
+                    "minimax-speech",
+                )
+
+        data = run(run_fetch())
+        self.assertIn("speech-2.8-hd", data["audio_models"])
+        self.assertIn("speech-2.8-hd", data["all"])
+        self.assertIn("MiniMax-H3", data["video_models"])
+        self.assertIn("image-01", data["image_models"])
+        self.assertGreaterEqual(data["total"], 11)

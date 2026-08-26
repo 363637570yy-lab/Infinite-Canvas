@@ -14850,6 +14850,32 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
             "message": probe.get("message"),
             "raw": probe.get("raw"),
         }
+    if is_minimax_speech_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                probe = await probe_minimax_speech_endpoint(client, base_url, api_key)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"请求 MiniMax 官方目录失败：{exc}") from exc
+        if not probe.get("ok"):
+            raise HTTPException(
+                status_code=int(probe.get("status") or 502) or 502,
+                detail=probe.get("message") or "MiniMax 官方目录不可用",
+            )
+        return {
+            "total": probe.get("model_count") or 0,
+            "protocol": MINIMAX_SPEECH_PROTOCOL,
+            "image_models": probe.get("image_models") or [],
+            "chat_models": probe.get("chat_models") or [],
+            "video_models": probe.get("video_models") or [],
+            "audio_models": probe.get("audio_models") or [],
+            "speech_models": probe.get("speech_models") or [],
+            "unknown_models": probe.get("unknown_models") or [],
+            "all": probe.get("all") or [],
+            "voices": probe.get("voices") or [],
+            "voice_count": probe.get("voice_count") or 0,
+            "message": probe.get("message"),
+            "raw": probe.get("raw"),
+        }
     url = upstream_models_url(base_url, protocol)
     try:
         async with httpx.AsyncClient(timeout=30) as client:

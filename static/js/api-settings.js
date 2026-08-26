@@ -3237,6 +3237,7 @@ async function testConnection(){
                 image: new Set(data.image_models || []),
                 chat: new Set(data.chat_models || []),
                 video: new Set(data.video_models || []),
+                audio: new Set(data.audio_models || data.speech_models || []),
                 unknown: new Set(data.unknown_models || []),
             };
             const openBtn = document.getElementById('openPickerBtn');
@@ -3275,6 +3276,7 @@ function setFetchedModelState(data){
         image: new Set(data?.image_models || []),
         chat: new Set(data?.chat_models || []),
         video: new Set(data?.video_models || []),
+        audio: new Set(data?.audio_models || data?.speech_models || []),
         unknown: new Set(data?.unknown_models || []),
     };
     lastFetchedModelNames = (data?.model_names && typeof data.model_names === 'object') ? {...data.model_names} : {};
@@ -3419,6 +3421,7 @@ function openModelPicker(){
     const allIds = new Set([
         ...lastFetchedAll,
         ...(lastFetchedSuggestion?.unknown || []),
+        ...(lastFetchedSuggestion?.audio || []),
         ...(item.image_models||[]),
         ...(item.chat_models||[]),
         ...(item.video_models||[]),
@@ -3433,10 +3436,12 @@ function openModelPicker(){
         else if(lastFetchedSuggestion?.image?.has(id)) cat = 'image';
         else if(lastFetchedSuggestion?.chat?.has(id)) cat = 'chat';
         else if(lastFetchedSuggestion?.video?.has(id)) cat = 'video';
+        else if(lastFetchedSuggestion?.audio?.has(id)) cat = 'audio';
         else cat = 'unknown';
         pickerState.category[id] = cat;
         // 默认勾选状态：已在用户配置里的 = 勾选；新拉的 = 不勾选（让用户主动选）
-        pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id);
+        // 官方 T2A 语音不进三大列表，这里勾上只是让「语音」分类可见。
+        pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id) || cat === 'audio';
     });
     // 默认 tab 切回「全部」
     document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === 'all'));
@@ -3450,8 +3455,8 @@ function renderModelPicker(){
     const currentTab = document.querySelector('.picker-cat-tab.active')?.dataset.cat || 'all';
     const ids = Object.keys(pickerState.category).sort();
     // 各分类总数 / 已选数
-    const totals = { all: ids.length, image:0, chat:0, video:0, unknown:0 };
-    const selecteds = { all:0, image:0, chat:0, video:0, unknown:0 };
+    const totals = { all: ids.length, image:0, chat:0, video:0, audio:0, unknown:0 };
+    const selecteds = { all:0, image:0, chat:0, video:0, audio:0, unknown:0 };
     ids.forEach(id => {
         const cat = pickerState.category[id] || 'unknown';
         totals[cat]++;
@@ -3483,7 +3488,7 @@ function renderModelPicker(){
                 <option value="image">生图</option>
                 <option value="video">视频</option>
             </select>`
-            : `<span class="picker-category-label">${category === 'image' ? '生图' : category === 'chat' ? '聊天' : '视频'}</span>`;
+            : `<span class="picker-category-label">${category === 'image' ? '生图' : category === 'chat' ? '聊天' : category === 'audio' ? '语音' : '视频'}</span>`;
         return `
             <div class="picker-row ${checked?'has-sel':''}" onclick="togglePickerRowByIndex(${index})">
                 <div class="picker-checkbox ${checked?'checked':''}">
@@ -3503,11 +3508,13 @@ function renderModelPicker(){
     const sumImage = document.getElementById('sumImage');
     const sumChat = document.getElementById('sumChat');
     const sumVideo = document.getElementById('sumVideo');
+    const sumAudio = document.getElementById('sumAudio');
     const sumUnknown = document.getElementById('sumUnknown');
     const sumUnsel = document.getElementById('sumUnsel');
     if(sumImage){ sumImage.textContent = `生图 ${selecteds.image}`; sumImage.classList.toggle('picker-sum-chip-empty', selecteds.image === 0); }
     if(sumChat){ sumChat.textContent = `LLM ${selecteds.chat}`; sumChat.classList.toggle('picker-sum-chip-empty', selecteds.chat === 0); }
     if(sumVideo){ sumVideo.textContent = `视频 ${selecteds.video}`; sumVideo.classList.toggle('picker-sum-chip-empty', selecteds.video === 0); }
+    if(sumAudio){ sumAudio.textContent = `语音 ${selecteds.audio}`; sumAudio.classList.toggle('picker-sum-chip-empty', selecteds.audio === 0); }
     if(sumUnknown){ sumUnknown.textContent = `未知 ${totals.unknown}`; sumUnknown.classList.toggle('picker-sum-chip-empty', totals.unknown === 0); }
     if(sumUnsel){ sumUnsel.textContent = `未选 ${totals.all - selecteds.all}`; }
 }
@@ -3543,6 +3550,7 @@ function applyModelPicker(){
         if(cat === 'image') image.push(id);
         else if(cat === 'video') video.push(id);
         else if(cat === 'chat') chat.push(id);
+        else if(cat === 'audio') return;
         const label = modelDisplayName(id, item);
         if(label && label !== id) modelNames[id] = label;
     });
@@ -3552,7 +3560,9 @@ function applyModelPicker(){
     item.model_names = modelNames;
     renderModels('image'); renderModels('chat'); renderModels('video');
     renderMsLoras();
-    setStatus(`已应用 · 生图 ${image.length} / LLM ${chat.length} / 视频 ${video.length}，点保存生效`);
+    const audioCount = Object.entries(pickerState.selected).filter(([id, sel]) => sel && pickerState.category[id] === 'audio').length;
+    const audioNote = audioCount ? ` · 语音 ${audioCount} 个走画布「角色音色」，不用导入三大列表` : '';
+    setStatus(`已应用 · 生图 ${image.length} / LLM ${chat.length} / 视频 ${video.length}${audioNote}，点保存生效`);
     closeModelPicker();
 }
 async function saveKeyOnly(){
