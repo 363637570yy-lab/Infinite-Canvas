@@ -27,7 +27,8 @@
     function speechProviders(providers){
         return (providers || []).filter(p => {
             if(!p || p.enabled === false) return false;
-            return String(p.protocol || '').toLowerCase() === PROTOCOL && p.has_key;
+            const protocol = String(p.protocol || '').toLowerCase();
+            return (protocol === PROTOCOL || protocol === 'minimax') && p.has_key;
         });
     }
 

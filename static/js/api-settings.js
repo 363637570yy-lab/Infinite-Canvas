@@ -106,7 +106,11 @@ const CODELBA_PROTOCOL = 'codelba';
 const GROK2API_PROTOCOL = 'grok2api';
 const H3_PROTOCOL = 'h3';
 const MINIMAX_SPEECH_PROTOCOL = 'minimax-speech';
-const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
+const MINIMAX_PROTOCOL = 'minimax';
+const MINIMAX_OFFICIAL_CHAT_MODELS = ['MiniMax-M3','MiniMax-M2.7','MiniMax-M2.7-highspeed','MiniMax-M2.5','MiniMax-M2.5-highspeed','MiniMax-M2.1','MiniMax-M2.1-highspeed','MiniMax-M2'];
+const MINIMAX_OFFICIAL_IMAGE_MODELS = ['image-01','image-01-live'];
+const MINIMAX_OFFICIAL_VIDEO_MODELS = ['MiniMax-H3'];
+const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, MINIMAX_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
     return CHRE3_VIDEO_PROTOCOLS.has(String(value || '').trim().toLowerCase());
@@ -135,7 +139,8 @@ function isH3Protocol(value){
     return String(value || '').trim().toLowerCase() === H3_PROTOCOL;
 }
 function isMinimaxSpeechProtocol(value){
-    return String(value || '').trim().toLowerCase() === MINIMAX_SPEECH_PROTOCOL;
+    const protocol = String(value || '').trim().toLowerCase();
+    return protocol === MINIMAX_SPEECH_PROTOCOL || protocol === MINIMAX_PROTOCOL;
 }
 function isEmptyOrExampleBaseUrl(value){
     const lower = String(value || '').trim().toLowerCase();
@@ -144,6 +149,9 @@ function isEmptyOrExampleBaseUrl(value){
 function applyMinimaxSpeechProtocolDefaults(item){
     if(!item) return;
     if(isEmptyOrExampleBaseUrl(item.base_url)) item.base_url = MINIMAX_SPEECH_CN_BASE_URL;
+    item.chat_models = unique([...(item.chat_models || []), ...MINIMAX_OFFICIAL_CHAT_MODELS]);
+    item.image_models = unique([...(item.image_models || []), ...MINIMAX_OFFICIAL_IMAGE_MODELS]);
+    item.video_models = unique([...(item.video_models || []), ...MINIMAX_OFFICIAL_VIDEO_MODELS]);
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},

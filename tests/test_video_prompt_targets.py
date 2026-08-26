@@ -317,7 +317,21 @@ class ValidateRef2vaTests(unittest.TestCase):
         self.assertIn("角色音色：开", messages[1]["content"])
         self.assertIn("音1 = <Audio 1> = emperor.mp3", messages[1]["content"])
         self.assertNotIn("http://x/a.mp3", messages[1]["content"])
-        self.assertIn("minimax-speech", vpt.CHAT_CONVERT_BLOCKED_PROTOCOLS)
+        self.assertNotIn("minimax-speech", vpt.CHAT_CONVERT_BLOCKED_PROTOCOLS)
+        self.assertFalse(vpt.is_usable_chat_provider({
+            "id": "minimax-speech",
+            "protocol": "minimax-speech",
+            "enabled": True,
+            "chat_models": ["speech-2.8-hd"],
+            "has_key": True,
+        }))
+        self.assertTrue(vpt.is_usable_chat_provider({
+            "id": "minimax-official",
+            "protocol": "minimax-speech",
+            "enabled": True,
+            "chat_models": ["MiniMax-M3"],
+            "has_key": True,
+        }))
 
     def test_english_prose_ok_when_language_en(self):
         result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx(), language="en")

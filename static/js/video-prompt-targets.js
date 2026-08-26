@@ -67,8 +67,13 @@
             if(!p || p.enabled === false) return false;
             const id = String(p.id || '').toLowerCase();
             const protocol = String(p.protocol || '').toLowerCase();
-            if(id === 'modelscope' || protocol === 'h3' || protocol === 'codelba' || protocol === 'minimax-speech') return false;
-            return Array.isArray(p.chat_models) && p.chat_models.length;
+            if(id === 'modelscope' || protocol === 'h3' || protocol === 'codelba') return false;
+            const chatModels = (p.chat_models || []).filter(model => {
+                const id = String(model || '');
+                return id && !id.startsWith('speech-') && id !== 'MiniMax-H3' && !id.startsWith('image-01');
+            });
+            if((protocol === 'minimax-speech' || protocol === 'minimax') && !chatModels.some(model => String(model).startsWith('MiniMax-M'))) return false;
+            return chatModels.length > 0;
         });
     }
 

@@ -876,10 +876,17 @@ function isH3VideoProvider(providerId){
     const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
     return String(provider?.protocol || '').trim().toLowerCase() === 'h3';
 }
+function isMiniMaxOfficialProvider(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
+    const protocol = String(provider?.protocol || '').trim().toLowerCase();
+    return protocol === 'minimax-speech' || protocol === 'minimax';
+}
 function videoNodeShowsCharacterVoice(node){
     if(!node) return false;
     if(node.characterVoice) return true;
     if(isH3VideoProvider(node.apiProvider)) return true;
+    if(isMiniMaxOfficialProvider(node.apiProvider)) return true;
     return Boolean(window.CharacterVoice?.speechProviders?.(apiProviders)?.length);
 }
 function resolveVideoProviderId(id){

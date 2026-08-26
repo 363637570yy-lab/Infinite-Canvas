@@ -2481,9 +2481,16 @@ function isH3ProviderId(providerId){
     const provider = (apiProviders || []).find(p => String(p.id || '').trim().toLowerCase() === id);
     return String(provider?.protocol || '').trim().toLowerCase() === 'h3';
 }
+function isMiniMaxOfficialProviderId(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = (apiProviders || []).find(p => String(p.id || '').trim().toLowerCase() === id);
+    const protocol = String(provider?.protocol || '').trim().toLowerCase();
+    return protocol === 'minimax-speech' || protocol === 'minimax';
+}
 function showSmartCharacterVoice(providerId){
     if(settings.videoCharacterVoice) return true;
     if(isH3ProviderId(providerId)) return true;
+    if(isMiniMaxOfficialProviderId(providerId)) return true;
     return Boolean(window.CharacterVoice?.speechProviders?.(apiProviders)?.length);
 }
 function providerImageModels(providerId){

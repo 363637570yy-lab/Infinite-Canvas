@@ -434,7 +434,8 @@ CODELBA_PROTOCOL = codelba.CODELBA_PROTOCOL
 GROK2API_PROTOCOL = grok2api.GROK2API_PROTOCOL
 H3_PROTOCOL = h3.H3_PROTOCOL
 MINIMAX_SPEECH_PROTOCOL = minimax_speech.MINIMAX_SPEECH_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+MINIMAX_PROTOCOL = minimax_speech.MINIMAX_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, MINIMAX_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -461,7 +462,7 @@ def is_h3_protocol(value):
     return str(value or "").strip().lower() == H3_PROTOCOL
 
 def is_minimax_speech_protocol(value):
-    return str(value or "").strip().lower() == MINIMAX_SPEECH_PROTOCOL
+    return minimax_speech.is_minimax_official_protocol(value)
 
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
@@ -2713,6 +2714,7 @@ CANVAS_VIDEO_TASK_HANDLES: Dict[str, Any] = {}
 CANVAS_VIDEO_TASK_TYPES = frozenset({
     "grok2api-video",
     "h3-video",
+    "minimax-h3-video",
     "cangyuan-video",
     "chre3-video",
     "pidoi-video",
@@ -3845,6 +3847,8 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
         base = RUNNINGHUB_LLM_BASE_URL
     elif protocol == GROK2API_PROTOCOL:
         base = grok2api.grok2api_chat_completions_url(base_root)
+    elif is_minimax_speech_protocol(protocol):
+        base = minimax_speech.minimax_api_root(base_root) + "/v1"
     else:
         base = base_root if base_root.endswith("/v1") else base_root + "/v1"
     hdrs = api_headers(provider=api_provider, model=mdl)
@@ -11553,6 +11557,10 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider)
     if is_volcengine_provider(provider):
         return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider)
+    if is_minimax_official_provider(provider):
+        return await generate_minimax_official_image(
+            prompt, size, quality, model, reference_images, provider, aspect_ratio=aspect_ratio
+        )
     if is_grok2api_provider(provider):
         return await generate_grok2api_image(
             prompt,
@@ -13993,48 +14001,67 @@ async def probe_h3_endpoint(client, base_url: str, api_key: str):
     return result
 
 async def probe_minimax_speech_endpoint(client, base_url: str, api_key: str, group_id=""):
-    """验证 MiniMax 语音：POST /v1/get_voice，不调用会扣费的 T2A。"""
-    url = minimax_speech.minimax_url_with_group(
+    """验证官方 MiniMax：get_voice + /v1/models，不调用 T2A / 生图 / 生视频。"""
+    catalog = minimax_speech.merge_official_catalog()
+    headers = minimax_speech.minimax_auth_headers(api_key, group_id=group_id)
+    voice_url = minimax_speech.minimax_url_with_group(
         minimax_speech.minimax_get_voice_url(base_url),
         group_id,
     )
-    headers = minimax_speech.minimax_auth_headers(api_key, group_id=group_id)
-    response = await client.post(url, headers=headers, json=minimax_speech.build_get_voice_request("system"))
+    response = await client.post(voice_url, headers=headers, json=minimax_speech.build_get_voice_request("system"))
     try:
         raw = response.json() if response.text else {}
     except Exception:
         raw = response.text[:500]
     voices = minimax_speech.parse_voice_list(raw) if isinstance(raw, dict) else []
-    ok = response.status_code < 300 and isinstance(raw, dict) and minimax_speech.base_resp_ok(raw)
+    voice_ok = response.status_code < 300 and isinstance(raw, dict) and minimax_speech.base_resp_ok(raw)
+    grouped = {"image": [], "chat": [], "video": [], "audio": [], "unknown": []}
+    models_ok = False
+    models_raw = None
+    try:
+        models_response = await client.get(
+            minimax_speech.minimax_models_url(base_url),
+            headers=minimax_speech.minimax_auth_headers(api_key, json_body=False, group_id=group_id),
+        )
+        try:
+            models_raw = models_response.json() if models_response.text else {}
+        except Exception:
+            models_raw = {}
+        if models_response.status_code < 300 and isinstance(models_raw, dict):
+            grouped, _ids = parse_upstream_models(models_raw, MINIMAX_SPEECH_PROTOCOL)
+            models_ok = True
+    except httpx.HTTPError:
+        models_raw = None
+    ok = bool(voice_ok or models_ok)
+    merged = minimax_speech.merge_official_catalog(grouped if ok else None, grouped.get("unknown") if ok else None)
     result = {
-        "ok": bool(ok),
+        "ok": ok,
         "status": response.status_code,
-        "raw": raw,
+        "raw": {"get_voice": raw, "models": models_raw},
         "protocol": MINIMAX_SPEECH_PROTOCOL,
-        "model_count": len(minimax_speech.MINIMAX_T2A_MODELS) if ok else 0,
-        "image_models": [],
-        "chat_models": [],
-        "video_models": [],
-        "audio_models": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
-        "unknown_models": [],
-        "speech_models": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
-        "voices": voices if ok else [],
-        "voice_count": len(voices) if ok else 0,
-        "all": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
+        "model_count": len(merged.get("all") or []) if ok else 0,
+        "image_models": merged["image"] if ok else [],
+        "chat_models": merged["chat"] if ok else [],
+        "video_models": merged["video"] if ok else [],
+        "audio_models": merged["audio"] if ok else [],
+        "unknown_models": merged["unknown"] if ok else [],
+        "speech_models": merged["speech_models"] if ok else [],
+        "voices": voices if voice_ok else [],
+        "voice_count": len(voices) if voice_ok else 0,
+        "all": merged["all"] if ok else [],
     }
-    if response.status_code in (401, 403):
+    if response.status_code in (401, 403) and not models_ok:
         result["message"] = "MiniMax API Key 无效或无权限"
         return result
-    if response.status_code >= 500:
-        result["message"] = f"MiniMax get_voice 服务端错误 {response.status_code}"
-        return result
     if not ok:
-        result["message"] = minimax_speech.error_text(raw, "MiniMax 语音协议验证失败：get_voice 不可用")
+        result["message"] = minimax_speech.error_text(raw, "MiniMax 官方协议验证失败：get_voice 与 /v1/models 都不可用")
         return result
     result["message"] = (
-        f"MiniMax 语音协议可用：get_voice 可达，系统音色 {len(voices)} 个；"
-        "T2A 模型使用官方枚举，不按 /v1/models 名称猜测。"
-        "本探测不合成音频。"
+        "MiniMax 官方协议可用。"
+        f"语言 {len(result['chat_models'])} / 视频 {len(result['video_models'])} / "
+        f"语音 {len(result['speech_models'])} / 图片 {len(result['image_models'])}。"
+        "目录来自官方枚举；/v1/models 无能力字段的额外 id 进未知。"
+        "本探测不调用 T2A、生图或 /v2/video_generation。"
     )
     return result
 
@@ -15596,12 +15623,23 @@ def is_h3_provider(provider):
 def is_h3_route(provider, model=""):
     return is_h3_protocol(effective_protocol(provider, model))
 
+def is_minimax_official_provider(provider):
+    return is_minimax_speech_protocol(provider_protocol(provider))
+
+def is_minimax_official_h3_route(provider, model=""):
+    if not is_minimax_official_provider(provider):
+        return False
+    requested = str(model or "").strip() or minimax_speech.MINIMAX_H3_MODEL
+    return minimax_speech.is_minimax_h3_model(requested)
+
 def videos_contract_label(provider, model=""):
     """共用 POST/GET /v1/videos 合同的协议名，用于错误提示；不适用时返回空串。"""
     if is_grok2api_route(provider, model):
         return "Grok2API 视频"
     if is_h3_route(provider, model):
         return "H3 视频"
+    if is_minimax_official_h3_route(provider, model):
+        return "官方 MiniMax-H3 视频"
     if is_zexi_route(provider, model):
         return "泽西同学视频"
     if is_pidoi_route(provider, model):
@@ -15631,6 +15669,8 @@ def video_submit_url_candidates(provider, base_url, model=""):
         return [grok2api.grok2api_video_submit_url(base_url)]
     if is_h3_route(provider, model):
         return [h3.h3_video_submit_url(base_url)]
+    if is_minimax_official_h3_route(provider, model):
+        return [minimax_speech.minimax_h3_submit_url(base_url)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_submit_url(base_url)]
     if is_pidoi_route(provider, model):
@@ -15664,6 +15704,8 @@ def video_task_url_candidates(provider, base_url, task_id, submit_url="", model=
         return [grok2api.grok2api_video_task_url(base_url, task_id)]
     if is_h3_route(provider, model):
         return [h3.h3_video_task_url(base_url, task_id)]
+    if is_minimax_official_h3_route(provider, model):
+        return [minimax_speech.minimax_h3_query_url(base_url, task_id)]
     if is_zexi_route(provider, model):
         return [zexi.zexi_video_task_url(base_url, task_id)]
     if is_pidoi_route(provider, model):
@@ -18022,11 +18064,198 @@ async def generate_h3_video(client, payload, provider, base_url, requested_model
         raise HTTPException(status_code=502, detail=f"H3 任务 {task_id} 已完成但成片下载失败。")
     return {"videos": [local_url], "task_id": task_id, "raw": result}
 
+MINIMAX_OFFICIAL_SUBMIT_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=60.0, pool=20.0)
+MINIMAX_OFFICIAL_POLL_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+MINIMAX_OFFICIAL_IMAGE_TIMEOUT = httpx.Timeout(connect=20.0, read=120.0, write=60.0, pool=20.0)
+MINIMAX_OFFICIAL_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=20.0)
+MINIMAX_OFFICIAL_VIDEO_POLL_SECONDS = 30 * 60
+
+
+def minimax_official_api_key(provider):
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 {provider.get('name') or provider['id']} 的 MiniMax Key，请在 API 平台管理中填写。",
+        )
+    return api_key
+
+
+def _minimax_local_data_url(path):
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+async def minimax_official_media_url(value, kind, index):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("data:"):
+        return raw
+    parsed = urllib.parse.urlsplit(raw)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme.lower() in {"http", "https"} and host and host not in {"127.0.0.1", "localhost"} and not host.startswith("192.168.") and not host.startswith("10."):
+        return raw
+    path = output_file_from_url(raw)
+    if path and os.path.isfile(path):
+        size = os.path.getsize(path)
+        if kind == "image":
+            if size > 30 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail=f"官方 MiniMax 第 {index} 张参考图超过 30MB。")
+            return _minimax_local_data_url(path)
+        return await sd2_public_reference_url(raw, "视频" if kind == "video" else "音频", index, label="官方 MiniMax-H3")
+    if parsed.scheme.lower() in {"http", "https"}:
+        return await sd2_public_reference_url(raw, "图片" if kind == "image" else ("视频" if kind == "video" else "音频"), index, label="官方 MiniMax-H3")
+    raise HTTPException(status_code=400, detail=f"官方 MiniMax 第 {index} 个{kind}参考素材无法读取。")
+
+
+def make_minimax_official_resolver():
+    async def resolve(value, kind, index):
+        return await minimax_official_media_url(value, kind, index)
+    return resolve
+
+
+async def wait_for_minimax_official_h3_task(client, provider, base_url, task_id, requested_model, should_cancel=None):
+    deadline = time.monotonic() + MINIMAX_OFFICIAL_VIDEO_POLL_SECONDS
+    delay = 10.0
+    last_payload = {}
+    api_key = minimax_official_api_key(provider)
+    headers = minimax_speech.minimax_auth_headers(api_key, json_body=False)
+    while time.monotonic() < deadline:
+        if should_cancel and should_cancel():
+            raise CanvasTaskCancelled()
+        await asyncio.sleep(delay)
+        if should_cancel and should_cancel():
+            raise CanvasTaskCancelled()
+        url = minimax_speech.minimax_h3_query_url(base_url, task_id)
+        try:
+            response = await client.get(url, headers=headers, timeout=MINIMAX_OFFICIAL_POLL_TIMEOUT)
+        except httpx.HTTPError as exc:
+            print(f"[minimax-h3] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
+            delay = min(delay + 1.0, 15.0)
+            continue
+        try:
+            raw = response.json() if response.text else {}
+        except Exception:
+            raw = {}
+        if response.status_code >= 500 or response.status_code == 429:
+            delay = min(delay + 1.0, 15.0)
+            continue
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=minimax_speech.h3_error_text(raw, getattr(response, "text", "")),
+            )
+        last_payload = raw if isinstance(raw, dict) else {}
+        state, status = minimax_speech.h3_task_state(last_payload)
+        if state == "success":
+            return last_payload
+        if state == "failed":
+            raise HTTPException(status_code=502, detail=minimax_speech.h3_error_text(last_payload, status))
+        delay = 10.0
+    raise HTTPException(status_code=504, detail=f"官方 MiniMax-H3 视频任务超时：{task_id}")
+
+
+async def generate_minimax_official_video(client, payload, provider, base_url, requested_model, on_task_id=None, should_cancel=None):
+    api_key = minimax_official_api_key(provider)
+    try:
+        body, _mode = await minimax_speech.build_h3_official_video_request(
+            payload,
+            requested_model,
+            resolve_ref=make_minimax_official_resolver(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    headers = minimax_speech.minimax_auth_headers(api_key)
+    response = await client.post(
+        minimax_speech.minimax_h3_submit_url(base_url),
+        headers=headers,
+        json=body,
+        timeout=MINIMAX_OFFICIAL_SUBMIT_TIMEOUT,
+    )
+    try:
+        raw = response.json() if response.text else {}
+    except Exception:
+        raw = {}
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=minimax_speech.h3_error_text(raw, getattr(response, "text", "") or "官方 MiniMax-H3 提交失败"),
+        )
+    task_id = minimax_speech.h3_task_id(raw if isinstance(raw, dict) else {})
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f"官方 MiniMax-H3 没有返回 task_id：{str(raw)[:500]}")
+    if on_task_id:
+        try:
+            on_task_id(task_id)
+        except Exception as exc:
+            print(f"[minimax-h3] 本地任务号留痕失败 task={task_id}: {exc}")
+    if should_cancel and should_cancel():
+        raise CanvasTaskCancelled()
+    state, _ = minimax_speech.h3_task_state(raw if isinstance(raw, dict) else {})
+    result = raw if state == "success" else await wait_for_minimax_official_h3_task(
+        client, provider, base_url, task_id, requested_model, should_cancel=should_cancel
+    )
+    download_url = minimax_speech.h3_result_url(result)
+    if not download_url:
+        raise HTTPException(status_code=502, detail=f"官方 MiniMax-H3 任务 {task_id} 已完成但没有成片地址。")
+    local_url = await save_remote_video_to_output(
+        download_url,
+        prefix="minimax_h3_",
+        timeout=MINIMAX_OFFICIAL_DOWNLOAD_TIMEOUT,
+    )
+    if not str(local_url or "").startswith(("/output/", "/assets/")):
+        raise HTTPException(status_code=502, detail=f"官方 MiniMax-H3 任务 {task_id} 已完成但成片下载失败。")
+    return {"videos": [local_url], "task_id": task_id, "raw": result}
+
+
+async def generate_minimax_official_image(prompt, size, quality, model, reference_images, provider, aspect_ratio=""):
+    del size, quality
+    api_key = minimax_official_api_key(provider)
+    refs = []
+    for index, ref in enumerate(reference_images or [], 1):
+        url = str((ref or {}).get("url") if isinstance(ref, dict) else ref or "").strip()
+        if not url:
+            continue
+        refs.append({"url": await minimax_official_media_url(url, "image", index)})
+    try:
+        body = minimax_speech.build_image_request(
+            prompt,
+            model=model,
+            aspect_ratio=aspect_ratio,
+            reference_images=refs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with httpx.AsyncClient(timeout=MINIMAX_OFFICIAL_IMAGE_TIMEOUT) as client:
+        response = await client.post(
+            minimax_speech.minimax_image_url(provider.get("base_url") or ""),
+            headers=minimax_speech.minimax_auth_headers(api_key),
+            json=body,
+        )
+    try:
+        raw = response.json() if response.text else {}
+    except Exception:
+        raw = {}
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=minimax_speech.error_text(raw, getattr(response, "text", "") or "官方 MiniMax 图片接口错误"),
+        )
+    try:
+        return minimax_speech.extract_image_result(raw if isinstance(raw, dict) else {}), raw if isinstance(raw, dict) else {}
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
 def canvas_video_task_type(provider, model=""):
     if is_grok2api_route(provider, model):
         return "grok2api-video"
     if is_h3_route(provider, model):
         return "h3-video"
+    if is_minimax_official_h3_route(provider, model):
+        return "minimax-h3-video"
     if is_cangyuan_video_route(provider, model):
         return "cangyuan-video"
     if is_chre3_video_route(provider, model):
@@ -18041,6 +18270,7 @@ def canvas_video_task_id_prefix(task_type):
     return {
         "grok2api-video": "canvas_grok2api_",
         "h3-video": "canvas_h3_",
+        "minimax-h3-video": "canvas_minimax_h3_",
         "cangyuan-video": "canvas_cangyuan_",
         "chre3-video": "canvas_chre3_",
         "pidoi-video": "canvas_pidoi_",
@@ -18051,6 +18281,7 @@ def canvas_video_task_label(task_type):
     return {
         "grok2api-video": "Grok2API",
         "h3-video": "H3",
+        "minimax-h3-video": "官方 MiniMax-H3",
         "cangyuan-video": "苍元",
         "chre3-video": "chre3",
         "pidoi-video": "Pidoi",
@@ -18118,6 +18349,16 @@ async def generate_canvas_video_for_background_task(client, payload, provider, b
         return await generate_codelba_video(client, payload, provider, base_url, requested_model)
     if task_type == "h3-video":
         return await generate_h3_video(
+            client,
+            payload,
+            provider,
+            base_url,
+            requested_model,
+            on_task_id=on_task_id,
+            should_cancel=should_cancel,
+        )
+    if task_type == "minimax-h3-video":
+        return await generate_minimax_official_video(
             client,
             payload,
             provider,
@@ -18437,6 +18678,8 @@ async def canvas_video(payload: CanvasVideoRequest):
         default_video_model = provider_first_video_model(provider)
     elif is_h3_provider(provider):
         default_video_model = provider_first_video_model(provider) or h3.H3_DEFAULT_MODEL
+    elif is_minimax_official_provider(provider):
+        default_video_model = provider_first_video_model(provider) or minimax_speech.MINIMAX_H3_MODEL
     elif is_cangyuan_video_provider(provider):
         default_video_model = CANGYUAN_VIDEO_DEFAULT_MODEL
     elif is_agnes:

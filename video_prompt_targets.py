@@ -8,6 +8,8 @@
 import re
 from pathlib import Path
 
+import minimax_speech_protocol as minimax_speech
+
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts" / "video-targets"
 
 # 顺序即前端按钮顺序。model_hints 只用于派生工作台的默认选中（软默认，可改），
@@ -51,7 +53,7 @@ VIDEO_PROMPT_TARGETS = {
 
 # 转换走文字聊天通道，不走 ModelScope / 纯视频协议。
 CHAT_CONVERT_BLOCKED_IDS = {"modelscope"}
-CHAT_CONVERT_BLOCKED_PROTOCOLS = {"h3", "codelba", "minimax-speech"}
+CHAT_CONVERT_BLOCKED_PROTOCOLS = {"h3", "codelba"}
 
 
 def is_usable_chat_provider(provider):
@@ -63,6 +65,14 @@ def is_usable_chat_provider(provider):
     protocol = str(provider.get("protocol") or "").strip().lower()
     if provider_id in CHAT_CONVERT_BLOCKED_IDS or protocol in CHAT_CONVERT_BLOCKED_PROTOCOLS:
         return False
+    if minimax_speech.is_minimax_official_protocol(protocol):
+        chat_models = [
+            str(model or "").strip()
+            for model in (provider.get("chat_models") or [])
+            if minimax_speech.is_minimax_chat_model(model)
+        ]
+        if not chat_models:
+            return False
     return bool(provider.get("chat_models"))
 
 
