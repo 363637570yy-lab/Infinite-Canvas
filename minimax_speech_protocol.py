@@ -90,12 +90,18 @@ MINIMAX_T2A_MODELS = (
     "speech-01-turbo",
 )
 MINIMAX_DEFAULT_T2A_MODEL = "speech-2.8-hd"
-MINIMAX_DEFAULT_SAMPLE_TEXT = "这是用于视频角色音色参考的样音，请保持声线稳定、吐字清晰。"
+# ~10–12s at speed 1.0; H3 reference audio is 2–15s. Phoneme coverage, not plot.
+MINIMAX_DEFAULT_SAMPLE_TEXT = "清晨窗边风很轻，一二三四五，东南西北中。山、川、江、河。请保持声线稳定，吐字清晰，别加快也别放慢。"
 MINIMAX_SAMPLE_TEXT_MAX = 200
 MINIMAX_T2A_TEXT_MAX = 10000
+MINIMAX_SAMPLE_NAME_MAX = 40
 
 # H3 reference audio is documented as 2–15 seconds; warn above this, still save.
 MINIMAX_SAMPLE_WARN_MS = 15000
+_GENERIC_SAMPLE_NAMES = frozenset({
+    "", "音色", "角色样音", "voice", "audio", "sample", "voice sample",
+    "读取音色", "读取音色…",
+})
 
 
 def is_minimax_official_protocol(value):
@@ -324,6 +330,24 @@ def t2a_text(value, default=MINIMAX_DEFAULT_SAMPLE_TEXT, limit=MINIMAX_SAMPLE_TE
     if cap > 0:
         text = text[:cap]
     return text
+
+
+def sample_display_name(name="", voice_id="", voice_name=""):
+    """Human label for a sample clip. Disk files stay unique; this is what H3 rewrite sees."""
+    text = str(name or "").strip()
+    if text.lower().endswith(".mp3"):
+        text = text[:-4].strip()
+    lowered = text.lower()
+    generic = (
+        not text
+        or lowered in {item.lower() for item in _GENERIC_SAMPLE_NAMES}
+        or lowered.startswith("voice_sample_")
+    )
+    if generic:
+        text = str(voice_name or "").strip() or str(voice_id or "").strip() or "角色样音"
+        if text.lower().endswith(".mp3"):
+            text = text[:-4].strip()
+    return text[:MINIMAX_SAMPLE_NAME_MAX]
 
 
 def build_t2a_request(text, voice_id, model="", sample=True):

@@ -163,6 +163,17 @@ class MiniMaxT2ARequestTests(unittest.TestCase):
         self.assertEqual(voices[0]["source"], "system_voice")
         self.assertEqual(speech.build_get_voice_request("nope"), {"voice_type": "system"})
 
+    def test_sample_display_name_drops_uuid_filename(self):
+        self.assertEqual(
+            speech.sample_display_name("voice_sample_802b81df22894fd4adc074e398650fdb.mp3", "girl", "少女音色"),
+            "少女音色",
+        )
+        self.assertEqual(speech.sample_display_name("林小夏", "girl", "少女音色"), "林小夏")
+        self.assertEqual(speech.sample_display_name("音色", "girl", "少女音色"), "少女音色")
+        self.assertEqual(speech.sample_display_name("", "girl-voice-id", ""), "girl-voice-id")
+        self.assertLessEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), speech.MINIMAX_SAMPLE_TEXT_MAX)
+        self.assertGreaterEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), 40)
+
 
 def run(coro):
     return asyncio.run(coro)

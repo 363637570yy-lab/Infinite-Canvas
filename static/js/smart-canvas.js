@@ -15675,21 +15675,39 @@ function bindSmartCharacterVoicePanel(){
     const providerSel = panel.querySelector('[data-cv="provider"]');
     const modelSel = panel.querySelector('[data-cv="model"]');
     const voiceSel = panel.querySelector('[data-cv="voice"]');
+    const nameInput = panel.querySelector('[data-cv="name"]');
     const textInput = panel.querySelector('[data-cv="text"]');
     const genBtn = panel.querySelector('[data-cv="generate"]');
+    let lastVoiceLabel = cv.selectedVoiceName ? cv.selectedVoiceName(panel, settings.videoVoiceId) : '';
     const persist = () => {
         if(providerSel) settings.videoSpeechProvider = providerSel.value;
         if(modelSel) settings.videoSpeechModel = modelSel.value;
         if(voiceSel) settings.videoVoiceId = voiceSel.value;
         if(textInput) settings.videoVoiceSampleText = textInput.value;
+        if(nameInput){
+            const voiceName = cv.selectedVoiceName ? cv.selectedVoiceName(panel, voiceSel?.value) : '';
+            settings.videoVoiceSampleName = cv.displaySampleName
+                ? cv.displaySampleName(nameInput.value, voiceName, voiceSel?.value)
+                : (nameInput.value || '').trim();
+        }
         persistActiveSmartSettings();
         scheduleSave();
     };
-    [providerSel, modelSel, voiceSel, textInput].forEach(el => {
+    [providerSel, modelSel, voiceSel, nameInput, textInput].forEach(el => {
         if(!el) return;
         el.onchange = persist;
         el.oninput = persist;
     });
+    if(voiceSel){
+        voiceSel.onchange = () => {
+            const nextLabel = cv.selectedVoiceName ? cv.selectedVoiceName(panel, voiceSel.value) : '';
+            if(nameInput && (cv.isGenericSampleName?.(nameInput.value) || nameInput.value.trim() === lastVoiceLabel)){
+                nameInput.value = nextLabel;
+            }
+            lastVoiceLabel = nextLabel;
+            persist();
+        };
+    }
     if(providerSel && !cv.voiceCache[providerSel.value]){
         cv.fetchVoices(providerSel.value).then(data => {
             if(!settings.videoSpeechModel) settings.videoSpeechModel = data.default_model || settings.videoSpeechModel;
@@ -15711,16 +15729,23 @@ function bindSmartCharacterVoicePanel(){
             genBtn.disabled = true;
             genBtn.textContent = '合成中…';
             try {
+                const voiceName = cv.selectedVoiceName ? cv.selectedVoiceName(panel, settings.videoVoiceId) : '';
+                const sampleName = cv.displaySampleName
+                    ? cv.displaySampleName(nameInput?.value || settings.videoVoiceSampleName, voiceName, settings.videoVoiceId)
+                    : (nameInput?.value || settings.videoVoiceSampleName || voiceName);
                 const sample = await cv.generateSample({
                     provider_id: settings.videoSpeechProvider,
                     model: settings.videoSpeechModel || '',
                     voice_id: settings.videoVoiceId,
-                    text: settings.videoVoiceSampleText || cv.DEFAULT_TEXT
+                    text: settings.videoVoiceSampleText || cv.DEFAULT_TEXT,
+                    name: sampleName
                 });
                 cv.applySampleToSettings(settings, sample, {
                     providerId: settings.videoSpeechProvider,
                     model: settings.videoSpeechModel,
-                    voiceId: settings.videoVoiceId
+                    voiceId: settings.videoVoiceId,
+                    voiceName,
+                    sampleName
                 });
                 const subject = activeSettingsSubject();
                 if(subject) attachSmartVoiceSampleNode(subject, sample);

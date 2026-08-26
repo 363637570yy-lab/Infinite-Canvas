@@ -283,7 +283,7 @@ def audio_inventory_lines(ctx):
         index = item.get("index") or (len(lines) + 1)
         name = str(item.get("name") or "").strip() or "(未命名)"
         if character_voice and index == 1:
-            lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色 → Subject 1 / S1）")
+            lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色，按名称匹配对应角色图 / Subject；对不上时绑正在说话的那个人）")
         else:
             lines.append(f"- 音{index} = <Audio {index}> = {name} （参考音频）")
     return lines
@@ -384,11 +384,14 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
     voice_flag = "角色音色：开" if character_voice else "角色音色：关"
     if character_voice:
         voice_rule = (
-            "角色音色已开启。音1 是人物样音，不是这一句台词的成片配音。"
-            "必须在 subject_definitions 写「<Audio 1> 是 <Subject 1> 的音色参考，只借声线和语速，不复用原词」。"
+            "角色音色已开启。音1 是人物样音，名称是角色线索，不是这一句台词的成片配音。"
+            "必须在 subject_definitions 把 <Audio 1> 绑到名称或外观与该样音名称匹配的 Subject，"
+            "写「<Audio 1> 是 <Subject N> 的音色参考，只借声线和语速，不复用原词」。"
+            "如果样音名叫「少女音色」或「林小夏」，就绑到对应的少女 / 林小夏 Subject，不要一律绑 <Subject 1>。"
+            "只有一个人物，或名称对不上任何图时，绑正在说话的那个人。"
             "summary 必须以 [reference generation + audio reference] 开头（可再拼 keyframe completion），禁止写成 audio reuse。"
-            "retention_analysis 增加 <Audio 1>: reference - 用于 <Subject 1> 新对白的音色。"
-            "开口的人仍用 <Subject 1> (S1) says: <d>[Chinese] 原文</d>，用 Audio 1 的声，不要另编一条声。"
+            "retention_analysis 增加 <Audio 1>: reference - 用于对应角色新对白的音色。"
+            "开口的人仍用 <Subject N> (S1) says: <d>[Chinese] 原文</d>，用 Audio 1 的声，不要另编一条声。"
             "不要把样音写成 BGM。"
         )
     else:
@@ -889,7 +892,7 @@ def _check_h3_character_voice(text, ctx, errors, warnings):
         errors.append("缺少音色绑定：勾选角色音色时必须挂载样音")
         return
     if 1 not in found:
-        errors.append("缺少音色绑定：须写 <Audio 1> 是 <Subject 1> 的音色参考")
+        errors.append("缺少音色绑定：须写 <Audio 1> 是对应角色 Subject 的音色参考")
     for number in found:
         if number < 1 or number > audio_count:
             errors.append(f"缺少音色绑定：<Audio {number}> 超出挂载音频数量 {audio_count}")

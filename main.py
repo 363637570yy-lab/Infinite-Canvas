@@ -2904,6 +2904,7 @@ class CanvasSpeechSampleRequest(BaseModel):
     model: str = ""
     voice_id: str = Field(min_length=1, max_length=200)
     text: str = Field(default="", max_length=minimax_speech.MINIMAX_SAMPLE_TEXT_MAX)
+    name: str = Field(default="", max_length=80)
 
 class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
@@ -19479,10 +19480,12 @@ async def minimax_speech_sample(payload: CanvasSpeechSampleRequest):
     warning = ""
     if duration_ms and duration_ms > minimax_speech.MINIMAX_SAMPLE_WARN_MS:
         warning = f"样音约 {duration_ms / 1000:.1f} 秒，H3 参考音频建议 2–15 秒，可把试听文本再缩短。"
+    display_name = minimax_speech.sample_display_name(payload.name, payload.voice_id.strip())
     return {
         "ok": True,
         "url": output_url_for(filename),
-        "name": filename,
+        "name": display_name,
+        "filename": filename,
         "model": body["model"],
         "voice_id": payload.voice_id.strip(),
         "duration_ms": duration_ms,

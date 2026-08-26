@@ -305,6 +305,27 @@ class ValidateRef2vaTests(unittest.TestCase):
         result = vpt.validate_target_output("h3-ref2va", text, ctx)
         self.assertEqual(result["errors"], [])
 
+    def test_character_voice_can_bind_named_audio_to_subject_two(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            audios=[{"name": "少女音色", "url": "http://x/a.mp3"}],
+            character_voice=True,
+        )
+        text = GOOD_REF2VA.replace(
+            "<Subject 2> is a young consort in a pale blue palace dress from <Picture 2>.",
+            "<Subject 2> is a young consort in a pale blue palace dress from <Picture 2>. <Audio 1> is the voice timbre reference for <Subject 2>, using only timbre and pace, not the original words.",
+        ).replace(
+            "summary: In an imperial garden at dusk",
+            "summary: [reference generation + audio reference] In an imperial garden at dusk",
+        ).replace(
+            "retention_analysis: <Subject 1> must keep",
+            "retention_analysis: <Audio 1>: reference - used as <Subject 2>'s speaking timbre. <Subject 1> must keep",
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, ctx)
+        self.assertEqual(result["errors"], [])
+
     def test_character_voice_inventory_in_convert_messages(self):
         ctx = vpt.build_convert_context(
             "皇帝说话",
@@ -316,6 +337,8 @@ class ValidateRef2vaTests(unittest.TestCase):
         messages = vpt.build_convert_messages("h3-ref2va", ctx, language="zh")
         self.assertIn("角色音色：开", messages[1]["content"])
         self.assertIn("音1 = <Audio 1> = emperor.mp3", messages[1]["content"])
+        self.assertIn("按名称匹配对应角色图", messages[1]["content"])
+        self.assertIn("不要一律绑 <Subject 1>", messages[1]["content"])
         self.assertNotIn("http://x/a.mp3", messages[1]["content"])
         self.assertNotIn("minimax-speech", vpt.CHAT_CONVERT_BLOCKED_PROTOCOLS)
         self.assertFalse(vpt.is_usable_chat_provider({

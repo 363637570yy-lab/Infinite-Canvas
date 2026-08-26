@@ -75,6 +75,7 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
         self.assertIn("from.type === 'voice'", js)
         self.assertIn("CharacterVoice.collectVideoAudios", js)
         self.assertIn("CharacterVoice.usesCharacterVoice", js)
+        self.assertIn("名称建议和角色图同名", js)
         self.assertNotIn('data-video-toggle="characterVoice"', js)
         self.assertNotIn('data-video-toggle="enhancePrompt"', js)
         self.assertNotIn('data-video-toggle="enableUpsample"', js)
@@ -95,16 +96,27 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
             "function bindPanel",
             "function mediaRef",
             "function generatorSource",
+            "function displaySampleName",
+            'data-cv="name"',
+            "读取音色",
             "sourceType: 'legacy'",
         ):
             self.assertIn(token, js)
+        self.assertIn("清晨窗边风很轻", js)
+        self.assertNotIn("这是用于视频角色音色参考的样音", js)
 
     def test_i18n_has_voice_keys(self):
         i18n = _read("static/js/i18n/canvas.js")
         self.assertIn('"canvas.voiceNode"', i18n)
         self.assertIn('"canvas.voiceHint"', i18n)
+        self.assertIn("名称建议和角色图同名", i18n)
         version = _read("static/js/i18n.js")
-        self.assertIn("2026.08.26.voice-node.1", version)
+        self.assertIn("2026.08.26.voice-name.1", version)
+
+    def test_default_sample_text_matches_protocol(self):
+        import minimax_speech_protocol as speech
+        js = _read("static/js/character-voice.js")
+        self.assertIn(speech.MINIMAX_DEFAULT_SAMPLE_TEXT, js)
 
     def test_dead_video_toggles_are_not_sent(self):
         classic = _read("static/js/canvas.js")

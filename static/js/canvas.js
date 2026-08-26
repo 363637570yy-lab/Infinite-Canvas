@@ -6431,7 +6431,7 @@ function renderNode(node){
     if(node.type === 'voice'){
         const voiceBody = window.CharacterVoice?.renderBody?.(node, {
             providers: apiProviders,
-            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. This is not per-line TTS.'),
+            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。名称建议和角色图同名，改写时按名称绑到对应人物。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Name it after the character image so the rewriter can bind the voice. This is not per-line TTS.'),
             onChange(){ scheduleSave(); },
             onRefresh(){ render(); scheduleSave(); },
             showError: showErrorModal
