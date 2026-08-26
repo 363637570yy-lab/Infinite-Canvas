@@ -51,6 +51,8 @@ import codelba_protocol as codelba
 import grok2api_protocol as grok2api
 # 本地 H3 网关：画布只发时长/画质/比例，步数等配方在 H3 管理页。
 import h3_protocol as h3
+# MiniMax Token Plan 语音：只做 get_voice / T2A 样音，不走 H3 视频。
+import minimax_speech_protocol as minimax_speech
 # 出片提示词目标转换：图槽、消息构造、目标校验等纯逻辑。
 import video_prompt_targets as video_prompts
 
@@ -431,7 +433,8 @@ CODELBA_PROTOCOL = codelba.CODELBA_PROTOCOL
 # Grok2API 使用严格 JSON 的 /v1/videos/generations，与 grok multipart 合同单独注册。
 GROK2API_PROTOCOL = grok2api.GROK2API_PROTOCOL
 H3_PROTOCOL = h3.H3_PROTOCOL
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
+MINIMAX_SPEECH_PROTOCOL = minimax_speech.MINIMAX_SPEECH_PROTOCOL
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "grok", *CHRE3_VIDEO_PROTOCOLS, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, "gemini-cli", "volcengine", "runninghub", "jimeng", "codex"}
 
 def is_chre3_video_protocol(value):
     return str(value or "").strip().lower() in CHRE3_VIDEO_PROTOCOLS
@@ -456,6 +459,9 @@ def is_grok2api_protocol(value):
 
 def is_h3_protocol(value):
     return str(value or "").strip().lower() == H3_PROTOCOL
+
+def is_minimax_speech_protocol(value):
+    return str(value or "").strip().lower() == MINIMAX_SPEECH_PROTOCOL
 
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json", "openai-video-proxy", "openai-responses"}
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
@@ -2883,10 +2889,18 @@ class VideoPromptConvertRequest(BaseModel):
     prompt: str = Field(default="", max_length=10000)
     duration: int = 5
     images: List[AIReference] = []
+    audios: List[AIReference] = []
+    character_voice: bool = False
     # 转换用画布已配置的文本模型通道，与视频站点无关。
     provider: str = "comfly"
     model: str = ""
     language: str = "en"
+
+class CanvasSpeechSampleRequest(BaseModel):
+    provider_id: str = Field(min_length=1, max_length=80)
+    model: str = ""
+    voice_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(default="", max_length=minimax_speech.MINIMAX_SAMPLE_TEXT_MAX)
 
 class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
@@ -13978,6 +13992,52 @@ async def probe_h3_endpoint(client, base_url: str, api_key: str):
         result["message"] = f"H3 兼容协议验证失败：{result.get('message') or '模型列表端点不可用'}"
     return result
 
+async def probe_minimax_speech_endpoint(client, base_url: str, api_key: str, group_id=""):
+    """验证 MiniMax 语音：POST /v1/get_voice，不调用会扣费的 T2A。"""
+    url = minimax_speech.minimax_url_with_group(
+        minimax_speech.minimax_get_voice_url(base_url),
+        group_id,
+    )
+    headers = minimax_speech.minimax_auth_headers(api_key, group_id=group_id)
+    response = await client.post(url, headers=headers, json=minimax_speech.build_get_voice_request("system"))
+    try:
+        raw = response.json() if response.text else {}
+    except Exception:
+        raw = response.text[:500]
+    voices = minimax_speech.parse_voice_list(raw) if isinstance(raw, dict) else []
+    ok = response.status_code < 300 and isinstance(raw, dict) and minimax_speech.base_resp_ok(raw)
+    result = {
+        "ok": bool(ok),
+        "status": response.status_code,
+        "raw": raw,
+        "protocol": MINIMAX_SPEECH_PROTOCOL,
+        "model_count": len(minimax_speech.MINIMAX_T2A_MODELS) if ok else 0,
+        "image_models": [],
+        "chat_models": [],
+        "video_models": [],
+        "audio_models": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
+        "unknown_models": [],
+        "speech_models": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
+        "voices": voices if ok else [],
+        "voice_count": len(voices) if ok else 0,
+        "all": list(minimax_speech.MINIMAX_T2A_MODELS) if ok else [],
+    }
+    if response.status_code in (401, 403):
+        result["message"] = "MiniMax API Key 无效或无权限"
+        return result
+    if response.status_code >= 500:
+        result["message"] = f"MiniMax get_voice 服务端错误 {response.status_code}"
+        return result
+    if not ok:
+        result["message"] = minimax_speech.error_text(raw, "MiniMax 语音协议验证失败：get_voice 不可用")
+        return result
+    result["message"] = (
+        f"MiniMax 语音协议可用：get_voice 可达，系统音色 {len(voices)} 个；"
+        "T2A 模型使用官方枚举，不按 /v1/models 名称猜测。"
+        "本探测不合成音频。"
+    )
+    return result
+
 async def probe_codelba_endpoint(client, base_url: str, api_key: str):
     """验证 Codelba 的 Bearer /openapi/v1/models，不调用会产生费用的 POST /openapi/v1/videos。"""
     url = codelba.codelba_models_url(base_url)
@@ -14179,7 +14239,7 @@ def parse_upstream_models(raw, protocol="openai"):
                 mid = mid[len("models/"):]
             ids.append(mid)
     ids = sorted(set(ids))
-    grouped = {"image": [], "chat": [], "video": [], "unknown": []}
+    grouped = {"image": [], "chat": [], "video": [], "audio": [], "unknown": []}
     metadata_by_id = {}
     uses_metadata = (
         is_chre3_video_protocol(protocol)
@@ -14190,6 +14250,7 @@ def parse_upstream_models(raw, protocol="openai"):
         or is_codelba_protocol(protocol)
         or is_grok2api_protocol(protocol)
         or is_h3_protocol(protocol)
+        or is_minimax_speech_protocol(protocol)
     )
     if uses_metadata:
         for it in items:
@@ -14210,13 +14271,15 @@ def parse_upstream_models(raw, protocol="openai"):
             kind = grok2api.classify_grok2api_model_entry(metadata_by_id.get(mid), mid)
         elif is_h3_protocol(protocol):
             kind = h3.classify_h3_model_entry(metadata_by_id.get(mid), mid)
+        elif is_minimax_speech_protocol(protocol):
+            kind = minimax_speech.classify_minimax_speech_model_entry(metadata_by_id.get(mid), mid)
         elif is_cangyuan_video_protocol(protocol):
             kind = classify_cangyuan_model_entry(metadata_by_id.get(mid), mid)
         elif is_chre3_video_protocol(protocol):
             kind = classify_chre3_model_entry(metadata_by_id.get(mid), mid)
         else:
             kind = classify_upstream_model(mid)
-        grouped[kind].append(mid)
+        grouped.setdefault(kind, []).append(mid)
     return grouped, ids
 
 def apply_agnes_model_defaults(base_url, grouped, ids):
@@ -14306,6 +14369,28 @@ async def test_provider_connection(payload: TestConnectionPayload):
                 "chat_models": probe.get("chat_models") or [],
                 "video_models": probe.get("video_models") or [],
                 "unknown_models": probe.get("unknown_models") or [],
+                "all": probe.get("all") or [],
+            }
+        except httpx.HTTPError as e:
+            return {"ok": False, "status": 0, "message": str(e)[:300]}
+    if is_minimax_speech_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_minimax_speech_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": MINIMAX_SPEECH_PROTOCOL,
+                "status": probe.get("status") or 0,
+                "message": probe.get("message") or "MiniMax 语音协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "audio_models": probe.get("audio_models") or [],
+                "unknown_models": probe.get("unknown_models") or [],
+                "speech_models": probe.get("speech_models") or [],
+                "voices": probe.get("voices") or [],
+                "voice_count": probe.get("voice_count") or 0,
                 "all": probe.get("all") or [],
             }
         except httpx.HTTPError as e:
@@ -14499,6 +14584,29 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
                 "chat_models": probe.get("chat_models") or [],
                 "video_models": probe.get("video_models") or [],
                 "unknown_models": probe.get("unknown_models") or [],
+                "all": probe.get("all") or [],
+                "raw": probe.get("raw"),
+            }
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    if is_minimax_speech_protocol(protocol):
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                probe = await probe_minimax_speech_endpoint(client, base_url, api_key)
+            return {
+                "ok": bool(probe.get("ok")),
+                "protocol": protocol,
+                "status_code": probe.get("status") or 0,
+                "message": probe.get("message") or "MiniMax 语音协议验证完成",
+                "model_count": probe.get("model_count") or 0,
+                "image_models": probe.get("image_models") or [],
+                "chat_models": probe.get("chat_models") or [],
+                "video_models": probe.get("video_models") or [],
+                "audio_models": probe.get("audio_models") or [],
+                "unknown_models": probe.get("unknown_models") or [],
+                "speech_models": probe.get("speech_models") or [],
+                "voices": probe.get("voices") or [],
+                "voice_count": probe.get("voice_count") or 0,
                 "all": probe.get("all") or [],
                 "raw": probe.get("raw"),
             }
@@ -18973,10 +19081,21 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not payload.prompt.strip():
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
+    audios = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.audios]
     extra = video_prompts.reject_first_last_extra_images(images, target=target)
     if extra:
         raise HTTPException(status_code=400, detail=extra)
-    ctx = video_prompts.build_convert_context(payload.prompt, images, payload.duration)
+    if payload.character_voice and target == "h3-fl2va":
+        raise HTTPException(status_code=400, detail="角色音色请用 minimax优化 的「多参提示词」，首尾帧目标绑不住人物声线。")
+    if payload.character_voice and target == "h3-ref2va" and not any(str(item.get("url") or "").strip() for item in audios):
+        raise HTTPException(status_code=400, detail="勾选角色音色时请先生成或挂上一条样音。")
+    ctx = video_prompts.build_convert_context(
+        payload.prompt,
+        images,
+        payload.duration,
+        audios=audios,
+        character_voice=payload.character_voice,
+    )
     attachments = video_prompts.convert_image_attachments(ctx)
     image_urls = [url for url, _caption in attachments]
     image_captions = [caption for _url, caption in attachments]
@@ -19020,6 +19139,84 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         "language": language,
         "errors": checked["errors"],
         "warnings": video_prompts.convert_input_warnings(ctx, chat_model, image_urls) + checked["warnings"],
+    }
+
+@app.get("/api/minimax-speech/voices")
+async def minimax_speech_voices(provider_id: str = ""):
+    """列出系统音色。只打 get_voice，不合成。"""
+    provider = get_api_provider_exact(provider_id)
+    if not is_minimax_speech_protocol(provider_protocol(provider)):
+        raise HTTPException(status_code=400, detail="请选择 MiniMax 语音协议平台。")
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(status_code=400, detail="未配置 MiniMax API Key。")
+    group_id = str(provider.get("minimax_group_id") or "").strip()
+    async with httpx.AsyncClient(timeout=20) as client:
+        probe = await probe_minimax_speech_endpoint(client, provider.get("base_url") or "", api_key, group_id)
+    if not probe.get("ok"):
+        raise HTTPException(status_code=502, detail=probe.get("message") or "无法读取 MiniMax 音色列表")
+    return {
+        "ok": True,
+        "provider_id": provider["id"],
+        "models": probe.get("speech_models") or list(minimax_speech.MINIMAX_T2A_MODELS),
+        "voices": probe.get("voices") or [],
+        "default_model": minimax_speech.MINIMAX_DEFAULT_T2A_MODEL,
+        "default_text": minimax_speech.MINIMAX_DEFAULT_SAMPLE_TEXT,
+    }
+
+@app.post("/api/minimax-speech/sample")
+async def minimax_speech_sample(payload: CanvasSpeechSampleRequest):
+    """合成一条角色样音并落盘。点击即一次 T2A，不按镜头逐句调用。"""
+    provider = get_api_provider_exact(payload.provider_id)
+    if not is_minimax_speech_protocol(provider_protocol(provider)):
+        raise HTTPException(status_code=400, detail="请选择 MiniMax 语音协议平台。")
+    api_key = provider_env_key_value(provider["id"])
+    if not api_key:
+        raise HTTPException(status_code=400, detail="未配置 MiniMax API Key。")
+    try:
+        body = minimax_speech.build_t2a_request(payload.text, payload.voice_id, payload.model, sample=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    group_id = str(provider.get("minimax_group_id") or "").strip()
+    url = minimax_speech.minimax_url_with_group(
+        minimax_speech.minimax_t2a_url(provider.get("base_url") or ""),
+        group_id,
+    )
+    headers = minimax_speech.minimax_auth_headers(api_key, group_id=group_id)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)) as client:
+        response = await client.post(url, headers=headers, json=body)
+    try:
+        raw = response.json() if response.text else {}
+    except Exception:
+        raw = {}
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=minimax_speech.error_text(raw, f"MiniMax T2A 失败 HTTP {response.status_code}"),
+        )
+    try:
+        audio_bytes = minimax_speech.decode_t2a_audio_bytes(raw if isinstance(raw, dict) else {})
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not audio_bytes:
+        raise HTTPException(status_code=502, detail="MiniMax T2A 没有返回音频数据")
+    filename = f"voice_sample_{uuid.uuid4().hex}.mp3"
+    path = output_path_for(filename)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(audio_bytes)
+    duration_ms = minimax_speech.extra_audio_length_ms(raw if isinstance(raw, dict) else {})
+    warning = ""
+    if duration_ms and duration_ms > minimax_speech.MINIMAX_SAMPLE_WARN_MS:
+        warning = f"样音约 {duration_ms / 1000:.1f} 秒，H3 参考音频建议 2–15 秒，可把试听文本再缩短。"
+    return {
+        "ok": True,
+        "url": output_url_for(filename),
+        "name": filename,
+        "model": body["model"],
+        "voice_id": payload.voice_id.strip(),
+        "duration_ms": duration_ms,
+        "warning": warning,
     }
 
 # --- 对话管理 ---

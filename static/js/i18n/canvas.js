@@ -329,6 +329,7 @@
         "canvas.videoWatermark": { zh: "水印", en: "Watermark" },
         "canvas.videoCameraFixed": { zh: "固定镜头", en: "Fixed Camera" },
         "canvas.videoGenerateAudio": { zh: "生成音频", en: "Generate Audio" },
+        "canvas.videoCharacterVoice": { zh: "角色音色", en: "Character Voice" },
         "canvas.videoMultimodal": { zh: "全能参考", en: "Omni Reference" },
         "canvas.videoFirstLastFrames": { zh: "首尾帧", en: "First/Last" },
         "canvas.videoRoleReference": { zh: "参考", en: "Ref" },

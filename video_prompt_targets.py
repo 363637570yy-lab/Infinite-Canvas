@@ -51,7 +51,7 @@ VIDEO_PROMPT_TARGETS = {
 
 # 转换走文字聊天通道，不走 ModelScope / 纯视频协议。
 CHAT_CONVERT_BLOCKED_IDS = {"modelscope"}
-CHAT_CONVERT_BLOCKED_PROTOCOLS = {"h3", "codelba"}
+CHAT_CONVERT_BLOCKED_PROTOCOLS = {"h3", "codelba", "minimax-speech"}
 
 
 def is_usable_chat_provider(provider):
@@ -174,7 +174,7 @@ def reject_first_last_extra_images(images, *, target="", require_roles=False, ac
     return ""
 
 
-def build_convert_context(prompt, images, duration_s):
+def build_convert_context(prompt, images, duration_s, audios=None, character_voice=False):
     """导演本原文 + 上传图槽。不抽镜头、台词、人物或风格。"""
     entries = []
     for index, item in enumerate(images or [], start=1):
@@ -186,10 +186,25 @@ def build_convert_context(prompt, images, duration_s):
             "role": _normalize_image_role(row.get("role")),
             "url": str(row.get("url") or ""),
         })
+    audio_entries = []
+    for index, item in enumerate(audios or [], start=1):
+        row = dict(item or {})
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        audio_entries.append({
+            "index": len(audio_entries) + 1,
+            "slot": f"音{len(audio_entries) + 1}",
+            "name": str(row.get("name") or ""),
+            "role": "character_voice" if character_voice and not audio_entries else "reference",
+            "url": url,
+        })
     return {
         "source_prompt": str(prompt or ""),
         "duration_s": duration_s,
         "images": entries,
+        "audios": audio_entries,
+        "character_voice": bool(character_voice),
     }
 
 
@@ -248,6 +263,19 @@ def image_inventory_lines(ctx, target_id="", language="en"):
         else:
             role = image_role_label(item.get("role"), "en")
             lines.append(f"- Image {index} = @Image{index} = {name} ({role})")
+    return lines
+
+
+def audio_inventory_lines(ctx):
+    lines = []
+    character_voice = bool(ctx.get("character_voice"))
+    for item in ctx.get("audios") or []:
+        index = item.get("index") or (len(lines) + 1)
+        name = str(item.get("name") or "").strip() or "(未命名)"
+        if character_voice and index == 1:
+            lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色 → Subject 1 / S1）")
+        else:
+            lines.append(f"- 音{index} = <Audio {index}> = {name} （参考音频）")
     return lines
 
 
@@ -337,17 +365,38 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
     prompt_text = str(source_prompt or ctx.get("source_prompt") or "").strip()
     inventory = image_inventory_lines(ctx, target_id, language)
     inventory_text = "\n".join(inventory) if inventory else "（没有参考图）"
+    audio_lines = audio_inventory_lines(ctx)
+    audio_text = "\n".join(audio_lines) if audio_lines else "（没有参考音频）"
     captions = convert_image_captions(ctx)
     caption_text = "\n".join(captions) if captions else "（没有附图）"
     lang_name = "中文" if normalize_output_language(language) == "zh" else "英文"
+    character_voice = bool(ctx.get("character_voice")) and str(target_id or "") == "h3-ref2va"
+    voice_flag = "角色音色：开" if character_voice else "角色音色：关"
+    if character_voice:
+        voice_rule = (
+            "角色音色已开启。音1 是人物样音，不是这一句台词的成片配音。"
+            "必须在 subject_definitions 写「<Audio 1> 是 <Subject 1> 的音色参考，只借声线和语速，不复用原词」。"
+            "summary 必须以 [reference generation + audio reference] 开头（可再拼 keyframe completion），禁止写成 audio reuse。"
+            "retention_analysis 增加 <Audio 1>: reference - 用于 <Subject 1> 新对白的音色。"
+            "开口的人仍用 <Subject 1> (S1) says: <d>[Chinese] 原文</d>，用 Audio 1 的声，不要另编一条声。"
+            "不要把样音写成 BGM。"
+        )
+    else:
+        voice_rule = (
+            "角色音色未开启。不要写 <Audio N>，不要写 audio reference / audio reuse。"
+        )
     user = (
         f"目标：{target_id}\n"
         f"时长（秒）：{ctx.get('duration_s')}\n"
+        f"{voice_flag}\n"
+        f"{voice_rule}\n"
         f"{output_language_instruction(language, target_id)}\n\n"
         "原始导演本：\n"
         f"{prompt_text}\n\n"
         "参考图槽位（与附图顺序一致；正文必须用这些槽位绑定，不要改文件名）：\n"
         f"{inventory_text}\n\n"
+        "参考音频槽位：\n"
+        f"{audio_text}\n\n"
         "附图已按槽位顺序附在本条消息里，每张图前有【图N】说明：\n"
         f"{caption_text}\n"
         "请看图写词。"
@@ -393,6 +442,7 @@ _TIME_CODE = re.compile(r"\bAt\s+(\d{1,2}):(\d{2})\.(\d{3})", re.IGNORECASE)
 _D_TAG = re.compile(r"<d>\s*\[Chinese\]\s*(.*?)\s*</d>", re.DOTALL | re.IGNORECASE)
 _PICTURE_TAG = re.compile(r"<Picture\s+(\d{1,2})>", re.IGNORECASE)
 _SUBJECT_TAG = re.compile(r"<Subject\s+(\d{1,2})>", re.IGNORECASE)
+_AUDIO_TAG = re.compile(r"<Audio\s+(\d{1,2})>", re.IGNORECASE)
 # 官方中文 @图片N / 兼容 @图像N / 英文 @ImageN / @Image N
 _SEEDANCE_REF = re.compile(r"@(?:图片|图像|Image)\s*(\d{1,2})", re.IGNORECASE)
 _CANVAS_AT_TU = re.compile(r"@图(?!片|像)\s*\d{1,2}")
@@ -613,6 +663,7 @@ def _validate_h3_ref2va(text, ctx, errors, warnings):
         warnings.append(f"detailed_description 仅 {words} 词，官方 generation 任务建议 350–500 词")
     _check_time_codes(text, ctx.get("duration_s"), errors)
     _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ctx, errors, warnings)
+    _check_h3_character_voice(text, ctx, errors, warnings)
 
 
 def _validate_h3_fl2va(text, ctx, errors, warnings):
@@ -810,12 +861,41 @@ def _check_requested_language(text, target_id, language, errors):
         )
 
 
+def _audio_count(ctx):
+    return len(ctx.get("audios") or [])
+
+
+def _check_h3_character_voice(text, ctx, errors, warnings):
+    character_voice = bool(ctx.get("character_voice"))
+    audio_count = _audio_count(ctx)
+    found = [int(match.group(1)) for match in _AUDIO_TAG.finditer(text)]
+    summary = _section_body(text, "summary", ["retention_analysis"])
+    summary_l = (summary or "").lower()
+    if not character_voice:
+        if found:
+            warnings.append("未勾选角色音色，但输出写了 <Audio N>；请关掉音频绑定或勾选角色音色")
+        return
+    if audio_count < 1:
+        errors.append("缺少音色绑定：勾选角色音色时必须挂载样音")
+        return
+    if 1 not in found:
+        errors.append("缺少音色绑定：须写 <Audio 1> 是 <Subject 1> 的音色参考")
+    for number in found:
+        if number < 1 or number > audio_count:
+            errors.append(f"缺少音色绑定：<Audio {number}> 超出挂载音频数量 {audio_count}")
+    if "audio reuse" in summary_l and "audio reference" not in summary_l:
+        errors.append("缺少音色绑定：summary 应使用 audio reference，不要只用 audio reuse")
+    elif "audio reference" not in summary_l:
+        errors.append("缺少音色绑定：summary 须含 audio reference")
+
+
 _H3_STRUCTURAL_MARKERS = (
     "缺少段：",
     "六段顺序不对",
     "第一行必须是对齐行",
     "对齐行之后必须空一行",
     "缺少字段：",
+    "缺少音色绑定",
 )
 
 

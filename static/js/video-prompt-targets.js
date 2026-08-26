@@ -67,7 +67,7 @@
             if(!p || p.enabled === false) return false;
             const id = String(p.id || '').toLowerCase();
             const protocol = String(p.protocol || '').toLowerCase();
-            if(id === 'modelscope' || protocol === 'h3' || protocol === 'codelba') return false;
+            if(id === 'modelscope' || protocol === 'h3' || protocol === 'codelba' || protocol === 'minimax-speech') return false;
             return Array.isArray(p.chat_models) && p.chat_models.length;
         });
     }

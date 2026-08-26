@@ -49,7 +49,8 @@ N/A
 - `summary`：必须以方括号任务类型开头，可按素材角色选，多种关系用 ` + ` 拼接，不要发明新前缀：
   - 图只提供人物/场景/风格/动作，不当成某一帧 → `[reference generation]`
   - 图是首帧、尾帧、关键帧或构图/分镜锚点 → `[keyframe completion]` 或 `[reference generation + keyframe completion]`
-  - 当前画布转换只附图，不要写 `video editing` / `video continuation` / `audio reuse`
+  - 角色音色关闭时：不要写 `video editing` / `video continuation` / `audio reuse` / `audio reference`
+  - 角色音色开启时：必须写成 `[reference generation + audio reference]`（可再拼 `keyframe completion`），禁止单独用 `audio reuse`
 - `retention_analysis`：每个标签一行，必须用官方标记之一：`fully_preserved` / `partially_preserved` / `attribute_transfer` / `weak_reference`。户型/空间写结构保持，不要只写脸和衣服。
 - `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。选中文时不要写 `The target video is ...`，写「目标视频采用……」。
 - `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。可按导演本镜头和时长自己估点。
@@ -66,6 +67,12 @@ N/A
 4. 不用 `@图N`、`@图片N`、`@Image N`、首尾帧对齐行。
 5. 描写语言必须与「生成语言」完全一致，禁止中英混写描写。段名、任务前缀、关系标记、标签、时间码保持英文。`<d>` 内和画面可见原文不翻译。
 6. 有附图时禁止写 `No identified subjects`。
+7. 只在用户消息写「角色音色：开」时绑定音频。音1 是人物样音，用来锁声线，不是这一句台词的成片录音。必须写：
+   - subject_definitions：`<Audio 1> 是 <Subject 1> 的音色参考，只借声线和语速，不复用原词。`
+   - summary：`[reference generation + audio reference]`
+   - retention_analysis：`<Audio 1>: reference - 用于 <Subject 1> 新对白的音色，不复制样音里的词和底噪。`
+   - 开口仍用 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`，用 Audio 1 的声。
+   角色音色关闭时禁止出现 `<Audio N>`。
 
 ## 中文描写样例（两张人物参考图，15 秒；仅当生成语言=中文时照抄语言）
 

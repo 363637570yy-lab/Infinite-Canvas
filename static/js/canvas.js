@@ -2767,6 +2767,14 @@ function addVideoNode(point){
         watermark:false,
         cameraFixed:false,
         generateAudio:false,
+        characterVoice:false,
+        speechProviderId:'',
+        speechModel:'',
+        voiceId:'',
+        voiceSampleUrl:'',
+        voiceSampleName:'',
+        voiceSampleText:'',
+        voiceSampleNodeId:'',
         useFrameRoles:false,
         multimodal:false,
         tempShLinks:[],
@@ -8739,9 +8747,14 @@ function renderVideoBody(node){
                 <button type="button" class="setting-check ${node.watermark ? 'active' : ''}" data-video-toggle="watermark"><span class="check-dot"></span>${tr('canvas.videoWatermark')}</button>
                 <button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>
                 <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
+                <button type="button" class="setting-check ${node.characterVoice ? 'active' : ''}" data-video-toggle="characterVoice"><span class="check-dot"></span>${tr('canvas.videoCharacterVoice')}</button>
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
+            ${node.characterVoice && window.CharacterVoice ? window.CharacterVoice.panelHtml({
+                ...window.CharacterVoice.readStateFrom(node),
+                providers: apiProviders
+            }) : ''}
             ${window.VideoPromptTargets ? (node.videoPromptTarget ? window.VideoPromptTargets.metaRowHtml(node) : window.VideoPromptTargets.buttonRowHtml(apiProviders, node.vptChatProvider, node.vptChatModel, node.vptOutputLang)) : ''}
         </div>
         <div class="gen-run-row">
@@ -8788,6 +8801,7 @@ function renderVideoBody(node){
             scheduleSave();
         };
     });
+    bindCanvasCharacterVoicePanel(wrap, node);
     wrap.querySelectorAll('[data-vpt-chat]').forEach(sel => {
         sel.onmousedown = e => e.stopPropagation();
         sel.onclick = e => e.stopPropagation();
@@ -8896,7 +8910,6 @@ function renderVideoImageInputs(list, node, imageInputs){
         item.draggable = true;
         item.dataset.sourceId = src.id;
         const kind = mediaKindForRef(src.refs?.[0] || {url:src.preview || ''});
-        const frameLabel = kind === 'image' && node.useFrameRoles && i === 0 ? tr('canvas.videoRoleFirstFrame') : kind === 'image' && node.useFrameRoles && i === 1 ? tr('canvas.videoRoleLastFrame') : '';
         const previewHtml = kind === 'video'
             ? canvasVideoPreviewHtml(src.preview || src.refs?.[0]?.url || '', 256, '', true)
             : kind === 'audio'
@@ -8904,7 +8917,20 @@ function renderVideoImageInputs(list, node, imageInputs){
             : src.preview && !isMissingAssetUrl(src.preview)
             ? canvasPreviewImgHtml(src.preview, 256, '', true)
             : (src.preview ? missingAssetHtml(src.preview, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
-        const typeLabel = kind === 'audio' ? `音频${i + 1}` : kind === 'video' ? `视频${i + 1}` : `图${i + 1}`;
+        let typeLabel = `图${i + 1}`;
+        let frameLabel = '';
+        if(kind === 'audio'){
+            const audioIndex = imageInputs.slice(0, i + 1).filter(item => mediaKindForRef(item.refs?.[0] || {url:item.preview || ''}) === 'audio').length;
+            typeLabel = `音频${audioIndex}`;
+        } else if(kind === 'video'){
+            const videoIndex = imageInputs.slice(0, i + 1).filter(item => mediaKindForRef(item.refs?.[0] || {url:item.preview || ''}) === 'video').length;
+            typeLabel = `视频${videoIndex}`;
+        } else {
+            const imageIndex = imageInputs.slice(0, i + 1).filter(item => mediaKindForRef(item.refs?.[0] || {url:item.preview || ''}) === 'image').length;
+            typeLabel = `图${imageIndex}`;
+            if(node.useFrameRoles && imageIndex === 1) frameLabel = tr('canvas.videoRoleFirstFrame');
+            else if(node.useFrameRoles && imageIndex === 2) frameLabel = tr('canvas.videoRoleLastFrame');
+        }
         item.innerHTML = `
             <div class="video-input-thumb">
                 <span class="input-index">${i + 1}</span>
@@ -10783,6 +10809,102 @@ async function runGeneratorLegacy(genId, opts={}){
         showErrorModal(err.message || tr('canvas.generationFailed'), tr('canvas.apiFailed'));
     }
 }
+function attachCanvasVoiceSampleNode(videoNode, sample){
+    const url = String(sample?.url || '').trim();
+    if(!videoNode || !url) return null;
+    const name = sample.name || '角色样音';
+    let audioNode = videoNode.voiceSampleNodeId ? nodes.find(n => n.id === videoNode.voiceSampleNodeId) : null;
+    if(audioNode && audioNode.type === 'image'){
+        audioNode.url = url;
+        audioNode.name = name;
+        audioNode.mediaKind = 'audio';
+    } else {
+        audioNode = {
+            id: uid('img'),
+            type: 'image',
+            x: (Number(videoNode.x) || 0) - 220,
+            y: Number(videoNode.y) || 0,
+            url,
+            name,
+            mediaKind: 'audio'
+        };
+        nodes.push(audioNode);
+        videoNode.voiceSampleNodeId = audioNode.id;
+    }
+    if(!connections.some(c => c.from === audioNode.id && c.to === videoNode.id)){
+        connections.push({id: uid('c'), from: audioNode.id, to: videoNode.id});
+    }
+    return audioNode;
+}
+function bindCanvasCharacterVoicePanel(wrap, node){
+    const cv = window.CharacterVoice;
+    if(!cv || !node?.characterVoice) return;
+    const panel = wrap.querySelector('[data-character-voice-panel]');
+    if(!panel) return;
+    panel.onmousedown = e => e.stopPropagation();
+    const providerSel = panel.querySelector('[data-cv="provider"]');
+    const modelSel = panel.querySelector('[data-cv="model"]');
+    const voiceSel = panel.querySelector('[data-cv="voice"]');
+    const textInput = panel.querySelector('[data-cv="text"]');
+    const genBtn = panel.querySelector('[data-cv="generate"]');
+    const persist = () => {
+        if(providerSel) node.speechProviderId = providerSel.value;
+        if(modelSel) node.speechModel = modelSel.value;
+        if(voiceSel) node.voiceId = voiceSel.value;
+        if(textInput) node.voiceSampleText = textInput.value;
+        scheduleSave();
+    };
+    [providerSel, modelSel, voiceSel, textInput].forEach(el => {
+        if(!el) return;
+        el.onmousedown = e => e.stopPropagation();
+        el.onclick = e => e.stopPropagation();
+        el.onchange = persist;
+        el.oninput = persist;
+    });
+    if(providerSel && !cv.voiceCache[providerSel.value]){
+        cv.fetchVoices(providerSel.value).then(data => {
+            if(!node.speechModel) node.speechModel = data.default_model || node.speechModel;
+            if(!node.voiceId && data.voices?.[0]) node.voiceId = data.voices[0].voice_id;
+            persist();
+            render();
+        }).catch(err => showErrorModal(err.message || '读取音色失败', '角色音色'));
+    }
+    if(genBtn){
+        genBtn.onmousedown = e => e.stopPropagation();
+        genBtn.onclick = async e => {
+            e.stopPropagation();
+            persist();
+            if(!node.speechProviderId || !node.voiceId){
+                showErrorModal('请先选择 MiniMax 平台和音色', '角色音色');
+                return;
+            }
+            const old = genBtn.textContent;
+            genBtn.disabled = true;
+            genBtn.textContent = '合成中…';
+            try {
+                const sample = await cv.generateSample({
+                    provider_id: node.speechProviderId,
+                    model: node.speechModel || '',
+                    voice_id: node.voiceId,
+                    text: node.voiceSampleText || cv.DEFAULT_TEXT
+                });
+                cv.applySampleToNode(node, sample, {
+                    providerId: node.speechProviderId,
+                    model: node.speechModel,
+                    voiceId: node.voiceId
+                });
+                attachCanvasVoiceSampleNode(node, sample);
+                if(sample.warning) showErrorModal(sample.warning, '角色音色');
+                render();
+                scheduleSave();
+            } catch(err){
+                showErrorModal(err.message || '样音合成失败', '角色音色');
+            }
+            genBtn.disabled = false;
+            genBtn.textContent = old;
+        };
+    }
+}
 // --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
 // 领域逻辑在 static/js/video-prompt-targets.js 与后端 video_prompt_targets.py；
 // 这里只做经典画布接线：收集导演本与媒体、调转换接口、派生「转换稿提示词节点 + 新视频节点」。
@@ -10806,6 +10928,18 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
     }));
     const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
     if(extra){ showErrorModal(extra, 'AI 提示词'); return; }
+    const characterVoice = Boolean(node.characterVoice);
+    if(characterVoice && target.id === 'h3-fl2va'){
+        showErrorModal('角色音色请用 minimax优化 的「多参提示词」，首尾帧绑不住人物声线。', 'AI 提示词');
+        return;
+    }
+    const audios = window.CharacterVoice
+        ? window.CharacterVoice.convertAudios(node, audioRefsOnly(mediaRefs))
+        : audioRefsOnly(mediaRefs).map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''}));
+    if(characterVoice && target.id === 'h3-ref2va' && !audios.length){
+        showErrorModal('勾选角色音色时请先生成或挂上一条样音。', 'AI 提示词');
+        return;
+    }
     const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
     if(!chatPick || !chatPick.provider || !chatPick.model){
         showErrorModal('请先选择文字平台和模型，再生成优化节点。', 'AI 提示词');
@@ -10822,6 +10956,8 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
             prompt,
             duration: durationS,
             images,
+            audios,
+            character_voice: characterVoice,
             provider: providerId,
             model: chatModel,
             language: vpt.normalizeLang ? vpt.normalizeLang(node.vptOutputLang) : (node.vptOutputLang === 'zh' ? 'zh' : 'en')
@@ -10887,6 +11023,14 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result, durationS){
         watermark:Boolean(srcNode.watermark),
         cameraFixed:Boolean(srcNode.cameraFixed),
         generateAudio:Boolean(srcNode.generateAudio),
+        characterVoice:Boolean(srcNode.characterVoice),
+        speechProviderId:srcNode.speechProviderId || '',
+        speechModel:srcNode.speechModel || '',
+        voiceId:srcNode.voiceId || '',
+        voiceSampleUrl:srcNode.voiceSampleUrl || '',
+        voiceSampleName:srcNode.voiceSampleName || '',
+        voiceSampleText:srcNode.voiceSampleText || '',
+        voiceSampleNodeId:srcNode.voiceSampleNodeId || '',
         useFrameRoles:Boolean(target.preset?.frame_roles),
         multimodal:Boolean(target.preset?.multimodal),
         tempShLinks:[],
@@ -10967,7 +11111,10 @@ async function runVideoNode(nodeId, opts={}){
                 videos:manualVideoUrlForNode(node)
                     ? [manualVideoUrlForNode(node)]
                     : videoRefs.map(ref => tempShUploadedUrlForNode(node, ref.url)),
-                audios:audioRefs.map(ref => ref.url).filter(Boolean),
+                audios:(window.CharacterVoice
+                    ? window.CharacterVoice.mergeAudios(audioRefs, node.voiceSampleUrl, node.voiceSampleName)
+                    : audioRefs
+                ).map(ref => ref.url).filter(Boolean),
                 enhance_prompt:grok2api ? false : Boolean(node.enhancePrompt),
                 enable_upsample:grok2api ? false : Boolean(node.enableUpsample),
                 watermark:grok2api ? false : Boolean(node.watermark),

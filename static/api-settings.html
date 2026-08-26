@@ -163,6 +163,12 @@
                                     <span class="ms-line">画布只转发时长、画质、比例和挂上的素材。首帧走 <span class="inline-code">first_frame</span>，收尾帧走 <span class="inline-code">last_frame</span>，其余参考图走 <span class="inline-code">ref_image</span>。能力是否接受由 H3 网关返回，画布只展示该错误并停任务。</span>
                                     <span class="ms-line">步数、YCNodes 等配方在 H3 网关 <span class="inline-code">/admin</span> 调整，不出现在画布上。</span>
                                 </div>
+                                <div class="minimax-speech-hint">
+                                    <span class="ms-line">选此协议会默认填国内地址 <span class="inline-code">https://api.minimaxi.com</span>。国际站改成 <span class="inline-code">https://api.minimax.io</span>。不要加 <span class="inline-code">/v1</span>。</span>
+                                    <span class="ms-line">Key 请用 <b>Token Plan 订阅 Key</b>（开放平台 → 账单 / Token Plan），不要用「账户 → 接口密钥」里的按量 Key。</span>
+                                    <span class="ms-line">验证只请求 <span class="inline-code">POST /v1/get_voice</span>，不调用会扣费的 T2A。套餐不含语音时这里会失败，不要改成 OpenAI 兼容去碰。</span>
+                                    <span class="ms-line">画布用法：勾选「角色音色」→ 生成一条样音（会出现在 MEDIA）→ 再走 H3 多参提示词。不会按每句台词重复合成。</span>
+                                </div>
                             </label>
                             <label class="field full api-key-field">
                                 <span class="label api-key-label">API Key</span>
@@ -344,6 +350,7 @@
                                         <option value="codelba" data-i18n="api.protocolCodelba">视频：Codelba 协议</option>
                                          <option value="grok2api" data-i18n="api.protocolGrok2api">聊天 / 图片 / 视频：Grok2API 协议</option>
                                         <option value="h3" data-i18n="api.protocolH3">视频：H3兼容</option>
+                                        <option value="minimax-speech" data-i18n="api.protocolMinimaxSpeech">语音：MiniMax Token Plan</option>
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>

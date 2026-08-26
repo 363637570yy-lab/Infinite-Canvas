@@ -84,6 +84,8 @@ const LINGJING_REGISTER_URL = 'https://apistudio.vip/register?aff=g1CT';
 const VIP_GPT_DEFAULT_BASE_URL = 'https://www.vip-gpt.net';
 const VIP_GPT_REGISTER_URL = 'https://www.vip-gpt.net/vip-gpt/register?aff=YGMS7BDKNY5Y';
 const EXAMPLE_BASE_URL = 'https://api.example.com/v1';
+const MINIMAX_SPEECH_CN_BASE_URL = 'https://api.minimaxi.com';
+const MINIMAX_SPEECH_INTL_BASE_URL = 'https://api.minimax.io';
 const JIMENG_DEFAULT_IMAGE_MODELS = ['5.0Pro', '5.0', '4.7', '4.6', '4.5', '4.1', '4.0', '3.1', '3.0'];
 const JIMENG_DEFAULT_VIDEO_MODELS = ['seedance2.0fast_vip', 'seedance2.0_vip', 'seedance2.0', 'seedance2.0fast', 'seedance2.0mini'];
 const JIMENG_LEGACY_IMAGE_MODELS = new Set(['jimeng-image-2k', 'jimeng-image-4k']);
@@ -103,7 +105,8 @@ const MEGABYAI_PROTOCOL = 'megabyai';
 const CODELBA_PROTOCOL = 'codelba';
 const GROK2API_PROTOCOL = 'grok2api';
 const H3_PROTOCOL = 'h3';
-const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
+const MINIMAX_SPEECH_PROTOCOL = 'minimax-speech';
+const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
     return CHRE3_VIDEO_PROTOCOLS.has(String(value || '').trim().toLowerCase());
@@ -130,6 +133,17 @@ function isGrok2apiProtocol(value){
 }
 function isH3Protocol(value){
     return String(value || '').trim().toLowerCase() === H3_PROTOCOL;
+}
+function isMinimaxSpeechProtocol(value){
+    return String(value || '').trim().toLowerCase() === MINIMAX_SPEECH_PROTOCOL;
+}
+function isEmptyOrExampleBaseUrl(value){
+    const lower = String(value || '').trim().toLowerCase();
+    return !lower || lower.includes('api.example.com');
+}
+function applyMinimaxSpeechProtocolDefaults(item){
+    if(!item) return;
+    if(isEmptyOrExampleBaseUrl(item.base_url)) item.base_url = MINIMAX_SPEECH_CN_BASE_URL;
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -919,6 +933,7 @@ function updateProtocolFromInput(){
     item.protocol = API_PROTOCOLS.includes(value) ? value : 'openai';
     if(CLI_PROTOCOLS.has(item.protocol)) item.base_url = '';
     applyCliProtocolDefaults(item, item.protocol);
+    if(isMinimaxSpeechProtocol(item.protocol)) applyMinimaxSpeechProtocolDefaults(item);
     document.body.classList.toggle('show-jimeng', item.protocol === 'jimeng');
     document.body.classList.toggle('show-codex', item.protocol === 'codex');
     document.body.classList.toggle('show-gemini-cli', item.protocol === 'gemini-cli');
@@ -930,6 +945,7 @@ function updateProtocolFromInput(){
     document.body.classList.toggle('show-codelba', isCodelbaProtocol(item.protocol));
     document.body.classList.toggle('show-grok2api', isGrok2apiProtocol(item.protocol));
     document.body.classList.toggle('show-h3', isH3Protocol(item.protocol));
+    document.body.classList.toggle('show-minimax-speech', isMinimaxSpeechProtocol(item.protocol));
     clearVerifyResult();
     // 协议会改变整个表单（如即梦 CLI 账户面板、默认模型、Key 占位）。renderEditor 是唯一切换这些的入口，
     // 这里复跑一次让面板立即出现；保存并恢复 Key 输入框，避免推荐流程里先填的 Key 被 renderEditor 清空。
@@ -2618,6 +2634,18 @@ function renderEditor(){
     const isCodelba = isCodelbaProtocol(currentProtocolValue);
     const isGrok2api = isGrok2apiProtocol(currentProtocolValue);
     const isH3 = isH3Protocol(currentProtocolValue);
+    const isMinimaxSpeech = isMinimaxSpeechProtocol(currentProtocolValue);
+    const keyLabel = document.querySelector('.api-key-label');
+    if(keyLabel) keyLabel.textContent = isMinimaxSpeech ? (tr('api.minimaxSpeechKey') || 'Token Plan 订阅 Key') : (tr('api.key') || 'API Key');
+    if(isMinimaxSpeech){
+        applyMinimaxSpeechProtocolDefaults(item);
+        if(baseInput){
+            baseInput.placeholder = MINIMAX_SPEECH_CN_BASE_URL;
+            baseInput.value = item.base_url || MINIMAX_SPEECH_CN_BASE_URL;
+        }
+        if(keyInput) keyInput.placeholder = item.has_key ? `${tr('api.keepCurrentKey')} ${item.key_preview || ''}` : (tr('api.minimaxSpeechEnterKey') || '输入 Token Plan 订阅 Key');
+        if(keyHint && !item.has_key) keyHint.textContent = tr('api.minimaxSpeechKeyHint') || '请用套餐页的订阅 Key，不要用按量接口密钥。';
+    }
     if(isRunningHub){
         ensureRunningHubLists(item);
         if(rhFreeKeyInput){
@@ -2685,6 +2713,7 @@ function renderEditor(){
     document.body.classList.toggle('show-codelba', isCodelba);
     document.body.classList.toggle('show-grok2api', isGrok2api);
     document.body.classList.toggle('show-h3', isH3);
+    document.body.classList.toggle('show-minimax-speech', isMinimaxSpeech);
     updateApimartDomesticHint(item);
     renderProviderOnboarding(item);
     renderRecommendApi();

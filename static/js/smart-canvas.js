@@ -333,6 +333,13 @@ let settings = {
     videoWatermark:false,
     videoCameraFixed:false,
     videoGenerateAudio:false,
+    videoCharacterVoice:false,
+    videoSpeechProvider:'',
+    videoSpeechModel:'',
+    videoVoiceId:'',
+    videoVoiceSampleUrl:'',
+    videoVoiceSampleName:'',
+    videoVoiceSampleText:'',
     videoMultimodal:true,
     _videoMultimodalUserSet:false,
     videoUseFrameRoles:false,
@@ -2946,11 +2953,16 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
         ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
+        ${renderVideoToggleControl('videoCharacterVoice', tr('smart.videoCharacterVoice'))}
         ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}`}
         ${grok2api || isJimengProviderId(settings.videoProvider) ? '' : renderVideoTrustedAssetControl()}
+        ${!grok2api && settings.videoCharacterVoice && window.CharacterVoice ? window.CharacterVoice.panelHtml({
+            ...window.CharacterVoice.readStateFrom(null, settings),
+            providers: apiProviders
+        }) : ''}
         ${window.VideoPromptTargets ? ((activeSettingsSubject()?.videoPromptTarget) ? window.VideoPromptTargets.metaRowHtml(activeSettingsSubject()) : window.VideoPromptTargets.buttonRowHtml(apiProviders, settings.vptChatProvider, settings.vptChatModel, settings.vptOutputLang)) : ''}
     `;
 }
@@ -2985,11 +2997,16 @@ function renderVolcengineVideoParams(){
         ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
         ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
+        ${renderVideoToggleControl('videoCharacterVoice', tr('smart.videoCharacterVoice'))}
         ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
         ${renderVideoTrustedAssetControl()}
+        ${settings.videoCharacterVoice && window.CharacterVoice ? window.CharacterVoice.panelHtml({
+            ...window.CharacterVoice.readStateFrom(null, settings),
+            providers: apiProviders
+        }) : ''}
     `;
 }
 function renderRunningHubParams(){
@@ -4170,6 +4187,7 @@ function bindDynamicParams(){
             scheduleSave();
         };
     });
+    bindSmartCharacterVoicePanel();
     dynamicParams.querySelectorAll('[data-vpt-chat]').forEach(sel => {
         sel.onchange = event => {
             event.preventDefault();
@@ -15613,6 +15631,98 @@ async function runRunningHubGeneration(prompt, refs, runSettings=settings){
     }
     throw new Error(tr('smart.rhTimeout'));
 }
+function attachSmartVoiceSampleNode(videoNode, sample){
+    const url = String(sample?.url || '').trim();
+    if(!videoNode || !url) return null;
+    const name = sample.name || '角色样音';
+    const media = {url, name, kind:'audio'};
+    let audioNode = videoNode.voiceSampleNodeId ? nodes.find(n => n.id === videoNode.voiceSampleNodeId) : null;
+    if(audioNode && audioNode.type === 'smart-image'){
+        audioNode.images = [media];
+        audioNode.title = 'Audio';
+    } else {
+        audioNode = createNode(
+            (Number(videoNode.x) || 0) - 240,
+            Number(videoNode.y) || 0,
+            [media],
+            {select:false, skipUndo:true}
+        );
+        audioNode.title = 'Audio';
+        videoNode.voiceSampleNodeId = audioNode.id;
+    }
+    connectInputNode(audioNode.id, videoNode.id);
+    return audioNode;
+}
+function bindSmartCharacterVoicePanel(){
+    const cv = window.CharacterVoice;
+    if(!cv || !settings.videoCharacterVoice || !dynamicParams) return;
+    const panel = dynamicParams.querySelector('[data-character-voice-panel]');
+    if(!panel) return;
+    const providerSel = panel.querySelector('[data-cv="provider"]');
+    const modelSel = panel.querySelector('[data-cv="model"]');
+    const voiceSel = panel.querySelector('[data-cv="voice"]');
+    const textInput = panel.querySelector('[data-cv="text"]');
+    const genBtn = panel.querySelector('[data-cv="generate"]');
+    const persist = () => {
+        if(providerSel) settings.videoSpeechProvider = providerSel.value;
+        if(modelSel) settings.videoSpeechModel = modelSel.value;
+        if(voiceSel) settings.videoVoiceId = voiceSel.value;
+        if(textInput) settings.videoVoiceSampleText = textInput.value;
+        persistActiveSmartSettings();
+        scheduleSave();
+    };
+    [providerSel, modelSel, voiceSel, textInput].forEach(el => {
+        if(!el) return;
+        el.onchange = persist;
+        el.oninput = persist;
+    });
+    if(providerSel && !cv.voiceCache[providerSel.value]){
+        cv.fetchVoices(providerSel.value).then(data => {
+            if(!settings.videoSpeechModel) settings.videoSpeechModel = data.default_model || settings.videoSpeechModel;
+            if(!settings.videoVoiceId && data.voices?.[0]) settings.videoVoiceId = data.voices[0].voice_id;
+            persist();
+            renderDynamicParams();
+        }).catch(err => toast(err.message || '读取音色失败'));
+    }
+    if(genBtn){
+        genBtn.onclick = async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            persist();
+            if(!settings.videoSpeechProvider || !settings.videoVoiceId){
+                toast('请先选择 MiniMax 平台和音色');
+                return;
+            }
+            const old = genBtn.textContent;
+            genBtn.disabled = true;
+            genBtn.textContent = '合成中…';
+            try {
+                const sample = await cv.generateSample({
+                    provider_id: settings.videoSpeechProvider,
+                    model: settings.videoSpeechModel || '',
+                    voice_id: settings.videoVoiceId,
+                    text: settings.videoVoiceSampleText || cv.DEFAULT_TEXT
+                });
+                cv.applySampleToSettings(settings, sample, {
+                    providerId: settings.videoSpeechProvider,
+                    model: settings.videoSpeechModel,
+                    voiceId: settings.videoVoiceId
+                });
+                const subject = activeSettingsSubject();
+                if(subject) attachSmartVoiceSampleNode(subject, sample);
+                persistActiveSmartSettings();
+                if(sample.warning) toast(sample.warning);
+                render();
+                renderDynamicParams();
+                scheduleSave();
+            } catch(err){
+                toast(err.message || '样音合成失败');
+            }
+            genBtn.disabled = false;
+            genBtn.textContent = old;
+        };
+    }
+}
 // --- 出片提示词目标转换（画布出片提示词适配方案，纯增量，不改直接生成链路）---
 // 领域逻辑在 static/js/video-prompt-targets.js 与后端 video_prompt_targets.py；
 // 这里只做画布接线：收集导演本与 MEDIA、调转换接口、派生新的视频工作台。
@@ -15636,6 +15746,22 @@ async function runVideoPromptTargetConversion(targetId, btn){
     }));
     const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
     if(extra){ toast(extra); return; }
+    const characterVoice = Boolean(settings.videoCharacterVoice);
+    if(characterVoice && target.id === 'h3-fl2va'){
+        toast('角色音色请用 minimax优化 的「多参提示词」');
+        return;
+    }
+    const mediaRefs = defaultReferenceImagesFor(node);
+    const audios = window.CharacterVoice
+        ? window.CharacterVoice.convertAudios({
+            voiceSampleUrl: settings.videoVoiceSampleUrl,
+            voiceSampleName: settings.videoVoiceSampleName
+        }, audioRefsOnly(mediaRefs))
+        : audioRefsOnly(mediaRefs).map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''}));
+    if(characterVoice && target.id === 'h3-ref2va' && !audios.length){
+        toast('勾选角色音色时请先生成或挂上一条样音');
+        return;
+    }
     const chatPick = vpt.pickChatProvider(apiProviders, settings.vptChatProvider, settings.vptChatModel);
     if(!chatPick || !chatPick.provider || !chatPick.model){
         toast('请先选择文字平台和模型，再生成优化节点');
@@ -15652,6 +15778,8 @@ async function runVideoPromptTargetConversion(targetId, btn){
             prompt,
             duration: durationS,
             images,
+            audios,
+            character_voice: characterVoice,
             provider: chatProvider,
             model: chatModel,
             language: vpt.normalizeLang ? vpt.normalizeLang(settings.vptOutputLang) : (settings.vptOutputLang === 'zh' ? 'zh' : 'en')
@@ -15720,6 +15848,7 @@ function deriveVideoPromptWorkbench(srcNode, target, result, durationS){
         runSettings.videoModel = modelPick.model;
     }
     copy.runSettings = runSettings;
+    copy.voiceSampleNodeId = srcNode.voiceSampleNodeId || '';
     nodes.push(copy);
     localUnsyncedNodeIds.add(copy.id);
     localDeletedNodeIds.delete(copy.id);
@@ -15772,7 +15901,10 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, targetN
         }
         const manualVideo = manualSmartVideoLink(runSettings)?.url || '';
         const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
-        let refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean).slice(0, 3);
+        let refAudios = (window.CharacterVoice
+            ? window.CharacterVoice.mergeAudios(audioRefsOnly(uploadedRefs), runSettings.videoVoiceSampleUrl, runSettings.videoVoiceSampleName)
+            : audioRefsOnly(uploadedRefs)
+        ).map(ref => effUrl(ref) || ref.url).filter(Boolean).slice(0, 3);
         // 即梦全能参考要求音频 2–15s：提交前探测时长，超范围的给出提示并忽略（探测失败则放行，交后端/CLI）。
         if(refAudios.length && isJimengProviderId(runSettings.videoProvider)){
             const kept = [];

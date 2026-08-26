@@ -269,6 +269,56 @@ class ValidateRef2vaTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertTrue(any("任务类型应使用官方前缀" in w for w in result["warnings"]))
 
+    def test_character_voice_off_keeps_plain_output(self):
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx())
+        self.assertEqual(result["errors"], [])
+
+    def test_character_voice_requires_audio_binding(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            audios=[{"name": "emperor.mp3", "url": "http://x/a.mp3"}],
+            character_voice=True,
+        )
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, ctx)
+        self.assertTrue(any("缺少音色绑定" in item for item in result["errors"]))
+
+    def test_character_voice_good_output_passes(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            audios=[{"name": "emperor.mp3", "url": "http://x/a.mp3"}],
+            character_voice=True,
+        )
+        text = GOOD_REF2VA.replace(
+            "<Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>.",
+            "<Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>. <Audio 1> is the voice timbre reference for <Subject 1>, using only timbre and pace, not the original words.",
+        ).replace(
+            "summary: In an imperial garden at dusk",
+            "summary: [reference generation + audio reference] In an imperial garden at dusk",
+        ).replace(
+            "retention_analysis: <Subject 1> must keep",
+            "retention_analysis: <Audio 1>: reference - used as <Subject 1>'s speaking timbre. <Subject 1> must keep",
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, ctx)
+        self.assertEqual(result["errors"], [])
+
+    def test_character_voice_inventory_in_convert_messages(self):
+        ctx = vpt.build_convert_context(
+            "皇帝说话",
+            TWO_IMAGES,
+            8,
+            audios=[{"name": "emperor.mp3", "url": "http://x/a.mp3"}],
+            character_voice=True,
+        )
+        messages = vpt.build_convert_messages("h3-ref2va", ctx, language="zh")
+        self.assertIn("角色音色：开", messages[1]["content"])
+        self.assertIn("音1 = <Audio 1> = emperor.mp3", messages[1]["content"])
+        self.assertNotIn("http://x/a.mp3", messages[1]["content"])
+        self.assertIn("minimax-speech", vpt.CHAT_CONVERT_BLOCKED_PROTOCOLS)
+
     def test_english_prose_ok_when_language_en(self):
         result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx(), language="en")
         self.assertFalse(any("仍是英文" in e for e in result["errors"]))
@@ -619,6 +669,7 @@ class PickChatProviderTests(unittest.TestCase):
         pick = vpt.pick_chat_provider([
             {"id": "modelscope", "enabled": True, "chat_models": ["Qwen"], "has_key": True},
             {"id": "h3-local", "protocol": "h3", "enabled": True, "chat_models": ["minimax-h3"]},
+            {"id": "minimax-speech", "protocol": "minimax-speech", "enabled": True, "chat_models": ["speech-2.8-hd"], "has_key": True},
             {"id": "comfly", "enabled": True, "chat_models": ["gpt-4o-mini"], "has_key": True},
         ], "modelscope")
         self.assertEqual(pick["id"], "comfly")
@@ -734,6 +785,39 @@ class ConvertEndpointTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             asyncio.run(self.main.video_prompt_targets_convert(request))
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_character_voice_without_audio_is_rejected(self):
+        from fastapi import HTTPException
+
+        request = self.main.VideoPromptConvertRequest(
+            target="h3-ref2va",
+            prompt=XINGHUA_PROMPT,
+            duration=15,
+            provider="comfly",
+            model="gpt-4o-mini",
+            character_voice=True,
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.main.video_prompt_targets_convert(request))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("样音", str(ctx.exception.detail))
+
+    def test_character_voice_on_fl2va_is_rejected(self):
+        from fastapi import HTTPException
+
+        request = self.main.VideoPromptConvertRequest(
+            target="h3-fl2va",
+            prompt=XINGHUA_PROMPT,
+            duration=15,
+            provider="comfly",
+            model="gpt-4o-mini",
+            character_voice=True,
+            audios=[{"name": "a.mp3", "url": "http://x/a.mp3"}],
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.main.video_prompt_targets_convert(request))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("多参", str(ctx.exception.detail))
 
     def test_targets_endpoint_lists_phase_one(self):
         result = asyncio.run(self.main.video_prompt_targets_list())

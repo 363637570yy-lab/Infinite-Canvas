@@ -140,6 +140,7 @@
         "smart.videoEnhancePrompt": { zh: "提示词增强", en: "Enhance Prompt" },
         "smart.videoUpsample": { zh: "高清", en: "HD" },
         "smart.videoGenerateAudio": { zh: "生成音频", en: "Audio" },
+        "smart.videoCharacterVoice": { zh: "角色音色", en: "Character Voice" },
         "smart.videoMultimodal": { zh: "全能参考", en: "Omni Reference" },
         "smart.videoCameraFixed": { zh: "镜头固定", en: "Camera Fixed" },
         "smart.videoWatermark": { zh: "水印", en: "Watermark" },
