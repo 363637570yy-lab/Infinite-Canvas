@@ -73,12 +73,19 @@
         return data || {};
     }
 
+    function providerSpeechModels(provider){
+        const listed = (provider && provider.audio_models) || [];
+        const models = listed.map(item => String(item || '').trim()).filter(Boolean);
+        return models.length ? models : ['speech-2.8-hd'];
+    }
+
     function panelHtml(state){
         injectStyles();
         const providers = speechProviders(state.providers);
         const providerId = state.providerId || providers[0]?.id || '';
+        const provider = providers.find(item => item.id === providerId) || providers[0] || null;
         const cached = voiceCache[providerId] || {};
-        const models = state.models || cached.models || [];
+        const models = state.models || cached.models || providerSpeechModels(provider);
         const voices = state.voices || cached.voices || [];
         const model = state.model || models[0] || '';
         const voiceId = state.voiceId || voices[0]?.voice_id || '';

@@ -404,7 +404,7 @@
                     <div id="modelsHead" class="block models-toolbar">
                         <div>
                             <div class="block-title" data-i18n="api.modelsTitle">模型列表</div>
-                            <div class="block-desc" data-i18n="api.modelsDesc">从上游 API 自动拉取所有可用模型并按类型分类（image / chat / video）</div>
+                            <div class="block-desc" data-i18n="api.modelsDesc">从上游 API 自动拉取所有可用模型并按类型分类（image / chat / video / audio）</div>
                         </div>
                         <div class="models-toolbar-actions">
                             <button id="fetchModelsBtn" class="action-btn primary-btn" type="button" onclick="fetchModels()">
@@ -450,6 +450,17 @@
                                 <button class="ghost-btn" type="button" onclick="addModel('video')"><i data-lucide="plus" class="w-3.5 h-3.5"></i><span data-i18n="api.model">模型</span></button>
                             </div>
                             <div id="videoModelList" class="model-list"></div>
+                        </section>
+
+                        <section class="block">
+                            <div class="block-head">
+                                <div>
+                                    <div class="block-title" data-i18n="api.audioModels">语音模型</div>
+                                    <div class="block-desc" data-i18n="api.audioHint">无限画布「角色音色」样音使用，不用于出视频。</div>
+                                </div>
+                                <button class="ghost-btn" type="button" onclick="addModel('audio')"><i data-lucide="plus" class="w-3.5 h-3.5"></i><span data-i18n="api.model">模型</span></button>
+                            </div>
+                            <div id="audioModelList" class="model-list"></div>
                         </section>
 
                         <section id="msLoraBlock" class="block ms-lora-block">

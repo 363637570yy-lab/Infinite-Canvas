@@ -64,6 +64,19 @@ let rhWorkflowEditorZoom = document.getElementById('rhWorkflowEditorZoom');
 const imageModelList = document.getElementById('imageModelList');
 const chatModelList = document.getElementById('chatModelList');
 const videoModelList = document.getElementById('videoModelList');
+const audioModelList = document.getElementById('audioModelList');
+function modelListKey(kind){
+    if(kind === 'image') return 'image_models';
+    if(kind === 'video') return 'video_models';
+    if(kind === 'audio') return 'audio_models';
+    return 'chat_models';
+}
+function modelListEl(kind){
+    if(kind === 'image') return imageModelList;
+    if(kind === 'video') return videoModelList;
+    if(kind === 'audio') return audioModelList;
+    return chatModelList;
+}
 const msLoraBlock = document.getElementById('msLoraBlock');
 const msLoraList = document.getElementById('msLoraList');
 const recommendApiOverlay = document.getElementById('recommendApiOverlay');
@@ -110,6 +123,7 @@ const MINIMAX_PROTOCOL = 'minimax';
 const MINIMAX_OFFICIAL_CHAT_MODELS = ['MiniMax-M3','MiniMax-M2.7','MiniMax-M2.7-highspeed','MiniMax-M2.5','MiniMax-M2.5-highspeed','MiniMax-M2.1','MiniMax-M2.1-highspeed','MiniMax-M2'];
 const MINIMAX_OFFICIAL_IMAGE_MODELS = ['image-01','image-01-live'];
 const MINIMAX_OFFICIAL_VIDEO_MODELS = ['MiniMax-H3'];
+const MINIMAX_OFFICIAL_SPEECH_MODELS = ['speech-2.8-hd','speech-2.8-turbo','speech-2.6-hd','speech-2.6-turbo','speech-02-hd','speech-02-turbo','speech-01-hd','speech-01-turbo'];
 const API_PROTOCOLS = ['openai', 'apimart', 'gemini', 'grok', CHRE3_VIDEO_PROTOCOL, CHRE3_VIDEO_REAL_PROTOCOL, CANGYUAN_VIDEO_PROTOCOL, ZEXI_PROTOCOL, PIDOI_PROTOCOL, MEGABYAI_PROTOCOL, CODELBA_PROTOCOL, GROK2API_PROTOCOL, H3_PROTOCOL, MINIMAX_SPEECH_PROTOCOL, MINIMAX_PROTOCOL, 'volcengine', 'runninghub', 'jimeng', 'codex', 'gemini-cli'];
 
 function isChre3VideoProtocol(value){
@@ -152,6 +166,7 @@ function applyMinimaxSpeechProtocolDefaults(item){
     item.chat_models = unique([...(item.chat_models || []), ...MINIMAX_OFFICIAL_CHAT_MODELS]);
     item.image_models = unique([...(item.image_models || []), ...MINIMAX_OFFICIAL_IMAGE_MODELS]);
     item.video_models = unique([...(item.video_models || []), ...MINIMAX_OFFICIAL_VIDEO_MODELS]);
+    item.audio_models = unique([...(item.audio_models || []), ...MINIMAX_OFFICIAL_SPEECH_MODELS]);
 }
 const CLI_PROVIDER_PRESETS = {
     jimeng:{id:'jimeng', name:'即梦 CLI', protocol:'jimeng'},
@@ -2407,6 +2422,7 @@ function recommendedProviderForApi(api){
             item.image_models = [];
             item.chat_models = [];
             item.video_models = [];
+            item.audio_models = [];
             item.model_protocols = {};
         }
         return item;
@@ -2429,6 +2445,7 @@ function recommendedProviderForApi(api){
         image_models:api.empty_models_on_save ? [] : (Array.isArray(api.image_models) ? [...api.image_models] : []),
         chat_models:api.empty_models_on_save ? [] : (Array.isArray(api.chat_models) ? [...api.chat_models] : []),
         video_models:api.empty_models_on_save ? [] : (Array.isArray(api.video_models) ? [...api.video_models] : []),
+        audio_models:api.empty_models_on_save ? [] : (Array.isArray(api.audio_models) ? [...api.audio_models] : []),
         model_protocols:api.empty_models_on_save ? {} : ((api.model_protocols && typeof api.model_protocols === 'object') ? {...api.model_protocols} : {}),
         has_key:false,
         key_preview:''
@@ -2757,6 +2774,7 @@ function renderEditor(){
     renderModels('image');
     renderModels('chat');
     renderModels('video');
+    renderModels('audio');
     if(isModelScope) renderMsLoras();
     else if(msLoraList) msLoraList.innerHTML = '';
     renderProviderList();
@@ -3417,7 +3435,7 @@ let pickerVisibleIds = [];
 function openModelPicker(){
     const item = provider();
     if(!item || !lastFetchedAll.length){ alert('没有拉取到模型'); return; }
-    const existing = { image: new Set(item.image_models||[]), chat: new Set(item.chat_models||[]), video: new Set(item.video_models||[]) };
+    const existing = { image: new Set(item.image_models||[]), chat: new Set(item.chat_models||[]), video: new Set(item.video_models||[]), audio: new Set(item.audio_models||[]) };
     const allIds = new Set([
         ...lastFetchedAll,
         ...(lastFetchedSuggestion?.unknown || []),
@@ -3425,6 +3443,7 @@ function openModelPicker(){
         ...(item.image_models||[]),
         ...(item.chat_models||[]),
         ...(item.video_models||[]),
+        ...(item.audio_models||[]),
     ]);
     pickerState = { category: {}, selected: {} };
     allIds.forEach(id => {
@@ -3432,6 +3451,7 @@ function openModelPicker(){
         let cat;
         if(existing.image.has(id)) cat = 'image';
         else if(existing.video.has(id)) cat = 'video';
+        else if(existing.audio.has(id)) cat = 'audio';
         else if(existing.chat.has(id)) cat = 'chat';
         else if(lastFetchedSuggestion?.image?.has(id)) cat = 'image';
         else if(lastFetchedSuggestion?.chat?.has(id)) cat = 'chat';
@@ -3441,7 +3461,7 @@ function openModelPicker(){
         pickerState.category[id] = cat;
         // 默认勾选状态：已在用户配置里的 = 勾选；新拉的 = 不勾选（让用户主动选）
         // 官方 T2A 语音不进三大列表，这里勾上只是让「语音」分类可见。
-        pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id) || cat === 'audio';
+        pickerState.selected[id] = existing.image.has(id) || existing.chat.has(id) || existing.video.has(id) || existing.audio.has(id) || cat === 'audio';
     });
     // 默认 tab 切回「全部」
     document.querySelectorAll('.picker-cat-tab').forEach(t => t.classList.toggle('active', t.dataset.cat === 'all'));
@@ -3542,7 +3562,7 @@ function setPickerCategoryByIndex(index, category){
 }
 function applyModelPicker(){
     const item = provider(); if(!item) return;
-    const image = [], chat = [], video = [];
+    const image = [], chat = [], video = [], audio = [];
     const modelNames = {};
     Object.entries(pickerState.selected).forEach(([id, sel]) => {
         if(!sel) return;
@@ -3550,19 +3570,19 @@ function applyModelPicker(){
         if(cat === 'image') image.push(id);
         else if(cat === 'video') video.push(id);
         else if(cat === 'chat') chat.push(id);
-        else if(cat === 'audio') return;
+        else if(cat === 'audio') audio.push(id);
+        else return;
         const label = modelDisplayName(id, item);
         if(label && label !== id) modelNames[id] = label;
     });
     item.image_models = image;
     item.chat_models = chat;
     item.video_models = video;
+    item.audio_models = audio;
     item.model_names = modelNames;
-    renderModels('image'); renderModels('chat'); renderModels('video');
+    renderModels('image'); renderModels('chat'); renderModels('video'); renderModels('audio');
     renderMsLoras();
-    const audioCount = Object.entries(pickerState.selected).filter(([id, sel]) => sel && pickerState.category[id] === 'audio').length;
-    const audioNote = audioCount ? ` · 语音 ${audioCount} 个走画布「角色音色」，不用导入三大列表` : '';
-    setStatus(`已应用 · 生图 ${image.length} / LLM ${chat.length} / 视频 ${video.length}${audioNote}，点保存生效`);
+    setStatus(`已应用 · 生图 ${image.length} / LLM ${chat.length} / 视频 ${video.length} / 语音 ${audio.length}，点保存生效`);
     closeModelPicker();
 }
 async function saveKeyOnly(){
@@ -3589,7 +3609,7 @@ function providerSupportsModelProtocol(item){
 }
 function modelProtocolSelectHtml(kind, index, model, item){
     if(!providerSupportsModelProtocol(item)) return '';
-    if(kind === 'video') return '';
+    if(kind === 'video' || kind === 'audio') return '';
     const map = (item.model_protocols && typeof item.model_protocols === 'object') ? item.model_protocols : {};
     let current = String(map[String(model || '').trim()] || '').toLowerCase();
     const opt = (val, label) => `<option value="${val}" ${current === val ? 'selected' : ''}>${label}</option>`;
@@ -3601,14 +3621,15 @@ function modelProtocolSelectHtml(kind, index, model, item){
 }
 function renderModels(kind){
     const item = provider();
-    const key = kind === 'image' ? 'image_models' : kind === 'video' ? 'video_models' : 'chat_models';
-    const list = kind === 'image' ? imageModelList : kind === 'video' ? videoModelList : chatModelList;
+    const key = modelListKey(kind);
+    const list = modelListEl(kind);
+    if(!list) return;
     const models = item?.[key] || [];
     if(!models.length){
         list.innerHTML = `<div class="empty">${tr('api.noModels')}</div>`;
         return;
     }
-    const showProtocol = kind !== 'video' && providerSupportsModelProtocol(item);
+    const showProtocol = kind !== 'video' && kind !== 'audio' && providerSupportsModelProtocol(item);
     list.innerHTML = models.map((model, index) => {
         const label = modelDisplayName(model, item);
         return `
@@ -3712,7 +3733,7 @@ function addProvider(){
     let id = 'custom-api';
     let index = 2;
     while(providers.some(item => item.id === id)) id = `custom-api-${index++}`;
-    providers.push({id, name:'API', base_url:'', protocol:'openai', image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], has_key:false, key_preview:''});
+    providers.push({id, name:'API', base_url:'', protocol:'openai', image_request_mode:'openai', image_edit_route:'general', image_generation_endpoint:'', image_edit_endpoint:'', enabled:true, primary:false, image_models:[], chat_models:[], video_models:[], audio_models:[], has_key:false, key_preview:''});
     selectedId = id;
     renderEditor();
 }
@@ -3740,6 +3761,7 @@ async function addCliProvider(kind){
             image_models:[],
             chat_models:[],
             video_models:[],
+            audio_models:[],
             model_protocols:{},
             has_key:false,
             key_preview:''
@@ -3828,14 +3850,14 @@ async function clearVolcengineAssetKeys(){
 }
 function addModel(kind){
     const item = provider();
-    const key = kind === 'image' ? 'image_models' : kind === 'video' ? 'video_models' : 'chat_models';
+    const key = modelListKey(kind);
     item[key] = [...(item[key] || []), ''];
     renderModels(kind);
     if(kind === 'image') renderMsLoras();
 }
 function modelProtocolStillUsed(item, name){
     if(!item || !name) return false;
-    const lists = ['image_models', 'chat_models', 'video_models'];
+    const lists = ['image_models', 'chat_models', 'video_models', 'audio_models'];
     return lists.some(k => Array.isArray(item[k]) && item[k].includes(name));
 }
 function sanitizeModelProtocols(item){
@@ -3865,7 +3887,7 @@ function applyAutoModelProtocols(item){
 }
 function updateModel(kind, index, value){
     const item = provider();
-    const key = kind === 'image' ? 'image_models' : kind === 'video' ? 'video_models' : 'chat_models';
+    const key = modelListKey(kind);
     const oldName = String(item[key][index] || '').trim();
     const newName = String(value || '').trim();
     item[key][index] = value;
@@ -3875,7 +3897,7 @@ function updateModel(kind, index, value){
             const proto = item.model_protocols[oldName];
             // 旧名称在其他列表里不再使用时才删除旧键
             const stillUsedElsewhere = (() => {
-                const lists = ['image_models', 'chat_models', 'video_models'];
+                const lists = ['image_models', 'chat_models', 'video_models', 'audio_models'];
                 return lists.some(k => Array.isArray(item[k]) && item[k].some((m, i) => !(k === key && i === index) && String(m || '').trim() === oldName));
             })();
             if(!stillUsedElsewhere) delete item.model_protocols[oldName];
@@ -3893,7 +3915,7 @@ function updateModel(kind, index, value){
 }
 function updateModelProtocol(kind, index, value){
     const item = provider();
-    const key = kind === 'image' ? 'image_models' : kind === 'video' ? 'video_models' : 'chat_models';
+    const key = modelListKey(kind);
     const name = String(item[key]?.[index] || '').trim();
     if(!name) return;
     if(!item.model_protocols || typeof item.model_protocols !== 'object') item.model_protocols = {};
@@ -3906,7 +3928,7 @@ function updateModelProtocol(kind, index, value){
 }
 function removeModel(kind, index){
     const item = provider();
-    const key = kind === 'image' ? 'image_models' : kind === 'video' ? 'video_models' : 'chat_models';
+    const key = modelListKey(kind);
     const removed = String(item[key][index] || '').trim();
     item[key].splice(index, 1);
     // 清理不再使用的协议覆盖

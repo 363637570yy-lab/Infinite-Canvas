@@ -27,6 +27,16 @@ class MiniMaxSpeechRoutingTests(unittest.TestCase):
         )
         self.assertEqual(main.canvas_video_task_type({"protocol": "minimax-speech"}, "MiniMax-H3"), "minimax-h3-video")
         self.assertIn("minimax-h3-video", main.CANVAS_VIDEO_TASK_TYPES)
+        saved = main.normalize_provider({
+            "id": "minimax-official",
+            "name": "MiniMax",
+            "base_url": "https://api.minimaxi.com",
+            "protocol": "minimax-speech",
+            "audio_models": ["speech-2.8-hd", "speech-2.8-turbo"],
+            "chat_models": ["MiniMax-M3"],
+            "video_models": ["MiniMax-H3"],
+        })
+        self.assertEqual(saved["audio_models"], ["speech-2.8-hd", "speech-2.8-turbo"])
 
     def test_urls_strip_version_suffix(self):
         self.assertEqual(
