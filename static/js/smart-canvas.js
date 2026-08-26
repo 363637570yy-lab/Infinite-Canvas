@@ -397,6 +397,11 @@ const SIZE_MAP = {
 const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
 const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
 function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
+function trOr(key, zh, en){
+    const value = tr(key);
+    if(value && value !== key) return value;
+    return (window.StudioI18n?.lang?.() === 'en') ? (en || zh) : zh;
+}
 function trf(key, values={}){
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
 }
@@ -2471,6 +2476,16 @@ function isGrok2apiProviderId(providerId){
     const provider = (apiProviders || []).find(p => String(p.id || '').trim().toLowerCase() === id);
     return String(provider?.protocol || '').trim().toLowerCase() === 'grok2api';
 }
+function isH3ProviderId(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = (apiProviders || []).find(p => String(p.id || '').trim().toLowerCase() === id);
+    return String(provider?.protocol || '').trim().toLowerCase() === 'h3';
+}
+function showSmartCharacterVoice(providerId){
+    if(settings.videoCharacterVoice) return true;
+    if(isH3ProviderId(providerId)) return true;
+    return Boolean(window.CharacterVoice?.speechProviders?.(apiProviders)?.length);
+}
 function providerImageModels(providerId){
     if(providerId === 'volcengine') return volcengineProvider().image_models || [];
     return (apiProviders || []).find(p => p.id === providerId)?.image_models || [];
@@ -2953,7 +2968,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
         ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
-        ${renderVideoToggleControl('videoCharacterVoice', tr('smart.videoCharacterVoice'))}
+        ${showSmartCharacterVoice(settings.videoProvider) ? renderVideoToggleControl('videoCharacterVoice', trOr('smart.videoCharacterVoice', '角色音色', 'Character Voice')) : ''}
         ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
@@ -2997,7 +3012,7 @@ function renderVolcengineVideoParams(){
         ${renderVideoToggleControl('videoEnhancePrompt', tr('smart.videoEnhancePrompt'))}
         ${renderVideoToggleControl('videoEnableUpsample', tr('smart.videoUpsample'))}
         ${renderVideoToggleControl('videoGenerateAudio', tr('smart.videoGenerateAudio'))}
-        ${renderVideoToggleControl('videoCharacterVoice', tr('smart.videoCharacterVoice'))}
+        ${showSmartCharacterVoice(settings.videoProvider) ? renderVideoToggleControl('videoCharacterVoice', trOr('smart.videoCharacterVoice', '角色音色', 'Character Voice')) : ''}
         ${renderVideoToggleControl('videoCameraFixed', tr('smart.videoCameraFixed'))}
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}

@@ -1,6 +1,11 @@
 function refreshIcons(){ if(window.lucide) lucide.createIcons(); }
 refreshIcons();
 function tr(key){ return window.StudioI18n ? StudioI18n.t(key) : key; }
+function trOr(key, zh, en){
+    const value = tr(key);
+    if(value && value !== key) return value;
+    return langIsEn() ? (en || zh) : zh;
+}
 function trf(key, values={}){
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
 }
@@ -865,6 +870,17 @@ function isGrok2apiVideoProvider(providerId){
     const id = String(providerId || '').trim().toLowerCase();
     const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
     return String(provider?.protocol || '').trim().toLowerCase() === 'grok2api';
+}
+function isH3VideoProvider(providerId){
+    const id = String(providerId || '').trim().toLowerCase();
+    const provider = apiProviders.find(p => String(p.id || '').trim().toLowerCase() === id);
+    return String(provider?.protocol || '').trim().toLowerCase() === 'h3';
+}
+function videoNodeShowsCharacterVoice(node){
+    if(!node) return false;
+    if(node.characterVoice) return true;
+    if(isH3VideoProvider(node.apiProvider)) return true;
+    return Boolean(window.CharacterVoice?.speechProviders?.(apiProviders)?.length);
 }
 function resolveVideoProviderId(id){
     const providers = videoApiProviders();
@@ -8747,7 +8763,7 @@ function renderVideoBody(node){
                 <button type="button" class="setting-check ${node.watermark ? 'active' : ''}" data-video-toggle="watermark"><span class="check-dot"></span>${tr('canvas.videoWatermark')}</button>
                 <button type="button" class="setting-check ${node.cameraFixed ? 'active' : ''}" data-video-toggle="cameraFixed"><span class="check-dot"></span>${tr('canvas.videoCameraFixed')}</button>
                 <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
-                <button type="button" class="setting-check ${node.characterVoice ? 'active' : ''}" data-video-toggle="characterVoice"><span class="check-dot"></span>${tr('canvas.videoCharacterVoice')}</button>
+                ${videoNodeShowsCharacterVoice(node) ? `<button type="button" class="setting-check ${node.characterVoice ? 'active' : ''}" data-video-toggle="characterVoice"><span class="check-dot"></span>${trOr('canvas.videoCharacterVoice', '角色音色', 'Character Voice')}</button>` : ''}
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
