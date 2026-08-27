@@ -184,6 +184,79 @@ def reject_first_last_extra_images(images, *, target="", require_roles=False, ac
     return ""
 
 
+GENERIC_AUDIO_NAMES = {
+    "",
+    "音色",
+    "角色样音",
+    "voice",
+    "audio",
+    "sample",
+    "读取音色",
+    "读取音色…",
+    "音频",
+    "参考音频",
+    "音1",
+    "音频1",
+    "audio 1",
+}
+_AUDIO_EXT = re.compile(r"\.(mp3|wav|m4a|aac|flac|ogg|wma)$", re.I)
+_VOICE_SAMPLE_FILE = re.compile(r"^voice_sample_[0-9a-f]{8,}", re.I)
+_VOICE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$", re.I)
+
+
+def normalize_media_label(name):
+    text = str(name or "").strip()
+    return _AUDIO_EXT.sub("", text).strip()
+
+
+def looks_like_voice_id(name):
+    text = str(name or "").strip()
+    if not text or re.search(r"\s", text) or re.search(r"[\u4e00-\u9fff]", text):
+        return False
+    return bool(_VOICE_ID.match(text))
+
+
+def is_generic_audio_name(name):
+    label = normalize_media_label(name)
+    if not label:
+        return True
+    if label.lower() in GENERIC_AUDIO_NAMES:
+        return True
+    if _VOICE_SAMPLE_FILE.match(label):
+        return True
+    return looks_like_voice_id(label)
+
+
+def audio_label_matches(name, source_prompt, image_names):
+    wanted = normalize_media_label(name)
+    if not wanted:
+        return False
+    for raw in image_names or []:
+        other = normalize_media_label(raw)
+        if other and (wanted == other or wanted in other or other in wanted):
+            return True
+    source = str(source_prompt or "")
+    return len(wanted) >= 2 and wanted in source
+
+
+def reject_unmatched_audio_names(prompt, images=None, audios=None, target=""):
+    """多参转换：音频卡显示名必须对上导演本或已连图名，否则提前拦住。"""
+    if str(target or "").strip() != "h3-ref2va":
+        return ""
+    image_names = [str((item or {}).get("name") or "") for item in (images or [])]
+    for item in audios or []:
+        row = _media_row(item)
+        if not str(row.get("url") or "").strip() and not str(row.get("name") or "").strip():
+            continue
+        name = str(row.get("name") or "").strip()
+        label = normalize_media_label(name) or "未命名"
+        if is_generic_audio_name(name):
+            return "请把音频卡改成导演本里的角色名，例如「婷婷」。不要用「音色」「角色样音」或音色 ID。"
+        if not audio_label_matches(name, prompt, image_names):
+            return f"音频卡「{label}」在导演本和已连图名里都对不上。请改成文档里的人名后再转换。"
+    return ""
+
+
 def _media_row(item):
     if isinstance(item, str):
         return {"url": item, "name": "", "role": ""}
@@ -303,9 +376,9 @@ def audio_inventory_lines(ctx):
         index = item.get("index") or (len(lines) + 1)
         name = str(item.get("name") or "").strip() or "(未命名)"
         if character_voice and index == 1:
-            lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色，按名称匹配对应角色图 / Subject；对不上时绑正在说话的那个人）")
+            lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色，显示名必须对应原文里的角色名；按该人名绑 Subject / 图）")
         else:
-            lines.append(f"- 音{index} = <Audio {index}> = {name} （参考音频）")
+            lines.append(f"- 音{index} = <Audio {index}> = {name} （参考音频，显示名必须对应原文里的角色名）")
     return lines
 
 
@@ -431,11 +504,9 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
         )
     if character_voice:
         voice_rule = (
-            "角色音色已开启。音1 是人物样音，名称是角色线索，不是这一句台词的成片配音。"
-            "必须在 subject_definitions 把 <Audio 1> 绑到名称或外观与该样音名称匹配的 Subject，"
-            "写「<Audio 1> 是 <Subject N> 的音色参考，只借声线和语速，不复用原词」。"
-            "如果样音名叫「少女音色」或「林小夏」，就绑到对应的少女 / 林小夏 Subject，不要一律绑 <Subject 1>。"
-            "只有一个人物，或名称对不上任何图时，绑正在说话的那个人。"
+            "角色音色已开启。音1 是人物样音，音频卡显示名必须等于原文里的角色名。"
+            "文档已经把人绑到图上，按这个角色名找到对应 Subject / Picture，不要听音频猜，不要一律绑 <Subject 1>。"
+            "必须在 subject_definitions 写「<Audio 1> 是 <Subject N> 的音色参考，只借声线和语速，不复用原词」。"
             "summary 必须以 [reference generation + audio reference] 开头（可再拼 keyframe completion），禁止写成 audio reuse。"
             "retention_analysis 增加 <Audio 1>: reference - 用于对应角色新对白的音色。"
             "开口的人仍用 <Subject N> (S1) says: <d>[Chinese] 原文</d>，用 Audio 1 的声，不要另编一条声。"
@@ -443,9 +514,8 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
         )
     elif has_audios:
         voice_rule = (
-            "参考音频已开启，但不是角色音色。"
-            "必须写 <Audio N> 作为环境声、节奏或口型参考，不要当成人物样音，不要写 audio reference。"
-            "禁止发明清单里没有的 Audio 号。"
+            "参考音频已开启。音频卡显示名必须等于原文里的角色名；文档已经绑图，按该角色名绑到对应 Subject / Picture。"
+            "必须写 <Audio N>。角色对白用这个人的节奏/口型参考；不要猜成别人，不要发明清单里没有的 Audio 号。"
         )
     else:
         voice_rule = (

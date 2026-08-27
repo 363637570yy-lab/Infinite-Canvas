@@ -263,7 +263,62 @@
         return '';
     }
 
-    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang, normalizeDurationS, durationChipText, buildOriginMeta, originMeta, originChipsHtml, firstLastExtraImagesMessage, rejectFirstLastExtraImages};
+    const GENERIC_AUDIO_NAMES = new Set([
+        '', '音色', '角色样音', 'voice', 'audio', 'sample',
+        '读取音色', '读取音色…', '音频', '参考音频', '音1', '音频1', 'audio 1'
+    ]);
+    const AUDIO_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|wma)$/i;
+    const VOICE_SAMPLE_FILE = /^voice_sample_[0-9a-f]{8,}/i;
+    const VOICE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/i;
+
+    function normalizeMediaLabel(name){
+        return String(name || '').trim().replace(AUDIO_EXT, '').trim();
+    }
+
+    function looksLikeVoiceId(name){
+        const text = String(name || '').trim();
+        if(!text || /\s/.test(text) || /[\u4e00-\u9fff]/.test(text)) return false;
+        return VOICE_ID.test(text);
+    }
+
+    function isGenericAudioName(name){
+        const label = normalizeMediaLabel(name);
+        if(!label) return true;
+        if(GENERIC_AUDIO_NAMES.has(label.toLowerCase())) return true;
+        if(VOICE_SAMPLE_FILE.test(label)) return true;
+        return looksLikeVoiceId(label);
+    }
+
+    function audioLabelMatches(name, sourcePrompt, imageNames){
+        const wanted = normalizeMediaLabel(name);
+        if(!wanted) return false;
+        for(const raw of imageNames || []){
+            const other = normalizeMediaLabel(raw);
+            if(other && (wanted === other || other.includes(wanted) || wanted.includes(other))) return true;
+        }
+        const source = String(sourcePrompt || '');
+        return wanted.length >= 2 && source.includes(wanted);
+    }
+
+    function rejectUnmatchedAudioNames(prompt, images, audios, target){
+        if(String(target || '').trim() !== 'h3-ref2va') return '';
+        const imageNames = (images || []).map(item => String(item?.name || ''));
+        for(const item of audios || []){
+            const row = (typeof item === 'string') ? {url: item, name: ''} : (item || {});
+            if(!String(row.url || '').trim() && !String(row.name || '').trim()) continue;
+            const name = String(row.name || '').trim();
+            const label = normalizeMediaLabel(name) || '未命名';
+            if(isGenericAudioName(name)){
+                return '请把音频卡改成导演本里的角色名，例如「婷婷」。不要用「音色」「角色样音」或音色 ID。';
+            }
+            if(!audioLabelMatches(name, prompt, imageNames)){
+                return `音频卡「${label}」在导演本和已连图名里都对不上。请改成文档里的人名后再转换。`;
+            }
+        }
+        return '';
+    }
+
+    window.VideoPromptTargets = {load, list, byId, listChatProviders, chatSelectHtml, buttonRowHtml, metaRowHtml, convert, pickChatProvider, pickVideoModelPreset, normalizeLang, normalizeDurationS, durationChipText, buildOriginMeta, originMeta, originChipsHtml, firstLastExtraImagesMessage, rejectFirstLastExtraImages, rejectUnmatchedAudioNames};
     injectStyles();
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { load(); });
     else load();

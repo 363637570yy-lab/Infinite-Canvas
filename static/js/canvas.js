@@ -11084,6 +11084,8 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
         showErrorModal(characterVoice ? '请先连接音色节点并生成样音。' : '请先连接参考音频。', 'AI 提示词');
         return;
     }
+    const unmatched = vpt.rejectUnmatchedAudioNames?.(prompt, images, audios, target.id);
+    if(unmatched){ showErrorModal(unmatched, 'AI 提示词'); return; }
     const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
     if(!chatPick || !chatPick.provider || !chatPick.model){
         showErrorModal('请先选择文字平台和模型，再生成优化节点。', 'AI 提示词');

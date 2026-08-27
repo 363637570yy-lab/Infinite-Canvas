@@ -19371,6 +19371,14 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         raise HTTPException(status_code=400, detail="勾选角色音色时请先生成或挂上一条样音。")
     if target == "h3-ref2va" and videos and not any(str(item.get("url") or "").strip() for item in videos):
         raise HTTPException(status_code=400, detail="勾选参考视频时请先连接视频。")
+    unmatched = video_prompts.reject_unmatched_audio_names(
+        payload.prompt,
+        images=images,
+        audios=audios,
+        target=target,
+    )
+    if unmatched:
+        raise HTTPException(status_code=400, detail=unmatched)
     ctx = video_prompts.build_convert_context(
         payload.prompt,
         images,

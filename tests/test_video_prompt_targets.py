@@ -130,6 +130,85 @@ class FirstLastImageLimitTests(unittest.TestCase):
         self.assertEqual(vpt.reject_first_last_extra_images(images, target="h3-ref2va"), "")
 
 
+class AudioNameRejectTests(unittest.TestCase):
+    def test_generic_name_rejected(self):
+        message = vpt.reject_unmatched_audio_names(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            [{"name": "音色", "url": "http://x/a.mp3"}],
+            target="h3-ref2va",
+        )
+        self.assertIn("角色名", message)
+        self.assertIn("音色", message)
+
+    def test_voice_id_rejected(self):
+        message = vpt.reject_unmatched_audio_names(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            [{"name": "female-shaonv-jingpin", "url": "http://x/a.mp3"}],
+            target="h3-ref2va",
+        )
+        self.assertIn("角色名", message)
+
+    def test_voice_sample_file_rejected(self):
+        message = vpt.reject_unmatched_audio_names(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            [{"name": "voice_sample_abcdef12.mp3", "url": "http://x/a.mp3"}],
+            target="h3-ref2va",
+        )
+        self.assertIn("角色名", message)
+
+    def test_prompt_name_passes(self):
+        self.assertEqual(
+            vpt.reject_unmatched_audio_names(
+                XINGHUA_PROMPT,
+                TWO_IMAGES,
+                [{"name": "皇帝", "url": "http://x/a.mp3"}],
+                target="h3-ref2va",
+            ),
+            "",
+        )
+
+    def test_image_name_only_passes(self):
+        self.assertEqual(
+            vpt.reject_unmatched_audio_names(
+                "花园里两人对话",
+                TWO_IMAGES,
+                [{"name": "皇帝", "url": "http://x/a.mp3"}],
+                target="h3-ref2va",
+            ),
+            "",
+        )
+
+    def test_unmatched_name_rejected(self):
+        message = vpt.reject_unmatched_audio_names(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            [{"name": "婷婷", "url": "http://x/a.mp3"}],
+            target="h3-ref2va",
+        )
+        self.assertIn("婷婷", message)
+        self.assertIn("对不上", message)
+
+    def test_no_audio_passes(self):
+        self.assertEqual(
+            vpt.reject_unmatched_audio_names(XINGHUA_PROMPT, TWO_IMAGES, [], target="h3-ref2va"),
+            "",
+        )
+
+    def test_other_target_skips(self):
+        self.assertEqual(
+            vpt.reject_unmatched_audio_names(
+                XINGHUA_PROMPT,
+                TWO_IMAGES,
+                [{"name": "音色", "url": "http://x/a.mp3"}],
+                target="h3-fl2va",
+            ),
+            "",
+        )
+
+
 class MessageBuildTests(unittest.TestCase):
     def test_targets_listed_in_button_order(self):
         ids = [item["id"] for item in vpt.list_video_prompt_targets()]
@@ -337,7 +416,7 @@ class ValidateRef2vaTests(unittest.TestCase):
         messages = vpt.build_convert_messages("h3-ref2va", ctx, language="zh")
         self.assertIn("角色音色：开", messages[1]["content"])
         self.assertIn("音1 = <Audio 1> = emperor.mp3", messages[1]["content"])
-        self.assertIn("按名称匹配对应角色图", messages[1]["content"])
+        self.assertIn("显示名必须对应原文里的角色名", messages[1]["content"])
         self.assertIn("不要一律绑 <Subject 1>", messages[1]["content"])
         self.assertNotIn("http://x/a.mp3", messages[1]["content"])
         self.assertNotIn("minimax-speech", vpt.CHAT_CONVERT_BLOCKED_PROTOCOLS)
@@ -909,6 +988,22 @@ class ConvertEndpointTests(unittest.TestCase):
             asyncio.run(self.main.video_prompt_targets_convert(request))
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("样音", str(ctx.exception.detail))
+
+    def test_unmatched_audio_name_rejected_before_llm(self):
+        from fastapi import HTTPException
+
+        request = self.main.VideoPromptConvertRequest(
+            target="h3-ref2va",
+            prompt=XINGHUA_PROMPT,
+            duration=15,
+            provider="comfly",
+            model="gpt-4o-mini",
+            audios=[{"name": "音色", "url": "http://x/a.mp3"}],
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.main.video_prompt_targets_convert(request))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("角色名", str(ctx.exception.detail))
 
     def test_character_voice_on_fl2va_is_rejected(self):
         from fastapi import HTTPException
