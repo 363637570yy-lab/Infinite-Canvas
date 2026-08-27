@@ -355,6 +355,8 @@ img.canvas-media-deferred,
 .audio-card { min-height:132px; padding:14px; flex-direction:column; gap:9px; color:var(--text); text-align:center; background:linear-gradient(180deg, var(--card), var(--soft)); box-shadow:inset 0 0 0 1px var(--line); }
 .audio-card i { color:var(--muted); }
 .audio-title { width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:850; }
+.audio-title.audio-rename, .image-caption.audio-rename, .node-title.audio-rename { cursor:text; }
+.node .audio-name-input { width:min(180px, 100%); font-size:12px; font-weight:700; line-height:1.2; padding:2px 6px; border-radius:6px; border:1px solid rgba(128,128,148,.45); background:transparent; color:inherit; }
 .audio-sub { font-size:10px; font-weight:900; letter-spacing:.16em; color:var(--faint); }
 .audio-card audio { width:100%; max-width:260px; color-scheme:light; border-radius:999px; background:var(--card-solid); }
 .theme-dark .audio-card audio { color-scheme:dark; background:#0f172a; filter:brightness(.9) contrast(1.08); }

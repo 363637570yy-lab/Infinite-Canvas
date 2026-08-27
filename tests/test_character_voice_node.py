@@ -75,10 +75,14 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
         self.assertIn("from.type === 'voice'", js)
         self.assertIn("CharacterVoice.collectVideoAudios", js)
         self.assertIn("CharacterVoice.usesCharacterVoice", js)
-        self.assertIn("角色名写在这一栏", js)
+        self.assertIn("点音频卡名称改成角色名", js)
         self.assertIn("function attachCanvasVoiceSampleNode(", js)
+        self.assertIn("from: voiceNode.id, to: audioNode.id", js)
+        self.assertIn("from: audioNode.id, to: dest.id", js)
+        self.assertIn("function beginCanvasAudioNodeRename(", js)
         self.assertIn("onSample(sample){ attachCanvasVoiceSampleNode(node, sample); }", js)
         self.assertIn("voice-title-input", js)
+        self.assertIn("mediaKindForNode(to) === 'audio'", js)
         self.assertNotIn('data-video-toggle="characterVoice"', js)
         self.assertNotIn('data-video-toggle="enhancePrompt"', js)
         self.assertNotIn('data-video-toggle="enableUpsample"', js)
@@ -104,18 +108,21 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
             "state.standalone",
             "读取音色",
             "sourceType: 'legacy'",
+            "sampleUrl: ''",
+            "node.url = ''",
         ):
             self.assertIn(token, js)
         self.assertIn("微风拂过柔软的草地", js)
         self.assertIn("LEGACY_SAMPLE_TEXTS", js)
+        self.assertNotIn("node.url = url", js)
 
     def test_i18n_has_voice_keys(self):
         i18n = _read("static/js/i18n/canvas.js")
         self.assertIn('"canvas.voiceNode"', i18n)
         self.assertIn('"canvas.voiceHint"', i18n)
-        self.assertIn("独立音频节点", i18n)
+        self.assertIn("点音频卡名称改成角色名", i18n)
         version = _read("static/js/i18n.js")
-        self.assertIn("2026.08.27.voice-card.1", version)
+        self.assertIn("2026.08.27.voice-card.2", version)
 
     def test_default_sample_text_matches_protocol(self):
         import minimax_speech_protocol as speech

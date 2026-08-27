@@ -2804,16 +2804,20 @@ function attachCanvasVoiceSampleNode(voiceNode, sample){
     const url = String(sample?.url || '').trim();
     if(!voiceNode || !url) return null;
     const cv = window.CharacterVoice;
-    const name = cv?.displaySampleName
-        ? cv.displaySampleName(voiceNode.name || voiceNode.voiceSampleName || sample.name, '', '')
-        : String(sample.name || '角色样音');
     let audioNode = voiceNode.voiceSampleNodeId ? nodes.find(n => n.id === voiceNode.voiceSampleNodeId) : null;
+    const keptName = audioNode && cv?.isGenericSampleName && !cv.isGenericSampleName(audioNode.name)
+        ? audioNode.name
+        : '';
+    const name = cv?.displaySampleName
+        ? cv.displaySampleName(voiceNode.name || voiceNode.voiceSampleName || keptName || sample.name, '', '')
+        : String(voiceNode.name || keptName || sample.name || '角色样音');
     const x = (Number(voiceNode.x) || 0) + (Number(voiceNode.w) || 280) + 48;
     const y = Number(voiceNode.y) || 0;
     if(audioNode && audioNode.type === 'image'){
         audioNode.url = url;
         audioNode.name = name;
         audioNode.mediaKind = 'audio';
+        audioNode.role = 'character_voice';
     } else {
         audioNode = {
             id: uid('img'),
@@ -2822,19 +2826,71 @@ function attachCanvasVoiceSampleNode(voiceNode, sample){
             y,
             url,
             name,
-            mediaKind: 'audio'
+            mediaKind: 'audio',
+            role: 'character_voice'
         };
         nodes.push(audioNode);
         voiceNode.voiceSampleNodeId = audioNode.id;
     }
-    connections.filter(c => c.from === voiceNode.id).forEach(conn => {
+    if(!connections.some(c => c.from === voiceNode.id && c.to === audioNode.id)){
+        connections.push({id: uid('c'), from: voiceNode.id, to: audioNode.id});
+    }
+    const dropVoiceToVideo = [];
+    connections.forEach(conn => {
+        if(conn.from !== voiceNode.id || conn.to === audioNode.id) return;
         const dest = nodes.find(n => n.id === conn.to);
-        if(!dest || dest.id === audioNode.id || dest.type !== 'video') return;
+        if(!dest || dest.type !== 'video') return;
         if(!connections.some(c => c.from === audioNode.id && c.to === dest.id)){
             connections.push({id: uid('c'), from: audioNode.id, to: dest.id});
         }
+        dropVoiceToVideo.push(conn);
     });
+    if(dropVoiceToVideo.length){
+        connections = connections.filter(c => !dropVoiceToVideo.includes(c));
+    }
     return audioNode;
+}
+function beginCanvasAudioNodeRename(node, labelEl, ev){
+    if(!node || !labelEl) return;
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    if(labelEl.querySelector?.('input') || labelEl.tagName === 'INPUT') return;
+    const cv = window.CharacterVoice;
+    const input = document.createElement('input');
+    input.className = 'voice-title-input audio-name-input';
+    input.maxLength = 40;
+    input.value = cv?.isGenericSampleName?.(node.name) ? '' : String(node.name || '');
+    input.placeholder = '角色名，例如 少女';
+    input.onmousedown = e => e.stopPropagation();
+    input.onclick = e => e.stopPropagation();
+    const commit = () => {
+        const next = String(input.value || '').trim();
+        node.name = next || '角色样音';
+        const voice = nodes.find(n => n.type === 'voice' && n.voiceSampleNodeId === node.id);
+        if(voice && cv && !cv.isGenericSampleName(node.name)){
+            voice.name = node.name;
+            voice.voiceSampleName = node.name;
+        }
+        render();
+        scheduleSave();
+    };
+    input.onkeydown = e => {
+        e.stopPropagation();
+        if(e.key === 'Enter'){ e.preventDefault(); commit(); }
+        if(e.key === 'Escape'){ e.preventDefault(); render(); }
+    };
+    input.onblur = commit;
+    labelEl.replaceWith(input);
+    input.focus();
+    input.select();
+}
+function bindCanvasAudioNodeRename(node, el){
+    if(!node || !el) return;
+    el.classList.add('audio-rename');
+    el.style.cursor = 'text';
+    el.title = '点击改成角色名，例如 少女';
+    el.onmousedown = e => e.stopPropagation();
+    el.onclick = e => beginCanvasAudioNodeRename(node, el, e);
 }
 function addRhNode(point){
     const p = point || defaultPoint(180, 0);
@@ -6333,7 +6389,7 @@ function renderNode(node){
     };
     const title = node.type === 'image' ? 'Image' : node.type === 'prompt' ? 'Prompt' : node.type === 'loop' ? tr('canvas.loopNode') : node.type === 'promptGroup' ? 'Prompts' : node.type === 'group' ? 'Group' : node.type === 'output' ? 'Output' : node.type === 'llm' ? 'LLM' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'ltxDirector' ? tr('canvas.ltxDirector') : node.type === 'rh' ? 'RunningHub' : node.type === 'msgen' ? tr('canvas.modelscopeGenerate') : node.type === 'video' ? tr('canvas.videoGenerateNode') : node.type === 'voice' ? trOr('canvas.voiceNode', '音色', 'Voice') : tr('canvas.apiGenerate');
     const displayTitle = node.type === 'image' && node.url
-        ? nodeTitleForMedia(node)
+        ? (mediaKindForNode(node) === 'audio' ? (node.name || nodeTitleForMedia(node)) : nodeTitleForMedia(node))
         : (node.type === 'voice' && window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)
             ? node.name
             : title);
@@ -6398,10 +6454,16 @@ function renderNode(node){
                     : `<div class="media-card audio-card"><i data-lucide="file-audio" class="w-8 h-8"></i><div class="audio-title">${escapeHtml(node.name || 'Audio')}</div><div class="audio-sub">AUDIO</div><audio src="${escapeAttr(node.url)}" data-url="${escapeAttr(node.url)}" controls preload="metadata"></audio></div>`;
                 body.innerHTML = `<div class="image-preview-wrap">${mediaHtml}</div><div class="image-caption text-[11px] text-gray-400 truncate">${escapeHtml(node.name || nodeTitleForMedia(node))}</div>`;
             }
+            if(mediaKind === 'audio'){
+                bindCanvasAudioNodeRename(node, el.querySelector('.node-title'));
+                bindCanvasAudioNodeRename(node, body.querySelector('.audio-title'));
+                bindCanvasAudioNodeRename(node, body.querySelector('.image-caption'));
+            }
             const previewWrap = body.querySelector('.image-preview-wrap');
             const loadedImg = body.querySelector('img');
             const openPreview = e => {
                 if(!node.url || missing) return;
+                if(e.target.closest?.('.audio-title,.image-caption,.audio-name-input,.node-title')) return;
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
@@ -6409,6 +6471,7 @@ function renderNode(node){
                 else openImageNodePreview(node.id);
             };
             body.onmousedown = e => {
+                if(e.target.closest?.('.audio-title,.image-caption,.audio-name-input')) return;
                 if(e.detail >= 2){
                     openPreview(e);
                     return;
@@ -6505,10 +6568,21 @@ function renderNode(node){
     if(node.type === 'msgen') body.appendChild(renderMsGenBody(node));
     if(node.type === 'video') body.appendChild(renderVideoBody(node));
     if(node.type === 'voice'){
+        const linkedAudio = node.voiceSampleNodeId ? nodes.find(n => n.id === node.voiceSampleNodeId) : null;
+        if(linkedAudio && linkedAudio.type === 'image' && !connections.some(c => c.from === node.id && c.to === linkedAudio.id)){
+            connections.push({id: uid('c'), from: node.id, to: linkedAudio.id});
+            scheduleSave();
+        }
         const voiceBody = window.CharacterVoice?.renderBody?.(node, {
             providers: apiProviders,
-            hint: trOr('canvas.voiceHint', '每个音色节点生成一条样音，会出现在右侧独立音频节点上，连到视频当作音频1。角色名写在这一栏。样音约 10–12 秒，不要写成台词。', 'Each Voice node makes one sample onto a separate audio card. Type the character name. Keep the clip around 10–12 seconds, not dialogue.'),
-            onChange(){ scheduleSave(); },
+            hint: trOr('canvas.voiceHint', '每个音色节点生成一条样音，只出现在右侧音频卡上。点音频卡名称改成角色名。生成后音色会连到音频卡；若已连视频，音频卡会再连到视频。样音约 10–12 秒，不要写成台词。', 'Each Voice node makes one sample on a separate audio card. Click the card name to rename it. Generating links Voice to the card, and the card to Video if Voice was already connected. Keep the clip around 10–12 seconds, not dialogue.'),
+            onChange(){
+                const audio = node.voiceSampleNodeId ? nodes.find(n => n.id === node.voiceSampleNodeId) : null;
+                if(audio && window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)){
+                    audio.name = node.name;
+                }
+                scheduleSave();
+            },
             onRefresh(){ render(); scheduleSave(); },
             onSample(sample){ attachCanvasVoiceSampleNode(node, sample); },
             showError: showErrorModal
@@ -14853,7 +14927,10 @@ function canConnect(fromId, toId){
     }
     if(to.type === 'llm') return ['prompt','loop','promptGroup','llm','image','group','output'].includes(from.type);
     if(from.type === 'llm') return CANVAS_GENERATOR_TYPES.includes(to.type);
-    if(from.type === 'voice') return to.type === 'video';
+    if(from.type === 'voice'){
+        if(to.type === 'video') return true;
+        return to.type === 'image' && mediaKindForNode(to) === 'audio';
+    }
     return CANVAS_GENERATOR_TYPES.includes(to.type) && ['image','prompt','loop','group','promptGroup','output','llm'].includes(from.type);
 }
 function sanitizeConnections(){

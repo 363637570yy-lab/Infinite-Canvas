@@ -248,7 +248,7 @@
         node.speechModel = sample.model || fields.model || node.speechModel;
         node.speechProviderId = fields.providerId || node.speechProviderId;
         if(node.type === NODE_TYPE){
-            node.url = url;
+            node.url = '';
             if(isGenericSampleName(node.name)) node.name = '音色';
             node.mediaKind = 'audio';
         } else {
@@ -405,9 +405,10 @@
         injectStyles();
         const wrap = document.createElement('div');
         wrap.className = 'voice-node-body generator-body';
-        const hint = hooks?.hint || '每个音色节点生成一条样音，会出现在右侧独立音频节点上，连到视频当作音频1。角色名写在这一栏。样音约 10–12 秒，不要写成台词。';
+        const hint = hooks?.hint || '每个音色节点生成一条样音，只出现在右侧音频卡上。点音频卡名称改成角色名。生成后音色会连到音频卡；若已连视频，音频卡会再连到视频。样音约 10–12 秒，不要写成台词。';
         wrap.innerHTML = `<div class="voice-node-hint">${esc(hint)}</div>` + panelHtml({
             ...readStateFrom(node),
+            sampleUrl: '',
             providers: hooks?.providers || [],
             standalone: true
         });
