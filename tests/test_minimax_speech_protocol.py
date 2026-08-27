@@ -187,16 +187,18 @@ class MiniMaxT2ARequestTests(unittest.TestCase):
     def test_sample_display_name_drops_uuid_filename(self):
         self.assertEqual(
             speech.sample_display_name("voice_sample_802b81df22894fd4adc074e398650fdb.mp3", "girl", "少女音色"),
-            "少女音色",
+            "角色样音",
         )
         self.assertEqual(speech.sample_display_name("林小夏", "girl", "少女音色"), "林小夏")
-        self.assertEqual(speech.sample_display_name("音色", "girl", "少女音色"), "少女音色")
-        self.assertEqual(speech.sample_display_name("female-shaonv", "female-shaonv", "少女音色"), "少女音色")
+        self.assertEqual(speech.sample_display_name("音色", "girl", "少女音色"), "角色样音")
+        self.assertEqual(speech.sample_display_name("female-shaonv", "female-shaonv", "少女音色"), "角色样音")
         self.assertEqual(speech.sample_display_name("", "girl-voice-id", ""), "角色样音")
         self.assertTrue(speech.looks_like_voice_id("female-shaonv"))
         self.assertFalse(speech.looks_like_voice_id("少女"))
         self.assertLessEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), speech.MINIMAX_SAMPLE_TEXT_MAX)
-        self.assertGreaterEqual(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), 40)
+        self.assertGreater(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), 20)
+        self.assertLess(len(speech.MINIMAX_DEFAULT_SAMPLE_TEXT), 40)
+        self.assertIn("微风拂过柔软的草地", speech.MINIMAX_DEFAULT_SAMPLE_TEXT)
 
 
 def run(coro):

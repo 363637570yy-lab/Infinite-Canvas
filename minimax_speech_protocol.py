@@ -90,8 +90,9 @@ MINIMAX_T2A_MODELS = (
     "speech-01-turbo",
 )
 MINIMAX_DEFAULT_T2A_MODEL = "speech-2.8-hd"
-# ~10–12s at speed 1.0; H3 reference audio is 2–15s. Phoneme coverage, not plot.
-MINIMAX_DEFAULT_SAMPLE_TEXT = "清晨窗边风很轻，一二三四五，东南西北中。山、川、江、河。请保持声线稳定，吐字清晰，别加快也别放慢。"
+# MiniMax T2A 文档示范句 + 短收束，speech-2.8-hd speed 1.0 实测约 2.5 字/秒，目标 10–12 秒。
+# H3 参考音频单条 2–15 秒、合计 ≤15 秒；样音不要写成成片台词。
+MINIMAX_DEFAULT_SAMPLE_TEXT = "微风拂过柔软的草地，清新的芳香伴随着鸟儿的歌唱。阳光正好。"
 MINIMAX_SAMPLE_TEXT_MAX = 200
 MINIMAX_T2A_TEXT_MAX = 10000
 MINIMAX_SAMPLE_NAME_MAX = 40
@@ -357,11 +358,7 @@ def sample_display_name(name="", voice_id="", voice_name=""):
         or looks_like_voice_id(text)
     )
     if generic:
-        text = str(voice_name or "").strip()
-        if text.lower().endswith(".mp3"):
-            text = text[:-4].strip()
-        if not text or looks_like_voice_id(text) or text.lower() in {item.lower() for item in _GENERIC_SAMPLE_NAMES}:
-            text = "角色样音"
+        text = "角色样音"
     return text[:MINIMAX_SAMPLE_NAME_MAX]
 
 

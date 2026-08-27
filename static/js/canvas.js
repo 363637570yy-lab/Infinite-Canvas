@@ -2800,6 +2800,42 @@ function addVoiceNode(point){
         mediaKind:'audio'
     });
 }
+function attachCanvasVoiceSampleNode(voiceNode, sample){
+    const url = String(sample?.url || '').trim();
+    if(!voiceNode || !url) return null;
+    const cv = window.CharacterVoice;
+    const name = cv?.displaySampleName
+        ? cv.displaySampleName(voiceNode.name || voiceNode.voiceSampleName || sample.name, '', '')
+        : String(sample.name || '角色样音');
+    let audioNode = voiceNode.voiceSampleNodeId ? nodes.find(n => n.id === voiceNode.voiceSampleNodeId) : null;
+    const x = (Number(voiceNode.x) || 0) + (Number(voiceNode.w) || 280) + 48;
+    const y = Number(voiceNode.y) || 0;
+    if(audioNode && audioNode.type === 'image'){
+        audioNode.url = url;
+        audioNode.name = name;
+        audioNode.mediaKind = 'audio';
+    } else {
+        audioNode = {
+            id: uid('img'),
+            type: 'image',
+            x,
+            y,
+            url,
+            name,
+            mediaKind: 'audio'
+        };
+        nodes.push(audioNode);
+        voiceNode.voiceSampleNodeId = audioNode.id;
+    }
+    connections.filter(c => c.from === voiceNode.id).forEach(conn => {
+        const dest = nodes.find(n => n.id === conn.to);
+        if(!dest || dest.id === audioNode.id || dest.type !== 'video') return;
+        if(!connections.some(c => c.from === audioNode.id && c.to === dest.id)){
+            connections.push({id: uid('c'), from: audioNode.id, to: dest.id});
+        }
+    });
+    return audioNode;
+}
 function addRhNode(point){
     const p = point || defaultPoint(180, 0);
     return addNode({
@@ -6471,9 +6507,10 @@ function renderNode(node){
     if(node.type === 'voice'){
         const voiceBody = window.CharacterVoice?.renderBody?.(node, {
             providers: apiProviders,
-            hint: trOr('canvas.voiceHint', '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。双击标题写成角色名，和角色图同名。下面只选 MiniMax 音色。不是按台词配音。', 'Generate one character sample, then connect it to a video node as Audio 1 / official H3 reference_audio. Double-click the title to name the character. Pick MiniMax timbre below. This is not per-line TTS.'),
+            hint: trOr('canvas.voiceHint', '每个音色节点生成一条样音，会出现在右侧独立音频节点上，连到视频当作音频1。角色名写在这一栏。样音约 10–12 秒，不要写成台词。', 'Each Voice node makes one sample onto a separate audio card. Type the character name. Keep the clip around 10–12 seconds, not dialogue.'),
             onChange(){ scheduleSave(); },
             onRefresh(){ render(); scheduleSave(); },
+            onSample(sample){ attachCanvasVoiceSampleNode(node, sample); },
             showError: showErrorModal
         });
         if(voiceBody) body.appendChild(voiceBody);

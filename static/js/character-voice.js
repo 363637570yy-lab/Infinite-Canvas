@@ -3,8 +3,12 @@
 (function(){
     const PROTOCOL = 'minimax-speech';
     const NODE_TYPE = 'voice';
-    const DEFAULT_TEXT = '清晨窗边风很轻，一二三四五，东南西北中。山、川、江、河。请保持声线稳定，吐字清晰，别加快也别放慢。';
-    const OLD_DEFAULT_TEXT = '这是用于视频角色音色参考的样音，请保持声线稳定、吐字清晰。';
+    const DEFAULT_TEXT = '微风拂过柔软的草地，清新的芳香伴随着鸟儿的歌唱。阳光正好。';
+    const LEGACY_SAMPLE_TEXTS = [
+        '这是用于视频角色音色参考的样音，请保持声线稳定、吐字清晰。',
+        '清晨窗边风很轻，一二三四五，东南西北中。山、川、江、河。请保持声线稳定，吐字清晰，别加快也别放慢。',
+        '今天天气不错，我把每个字念清楚。一二三四五，东南西北中。'
+    ];
     const GENERIC_NAMES = ['', '音色', '角色样音', 'Voice', 'Audio', 'sample', '读取音色…', '读取音色'];
     const voiceCache = {};
 
@@ -36,14 +40,12 @@
     function displaySampleName(name, voiceName, voiceId){
         const text = String(name || '').trim().replace(/\.mp3$/i, '');
         if(!isGenericSampleName(text)) return text.slice(0, 40);
-        const voice = String(voiceName || '').trim();
-        if(voice && !isGenericSampleName(voice)) return voice.slice(0, 40);
         return '角色样音';
     }
 
     function sampleText(value){
         const text = String(value || '').trim();
-        if(!text || text === OLD_DEFAULT_TEXT) return DEFAULT_TEXT;
+        if(!text || LEGACY_SAMPLE_TEXTS.includes(text)) return DEFAULT_TEXT;
         return text;
     }
 
@@ -54,7 +56,8 @@
         style.textContent = [
             '.character-voice-panel{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;}',
             '.character-voice-panel select,.character-voice-panel input,.character-voice-panel textarea{max-width:220px;font-size:11px;padding:4px 6px;border-radius:8px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;}',
-            '.character-voice-panel .cv-name{flex:0 0 auto;width:100%;max-width:220px;height:28px;}',
+            '.character-voice-panel .cv-name{flex:0 0 auto;width:100%;max-width:220px;height:28px;min-height:28px;}',
+            '.character-voice-panel.standalone .cv-name{max-width:none;width:100%;height:28px;min-height:28px;flex:0 0 auto;}',
             '.character-voice-panel .cv-text{flex:1 1 180px;min-width:140px;max-width:none;min-height:42px;max-height:88px;resize:vertical;}',
             '.voice-title-input{width:118px;font-size:12px;font-weight:700;line-height:1.2;padding:2px 6px;border-radius:6px;border:1px solid rgba(128,128,148,.45);background:transparent;color:inherit;}',
             '.character-voice-panel .cv-generate{font-size:11px;line-height:1;padding:6px 10px;border-radius:999px;border:1px solid rgba(128,128,148,.4);background:transparent;color:inherit;cursor:pointer;}',
@@ -211,7 +214,7 @@
         if(!providers.length){
             return `<div class="character-voice-panel${extraClass}"><span class="vpt-row-label">请先在 API 设置接入 MiniMax 语音协议并保存 Key</span></div>`;
         }
-        const nameField = state.standalone ? '' : `<input class="cv-name" data-cv="name" type="text" maxlength="40" value="${esc(customName)}" placeholder="角色名，和参考图同名">`;
+        const nameField = `<input class="cv-name" data-cv="name" type="text" maxlength="40" value="${esc(customName)}" placeholder="角色名，和参考图同名，例如 少女">`;
         return `<div class="character-voice-panel${extraClass}" data-character-voice-panel="1">
             <select class="cv-provider" data-cv="provider">${providers.map(p => `<option value="${esc(p.id)}" ${p.id === providerId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</select>
             <select class="cv-model" data-cv="model">${(models.length ? models : ['speech-2.8-hd']).map(m => `<option value="${esc(m)}" ${m === model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
@@ -277,6 +280,7 @@
             voiceSampleText: DEFAULT_TEXT,
             voiceSampleUrl: '',
             voiceSampleName: '',
+            voiceSampleNodeId: '',
             url: '',
             name: '音色',
             mediaKind: 'audio'
@@ -324,9 +328,14 @@
             if(modelSel) node.speechModel = modelSel.value;
             if(voiceSel) node.voiceId = voiceSel.value;
             if(textInput) node.voiceSampleText = textInput.value;
-            if(nameInput && node.type !== NODE_TYPE){
+            if(nameInput){
                 const label = String(nameInput.value || '').trim();
-                node.voiceSampleName = isGenericSampleName(label) ? '' : label;
+                if(node.type === NODE_TYPE){
+                    node.name = label || '音色';
+                    node.voiceSampleName = isGenericSampleName(node.name) ? '' : node.name;
+                } else {
+                    node.voiceSampleName = isGenericSampleName(label) ? '' : label;
+                }
             }
             hooks?.onChange?.();
         };
@@ -337,6 +346,12 @@
             el.onchange = persist;
             el.oninput = persist;
         });
+        if(nameInput){
+            nameInput.onblur = () => {
+                persist();
+                hooks?.onRefresh?.();
+            };
+        }
         if(providerSel && !voiceCache[providerSel.value]){
             fetchVoices(providerSel.value).then(data => {
                 if(!node.speechModel) node.speechModel = data.default_model || node.speechModel;
@@ -390,7 +405,7 @@
         injectStyles();
         const wrap = document.createElement('div');
         wrap.className = 'voice-node-body generator-body';
-        const hint = hooks?.hint || '生成一条人物样音，连到视频节点当作音频1 / 官方 H3 reference_audio。双击标题写成角色名，和角色图同名。下面只选 MiniMax 音色。不是按台词配音。';
+        const hint = hooks?.hint || '每个音色节点生成一条样音，会出现在右侧独立音频节点上，连到视频当作音频1。角色名写在这一栏。样音约 10–12 秒，不要写成台词。';
         wrap.innerHTML = `<div class="voice-node-hint">${esc(hint)}</div>` + panelHtml({
             ...readStateFrom(node),
             providers: hooks?.providers || [],
