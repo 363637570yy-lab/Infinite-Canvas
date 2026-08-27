@@ -135,6 +135,24 @@ def official_model_catalog():
     }
 
 
+def _filled_model_list(values, catalog_ids):
+    listed = [str(item).strip() for item in (values or []) if str(item or "").strip()]
+    return listed if listed else list(catalog_ids)
+
+
+def with_official_catalog_defaults(provider):
+    """Empty MiniMax official lists mean the official catalog, not 'no models'."""
+    if not provider or not is_minimax_official_protocol(provider.get("protocol")):
+        return provider
+    catalog = official_model_catalog()
+    item = dict(provider)
+    item["image_models"] = _filled_model_list(item.get("image_models"), catalog["image"])
+    item["chat_models"] = _filled_model_list(item.get("chat_models"), catalog["chat"])
+    item["video_models"] = _filled_model_list(item.get("video_models"), catalog["video"])
+    item["audio_models"] = _filled_model_list(item.get("audio_models"), catalog["audio"])
+    return item
+
+
 def merge_official_catalog(grouped=None, ids=None):
     groups = official_model_catalog()
     incoming = grouped if isinstance(grouped, dict) else {}

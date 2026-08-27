@@ -356,6 +356,77 @@ class ValidateRef2vaTests(unittest.TestCase):
             "has_key": True,
         }))
 
+    def test_ref_video_off_keeps_plain_output(self):
+        messages = vpt.build_convert_messages("h3-ref2va", xinghua_ctx(), language="zh")
+        self.assertIn("参考视频：关", messages[1]["content"])
+        self.assertIn("（没有参考视频）", messages[1]["content"])
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx())
+        self.assertEqual(result["errors"], [])
+
+    def test_ref_video_requires_binding(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            videos=[{"name": "walk.mp4", "url": "http://x/v.mp4"}],
+        )
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, ctx)
+        self.assertTrue(any("缺少视频绑定" in item for item in result["errors"]))
+
+    def test_ref_video_good_output_passes(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            videos=[{"name": "walk.mp4", "url": "http://x/v.mp4"}],
+        )
+        text = GOOD_REF2VA.replace(
+            "<Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>.",
+            "<Video 1> is the motion and blocking reference. <Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>.",
+        ).replace(
+            "retention_analysis: <Subject 1> must keep",
+            "retention_analysis: <Video 1>: reference - motion and staging only, do not reuse the source dialogue. <Subject 1> must keep",
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, ctx)
+        self.assertEqual(result["errors"], [])
+
+    def test_ref_video_inventory_in_convert_messages(self):
+        ctx = vpt.build_convert_context(
+            "皇帝走路",
+            TWO_IMAGES,
+            8,
+            videos=[{"name": "walk.mp4", "url": "http://x/v.mp4"}],
+        )
+        messages = vpt.build_convert_messages("h3-ref2va", ctx, language="zh")
+        self.assertIn("参考视频：开", messages[1]["content"])
+        self.assertIn("视频1 = <Video 1> = walk.mp4", messages[1]["content"])
+        self.assertNotIn("http://x/v.mp4", messages[1]["content"])
+
+    def test_plain_ref_audio_requires_binding(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            audios=[{"name": "wind.mp3", "url": "http://x/a.mp3"}],
+        )
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, ctx)
+        self.assertTrue(any("缺少音频绑定" in item for item in result["errors"]))
+        self.assertFalse(any("缺少音色绑定" in item for item in result["errors"]))
+
+    def test_plain_ref_audio_good_output_passes(self):
+        ctx = vpt.build_convert_context(
+            XINGHUA_PROMPT,
+            TWO_IMAGES,
+            15,
+            audios=[{"name": "wind.mp3", "url": "http://x/a.mp3"}],
+        )
+        text = GOOD_REF2VA.replace(
+            "<Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>.",
+            "<Audio 1> is ambient garden wind, not a character voice. <Subject 1> is a middle-aged emperor in a dark golden dragon robe from <Picture 1>.",
+        )
+        result = vpt.validate_target_output("h3-ref2va", text, ctx)
+        self.assertEqual(result["errors"], [])
+
     def test_english_prose_ok_when_language_en(self):
         result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx(), language="en")
         self.assertFalse(any("仍是英文" in e for e in result["errors"]))
@@ -850,6 +921,22 @@ class ConvertEndpointTests(unittest.TestCase):
             model="gpt-4o-mini",
             character_voice=True,
             audios=[{"name": "a.mp3", "url": "http://x/a.mp3"}],
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(self.main.video_prompt_targets_convert(request))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("多参", str(ctx.exception.detail))
+
+    def test_ref_video_on_fl2va_is_rejected(self):
+        from fastapi import HTTPException
+
+        request = self.main.VideoPromptConvertRequest(
+            target="h3-fl2va",
+            prompt=XINGHUA_PROMPT,
+            duration=15,
+            provider="comfly",
+            model="gpt-4o-mini",
+            videos=[{"name": "walk.mp4", "url": "http://x/v.mp4"}],
         )
         with self.assertRaises(HTTPException) as ctx:
             asyncio.run(self.main.video_prompt_targets_convert(request))

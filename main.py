@@ -1463,6 +1463,8 @@ def save_api_providers(providers):
             json.dump(providers, f, ensure_ascii=False, indent=2)
 
 def public_provider(provider):
+    if is_minimax_speech_protocol(provider.get("protocol")):
+        provider = minimax_speech.with_official_catalog_defaults(provider)
     if provider.get("id") == "runninghub":
         try:
             provider = runninghub_provider_with_workflow_store(provider)
@@ -1522,6 +1524,8 @@ def get_api_provider(provider_id="comfly"):
         raise HTTPException(status_code=400, detail=f"未找到 API 平台：{target}")
     if not provider.get("enabled", True):
         raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
+    if is_minimax_speech_protocol(provider.get("protocol")):
+        return minimax_speech.with_official_catalog_defaults(provider)
     return provider
 
 def get_api_provider_exact(provider_id: str):
@@ -1532,6 +1536,8 @@ def get_api_provider_exact(provider_id: str):
         raise HTTPException(status_code=400, detail=f"未找到 API 平台：{target or '(empty)'}。新增平台未保存时请使用当前表单拉取模型。")
     if not provider.get("enabled", True):
         raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
+    if is_minimax_speech_protocol(provider.get("protocol")):
+        return minimax_speech.with_official_catalog_defaults(provider)
     return provider
 
 def modelscope_provider_config():
@@ -2893,6 +2899,7 @@ class VideoPromptConvertRequest(BaseModel):
     prompt: str = Field(default="", max_length=10000)
     duration: int = 5
     images: List[AIReference] = []
+    videos: List[AIReference] = []
     audios: List[AIReference] = []
     character_voice: bool = False
     # 转换用画布已配置的文本模型通道，与视频站点无关。
@@ -19353,20 +19360,24 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
     if not payload.prompt.strip():
         raise HTTPException(status_code=400, detail="导演本提示词为空，无法转换。")
     images = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.images]
+    videos = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.videos]
     audios = [{"name": item.name, "url": item.url, "role": item.role} for item in payload.audios]
     extra = video_prompts.reject_first_last_extra_images(images, target=target)
     if extra:
         raise HTTPException(status_code=400, detail=extra)
-    if payload.character_voice and target == "h3-fl2va":
-        raise HTTPException(status_code=400, detail="角色音色请用 minimax优化 的「多参提示词」，首尾帧目标绑不住人物声线。")
+    if target == "h3-fl2va" and (payload.character_voice or videos or audios):
+        raise HTTPException(status_code=400, detail="参考视频、参考音频或角色音色请用 minimax优化 的「多参提示词」，首尾帧目标绑不住这些槽。")
     if payload.character_voice and target == "h3-ref2va" and not any(str(item.get("url") or "").strip() for item in audios):
         raise HTTPException(status_code=400, detail="勾选角色音色时请先生成或挂上一条样音。")
+    if target == "h3-ref2va" and videos and not any(str(item.get("url") or "").strip() for item in videos):
+        raise HTTPException(status_code=400, detail="勾选参考视频时请先连接视频。")
     ctx = video_prompts.build_convert_context(
         payload.prompt,
         images,
         payload.duration,
         audios=audios,
         character_voice=payload.character_voice,
+        videos=videos,
     )
     attachments = video_prompts.convert_image_attachments(ctx)
     image_urls = [url for url, _caption in attachments]
@@ -19427,12 +19438,13 @@ async def minimax_speech_voices(provider_id: str = ""):
         probe = await probe_minimax_speech_endpoint(client, provider.get("base_url") or "", api_key, group_id)
     if not probe.get("ok"):
         raise HTTPException(status_code=502, detail=probe.get("message") or "无法读取 MiniMax 音色列表")
+    saved_models = [str(item).strip() for item in (provider.get("audio_models") or []) if str(item or "").strip()]
     return {
         "ok": True,
         "provider_id": provider["id"],
-        "models": probe.get("speech_models") or list(minimax_speech.MINIMAX_T2A_MODELS),
+        "models": saved_models or probe.get("speech_models") or list(minimax_speech.MINIMAX_T2A_MODELS),
         "voices": probe.get("voices") or [],
-        "default_model": minimax_speech.MINIMAX_DEFAULT_T2A_MODEL,
+        "default_model": next((item for item in saved_models if item), minimax_speech.MINIMAX_DEFAULT_T2A_MODEL),
         "default_text": minimax_speech.MINIMAX_DEFAULT_SAMPLE_TEXT,
     }
 

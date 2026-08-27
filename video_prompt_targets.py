@@ -184,7 +184,13 @@ def reject_first_last_extra_images(images, *, target="", require_roles=False, ac
     return ""
 
 
-def build_convert_context(prompt, images, duration_s, audios=None, character_voice=False):
+def _media_row(item):
+    if isinstance(item, str):
+        return {"url": item, "name": "", "role": ""}
+    return dict(item or {})
+
+
+def build_convert_context(prompt, images, duration_s, audios=None, character_voice=False, videos=None):
     """导演本原文 + 上传图槽。不抽镜头、台词、人物或风格。"""
     entries = []
     for index, item in enumerate(images or [], start=1):
@@ -196,9 +202,22 @@ def build_convert_context(prompt, images, duration_s, audios=None, character_voi
             "role": _normalize_image_role(row.get("role")),
             "url": str(row.get("url") or ""),
         })
+    video_entries = []
+    for item in videos or []:
+        row = _media_row(item)
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        video_entries.append({
+            "index": len(video_entries) + 1,
+            "slot": f"视频{len(video_entries) + 1}",
+            "name": str(row.get("name") or ""),
+            "role": "reference",
+            "url": url,
+        })
     audio_entries = []
-    for index, item in enumerate(audios or [], start=1):
-        row = dict(item or {})
+    for item in audios or []:
+        row = _media_row(item)
         url = str(row.get("url") or "").strip()
         if not url:
             continue
@@ -213,6 +232,7 @@ def build_convert_context(prompt, images, duration_s, audios=None, character_voi
         "source_prompt": str(prompt or ""),
         "duration_s": duration_s,
         "images": entries,
+        "videos": video_entries,
         "audios": audio_entries,
         "character_voice": bool(character_voice),
     }
@@ -286,6 +306,15 @@ def audio_inventory_lines(ctx):
             lines.append(f"- 音{index} = <Audio {index}> = {name} （角色音色，按名称匹配对应角色图 / Subject；对不上时绑正在说话的那个人）")
         else:
             lines.append(f"- 音{index} = <Audio {index}> = {name} （参考音频）")
+    return lines
+
+
+def video_inventory_lines(ctx):
+    lines = []
+    for item in ctx.get("videos") or []:
+        index = item.get("index") or (len(lines) + 1)
+        name = str(item.get("name") or "").strip() or "(未命名)"
+        lines.append(f"- 视频{index} = <Video {index}> = {name} （参考视频，借动作/场面/运镜，不要默认续拍原片）")
     return lines
 
 
@@ -375,13 +404,31 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
     prompt_text = str(source_prompt or ctx.get("source_prompt") or "").strip()
     inventory = image_inventory_lines(ctx, target_id, language)
     inventory_text = "\n".join(inventory) if inventory else "（没有参考图）"
+    video_lines = video_inventory_lines(ctx)
+    video_text = "\n".join(video_lines) if video_lines else "（没有参考视频）"
     audio_lines = audio_inventory_lines(ctx)
     audio_text = "\n".join(audio_lines) if audio_lines else "（没有参考音频）"
     captions = convert_image_captions(ctx)
     caption_text = "\n".join(captions) if captions else "（没有附图）"
     lang_name = "中文" if normalize_output_language(language) == "zh" else "英文"
-    character_voice = bool(ctx.get("character_voice")) and str(target_id or "") == "h3-ref2va"
+    is_ref2va = str(target_id or "") == "h3-ref2va"
+    has_videos = is_ref2va and bool(ctx.get("videos"))
+    has_audios = is_ref2va and bool(ctx.get("audios"))
+    character_voice = bool(ctx.get("character_voice")) and is_ref2va
+    video_flag = "参考视频：开" if has_videos else "参考视频：关"
+    audio_flag = "参考音频：开" if has_audios else "参考音频：关"
     voice_flag = "角色音色：开" if character_voice else "角色音色：关"
+    if has_videos:
+        video_rule = (
+            "参考视频已开启。必须在 subject_definitions 为每条视频写「<Video N> 是……的动作/场面/运镜参考」。"
+            "summary 仍以 [reference generation] 为主，可再拼 keyframe completion；不要默认写成 [video continuation]。"
+            "retention_analysis 增加 <Video N>: reference - 只借动作、表演或场面，不复用原片对白。"
+            "禁止发明清单里没有的 Video 号。"
+        )
+    else:
+        video_rule = (
+            "参考视频未开启。不要写 <Video N>，不要写 video continuation / video editing。"
+        )
     if character_voice:
         voice_rule = (
             "角色音色已开启。音1 是人物样音，名称是角色线索，不是这一句台词的成片配音。"
@@ -394,13 +441,22 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
             "开口的人仍用 <Subject N> (S1) says: <d>[Chinese] 原文</d>，用 Audio 1 的声，不要另编一条声。"
             "不要把样音写成 BGM。"
         )
+    elif has_audios:
+        voice_rule = (
+            "参考音频已开启，但不是角色音色。"
+            "必须写 <Audio N> 作为环境声、节奏或口型参考，不要当成人物样音，不要写 audio reference。"
+            "禁止发明清单里没有的 Audio 号。"
+        )
     else:
         voice_rule = (
-            "角色音色未开启。不要写 <Audio N>，不要写 audio reference / audio reuse。"
+            "参考音频未开启。不要写 <Audio N>，不要写 audio reference / audio reuse。"
         )
     user = (
         f"目标：{target_id}\n"
         f"时长（秒）：{ctx.get('duration_s')}\n"
+        f"{video_flag}\n"
+        f"{video_rule}\n"
+        f"{audio_flag}\n"
         f"{voice_flag}\n"
         f"{voice_rule}\n"
         f"{output_language_instruction(language, target_id)}\n\n"
@@ -408,6 +464,8 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
         f"{prompt_text}\n\n"
         "参考图槽位（与附图顺序一致；正文必须用这些槽位绑定，不要改文件名）：\n"
         f"{inventory_text}\n\n"
+        "参考视频槽位：\n"
+        f"{video_text}\n\n"
         "参考音频槽位：\n"
         f"{audio_text}\n\n"
         "附图已按槽位顺序附在本条消息里，每张图前有【图N】说明：\n"
@@ -456,6 +514,7 @@ _D_TAG = re.compile(r"<d>\s*\[Chinese\]\s*(.*?)\s*</d>", re.DOTALL | re.IGNORECA
 _PICTURE_TAG = re.compile(r"<Picture\s+(\d{1,2})>", re.IGNORECASE)
 _SUBJECT_TAG = re.compile(r"<Subject\s+(\d{1,2})>", re.IGNORECASE)
 _AUDIO_TAG = re.compile(r"<Audio\s+(\d{1,2})>", re.IGNORECASE)
+_VIDEO_TAG = re.compile(r"<Video\s+(\d{1,2})>", re.IGNORECASE)
 # 官方中文 @图片N / 兼容 @图像N / 英文 @ImageN / @Image N
 _SEEDANCE_REF = re.compile(r"@(?:图片|图像|Image)\s*(\d{1,2})", re.IGNORECASE)
 _CANVAS_AT_TU = re.compile(r"@图(?!片|像)\s*\d{1,2}")
@@ -677,6 +736,8 @@ def _validate_h3_ref2va(text, ctx, errors, warnings):
     _check_time_codes(text, ctx.get("duration_s"), errors)
     _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ctx, errors, warnings)
     _check_h3_character_voice(text, ctx, errors, warnings)
+    _check_h3_ref_videos(text, ctx, errors, warnings)
+    _check_h3_ref_audios(text, ctx, errors, warnings)
 
 
 def _validate_h3_fl2va(text, ctx, errors, warnings):
@@ -771,7 +832,7 @@ _VALIDATORS = {
 
 _PROTOCOL_FOR_LANGUAGE = re.compile(
     r"(?:"
-    r"<Picture\s+\d+>|<Subject\s+\d+>|@(?:图片|图像|Image)\s*\d+|"
+    r"<Picture\s+\d+>|<Subject\s+\d+>|<Video\s+\d+>|<Audio\s+\d+>|@(?:图片|图像|Image)\s*\d+|"
     r"\[Shot\s+\d+\]|At\s+\d{1,2}:\d{2}\.\d{3}|"
     r"fully_preserved|partially_preserved|attribute_transfer|weak_reference|"
     r"fully_copy|partially_copy|reference generation|keyframe completion|"
@@ -885,8 +946,6 @@ def _check_h3_character_voice(text, ctx, errors, warnings):
     summary = _section_body(text, "summary", ["retention_analysis"])
     summary_l = (summary or "").lower()
     if not character_voice:
-        if found:
-            warnings.append("未勾选角色音色，但输出写了 <Audio N>；请关掉音频绑定或勾选角色音色")
         return
     if audio_count < 1:
         errors.append("缺少音色绑定：勾选角色音色时必须挂载样音")
@@ -902,6 +961,42 @@ def _check_h3_character_voice(text, ctx, errors, warnings):
         errors.append("缺少音色绑定：summary 须含 audio reference")
 
 
+def _video_count(ctx):
+    return len(ctx.get("videos") or [])
+
+
+def _check_h3_ref_videos(text, ctx, errors, warnings):
+    video_count = _video_count(ctx)
+    found = [int(match.group(1)) for match in _VIDEO_TAG.finditer(text)]
+    if not video_count:
+        if found:
+            warnings.append("未勾选参考视频，但输出写了 <Video N>")
+        return
+    for index in range(1, video_count + 1):
+        if index not in found:
+            errors.append(f"缺少视频绑定：须写 <Video {index}>")
+    for number in found:
+        if number < 1 or number > video_count:
+            errors.append(f"缺少视频绑定：<Video {number}> 超出挂载视频数量 {video_count}")
+
+
+def _check_h3_ref_audios(text, ctx, errors, warnings):
+    if bool(ctx.get("character_voice")):
+        return
+    audio_count = _audio_count(ctx)
+    found = [int(match.group(1)) for match in _AUDIO_TAG.finditer(text)]
+    if not audio_count:
+        if found:
+            warnings.append("未勾选参考音频，但输出写了 <Audio N>；请关掉音频绑定或勾选参考音频")
+        return
+    for index in range(1, audio_count + 1):
+        if index not in found:
+            errors.append(f"缺少音频绑定：须写 <Audio {index}>")
+    for number in found:
+        if number < 1 or number > audio_count:
+            errors.append(f"缺少音频绑定：<Audio {number}> 超出挂载音频数量 {audio_count}")
+
+
 _H3_STRUCTURAL_MARKERS = (
     "缺少段：",
     "六段顺序不对",
@@ -909,6 +1004,8 @@ _H3_STRUCTURAL_MARKERS = (
     "对齐行之后必须空一行",
     "缺少字段：",
     "缺少音色绑定",
+    "缺少视频绑定",
+    "缺少音频绑定",
 )
 
 

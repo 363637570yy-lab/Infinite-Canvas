@@ -2665,7 +2665,7 @@ function renderEditor(){
     const keyLabel = document.querySelector('.api-key-label');
     if(keyLabel) keyLabel.textContent = isMinimaxSpeech ? (tr('api.minimaxSpeechKey') || 'Token Plan 订阅 Key') : (tr('api.key') || 'API Key');
     if(isMinimaxSpeech){
-        applyMinimaxSpeechProtocolDefaults(item);
+        applyMinimaxSpeechProtocolDefaults(item, {seedModels:true});
         if(baseInput){
             baseInput.placeholder = MINIMAX_SPEECH_CN_BASE_URL;
             baseInput.value = item.base_url || MINIMAX_SPEECH_CN_BASE_URL;
@@ -3509,6 +3509,7 @@ function renderModelPicker(){
                 <option value="chat">聊天</option>
                 <option value="image">生图</option>
                 <option value="video">视频</option>
+                <option value="audio">语音</option>
             </select>`
             : `<span class="picker-category-label">${category === 'image' ? '生图' : category === 'chat' ? '聊天' : category === 'audio' ? '语音' : '视频'}</span>`;
         return `
@@ -3557,7 +3558,7 @@ function selectPickerCat(cat){
 function setPickerCategoryByIndex(index, category){
     const id = pickerVisibleIds[index];
     const next = String(category || '').toLowerCase();
-    if(typeof id !== 'string' || !['image', 'chat', 'video', 'unknown'].includes(next)) return;
+    if(typeof id !== 'string' || !['image', 'chat', 'video', 'audio', 'unknown'].includes(next)) return;
     pickerState.category[id] = next;
     pickerState.selected[id] = next !== 'unknown';
     renderModelPicker();

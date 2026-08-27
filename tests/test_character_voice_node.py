@@ -80,6 +80,8 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
         self.assertIn("from: voiceNode.id, to: audioNode.id", js)
         self.assertIn("from: audioNode.id, to: dest.id", js)
         self.assertIn("function beginCanvasAudioNodeRename(", js)
+        self.assertIn("kind === 'audio' || kind === 'video'", js)
+        self.assertIn("n.voiceSampleNodeId === id", js)
         self.assertIn("onSample(sample){ attachCanvasVoiceSampleNode(node, sample); }", js)
         self.assertIn("voice-title-input", js)
         self.assertIn("mediaKindForNode(to) === 'audio'", js)
@@ -110,6 +112,7 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
             "sourceType: 'legacy'",
             "sampleUrl: ''",
             "node.url = ''",
+            "const models = providerSpeechModels(provider);",
         ):
             self.assertIn(token, js)
         self.assertIn("微风拂过柔软的草地", js)

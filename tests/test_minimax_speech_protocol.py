@@ -370,3 +370,37 @@ class MiniMaxFetchModelsTests(unittest.TestCase):
             js,
         )
         self.assertIn("applyMinimaxSpeechProtocolDefaults(item, {seedModels:true})", js)
+        self.assertIn("'audio', 'unknown'", js)
+        self.assertIn('<option value="audio">语音</option>', js)
+
+    def test_empty_official_lists_use_catalog_without_clobbering_subset(self):
+        empty = speech.with_official_catalog_defaults({
+            "protocol": "minimax-speech",
+            "image_models": [],
+            "chat_models": ["MiniMax-M2"],
+            "video_models": ["MiniMax-H3"],
+            "audio_models": [],
+        })
+        self.assertEqual(empty["chat_models"], ["MiniMax-M2"])
+        self.assertEqual(empty["video_models"], ["MiniMax-H3"])
+        self.assertEqual(empty["image_models"], list(speech.MINIMAX_IMAGE_MODELS))
+        self.assertEqual(empty["audio_models"], list(speech.MINIMAX_T2A_MODELS))
+        saved = main.normalize_provider({
+            "id": "minimax-official",
+            "protocol": "minimax-speech",
+            "chat_models": [],
+            "audio_models": [],
+        })
+        self.assertEqual(saved["chat_models"], [])
+        self.assertEqual(saved["audio_models"], [])
+        public = main.public_provider({
+            "id": "minimax-official",
+            "protocol": "minimax-speech",
+            "image_models": [],
+            "chat_models": ["MiniMax-M2"],
+            "video_models": ["MiniMax-H3"],
+            "audio_models": [],
+        })
+        self.assertEqual(public["chat_models"], ["MiniMax-M2"])
+        self.assertIn("image-01", public["image_models"])
+        self.assertIn("speech-2.8-hd", public["audio_models"])

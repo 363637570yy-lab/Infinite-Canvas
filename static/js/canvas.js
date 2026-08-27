@@ -2782,6 +2782,8 @@ function addVideoNode(point){
         voiceSampleNodeId:'',
         useFrameRoles:false,
         multimodal:false,
+        useRefVideo:false,
+        useRefAudio:false,
         tempShLinks:[],
         inputs:[],
         running:false
@@ -2813,12 +2815,17 @@ function attachCanvasVoiceSampleNode(voiceNode, sample){
         : String(voiceNode.name || keptName || sample.name || '角色样音');
     const x = (Number(voiceNode.x) || 0) + (Number(voiceNode.w) || 280) + 48;
     const y = Number(voiceNode.y) || 0;
-    if(audioNode && audioNode.type === 'image'){
+    if(audioNode && audioNode.type === 'image' && mediaKindForNode(audioNode) === 'audio'){
         audioNode.url = url;
         audioNode.name = name;
         audioNode.mediaKind = 'audio';
         audioNode.role = 'character_voice';
     } else {
+        const staleId = audioNode?.id;
+        if(staleId){
+            nodes = nodes.filter(n => n.id !== staleId);
+            connections = connections.filter(c => c.from !== staleId && c.to !== staleId);
+        }
         audioNode = {
             id: uid('img'),
             type: 'image',
@@ -3952,6 +3959,32 @@ function applyUploadedUrlToRefs(refs, node){
 }
 function manualVideoUrlForNode(node){
     return (node?.manualVideoUrls || []).find(Boolean) || '';
+}
+function classicVideoMediaRefs(node){
+    const sources = orderedSources(node, generatorSources(node));
+    return applyUploadedUrlToRefs(
+        (sources.flatMap(src => src.refs || []) || []).filter(ref => ['image','video','audio'].includes(mediaKindForRef(ref))),
+        node
+    );
+}
+function syncClassicVideoRefToggles(node){
+    if(!node || node.type !== 'video') return;
+    const mediaRefs = classicVideoMediaRefs(node);
+    const hasVideo = Boolean(manualVideoUrlForNode(node)) || videoRefsOnly(mediaRefs).length > 0;
+    const connectedAudios = audioRefsOnly(mediaRefs);
+    const hasAudio = window.CharacterVoice
+        ? window.CharacterVoice.collectVideoAudios(node, connectedAudios).length > 0
+        : (connectedAudios.length > 0 || Boolean(node.voiceSampleUrl));
+    if(node._useRefVideoUserSet !== true) node.useRefVideo = hasVideo;
+    if(node._useRefAudioUserSet !== true) node.useRefAudio = hasAudio;
+}
+function classicVideoConvertVideos(node, mediaRefs){
+    const manual = manualVideoUrlForNode(node);
+    if(manual) return [{name:'参考视频', url:manual}];
+    return videoRefsOnly(mediaRefs).map((ref, i) => ({
+        name: ref.name || `视频${i + 1}`,
+        url: ref.url || ''
+    })).filter(item => item.url);
 }
 function currentCanvasMediaLinks(node){
     const refs = orderedSources(node, generatorSources(node)).flatMap(src => src.refs || [])
@@ -6569,7 +6602,7 @@ function renderNode(node){
     if(node.type === 'video') body.appendChild(renderVideoBody(node));
     if(node.type === 'voice'){
         const linkedAudio = node.voiceSampleNodeId ? nodes.find(n => n.id === node.voiceSampleNodeId) : null;
-        if(linkedAudio && linkedAudio.type === 'image' && !connections.some(c => c.from === node.id && c.to === linkedAudio.id)){
+        if(linkedAudio && linkedAudio.type === 'image' && mediaKindForNode(linkedAudio) === 'audio' && linkedAudio.url && !connections.some(c => c.from === node.id && c.to === linkedAudio.id)){
             connections.push({id: uid('c'), from: node.id, to: linkedAudio.id});
             scheduleSave();
         }
@@ -8887,6 +8920,7 @@ function renderVideoBody(node){
     const promptInputs = ordered.filter(src => src.prompt && !src.refs?.length);
     sanitizeVideoNodeProviderModel(node);
     node.model = node.model || 'veo3-fast';
+    syncClassicVideoRefToggles(node);
     const grok2api = isGrok2apiVideoProvider(node.apiProvider);
     const durationMax = grok2api ? 15 : 60;
     const aspectOptions = grok2api
@@ -8931,6 +8965,8 @@ function renderVideoBody(node){
             <div class="gen-settings-row" style="flex-wrap:wrap">
                 ${grok2api ? '' : `
                 <button type="button" class="setting-check ${node.generateAudio ? 'active' : ''}" data-video-toggle="generateAudio"><span class="check-dot"></span>${tr('canvas.videoGenerateAudio')}</button>
+                <button type="button" class="setting-check ${node.useRefVideo ? 'active' : ''}" data-video-toggle="useRefVideo"><span class="check-dot"></span>${tr('canvas.videoRefVideo')}</button>
+                <button type="button" class="setting-check ${node.useRefAudio ? 'active' : ''}" data-video-toggle="useRefAudio"><span class="check-dot"></span>${tr('canvas.videoRefAudio')}</button>
                 <button type="button" class="setting-check ${node.multimodal ? 'active' : ''}" data-video-toggle="multimodal"><span class="check-dot"></span>${tr('canvas.videoMultimodal')}</button>
                 <button type="button" class="setting-check ${node.useFrameRoles ? 'active' : ''}" data-video-toggle="useFrameRoles"><span class="check-dot"></span>${tr('canvas.videoFirstLastFrames')}</button>`}
             </div>
@@ -8976,6 +9012,8 @@ function renderVideoBody(node){
             node[field] = !node[field];
             if(field === 'multimodal' && node.multimodal) node.useFrameRoles = false;
             if(field === 'useFrameRoles' && node.useFrameRoles) node.multimodal = false;
+            if(field === 'useRefVideo') node._useRefVideoUserSet = true;
+            if(field === 'useRefAudio') node._useRefAudioUserSet = true;
             render();
             scheduleSave();
         };
@@ -11019,19 +11057,31 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
     }));
     const extra = vpt.rejectFirstLastExtraImages?.(images, {target: target.id, action: '转换'});
     if(extra){ showErrorModal(extra, 'AI 提示词'); return; }
+    syncClassicVideoRefToggles(node);
+    const useRefVideo = Boolean(node.useRefVideo);
+    const useRefAudio = Boolean(node.useRefAudio);
     const connectedAudios = audioRefsOnly(mediaRefs);
-    const characterVoice = window.CharacterVoice
+    const characterVoice = useRefAudio && (window.CharacterVoice
         ? window.CharacterVoice.usesCharacterVoice(node, connectedAudios)
-        : Boolean(node.characterVoice);
-    if(characterVoice && target.id === 'h3-fl2va'){
-        showErrorModal('角色音色请用 minimax优化 的「多参提示词」，首尾帧绑不住人物声线。', 'AI 提示词');
+        : Boolean(node.characterVoice));
+    if(target.id === 'h3-fl2va' && (useRefVideo || useRefAudio || characterVoice)){
+        showErrorModal('参考视频、参考音频或角色音色请用 minimax优化 的「多参提示词」，首尾帧绑不住这些槽。', 'AI 提示词');
         return;
     }
-    const audios = window.CharacterVoice
-        ? window.CharacterVoice.convertAudios(node, connectedAudios)
-        : connectedAudios.map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''}));
-    if(characterVoice && target.id === 'h3-ref2va' && !audios.length){
-        showErrorModal('请先连接音色节点并生成样音。', 'AI 提示词');
+    const videos = (target.id === 'h3-ref2va' && useRefVideo)
+        ? classicVideoConvertVideos(node, mediaRefs)
+        : [];
+    const audios = (target.id === 'h3-ref2va' && useRefAudio)
+        ? (window.CharacterVoice
+            ? window.CharacterVoice.convertAudios(node, connectedAudios)
+            : connectedAudios.map((ref, i) => ({name: ref.name || `音${i + 1}`, url: ref.url || ''})))
+        : [];
+    if(useRefVideo && target.id === 'h3-ref2va' && !videos.length){
+        showErrorModal('请先连接参考视频。', 'AI 提示词');
+        return;
+    }
+    if(useRefAudio && target.id === 'h3-ref2va' && !audios.length){
+        showErrorModal(characterVoice ? '请先连接音色节点并生成样音。' : '请先连接参考音频。', 'AI 提示词');
         return;
     }
     const chatPick = vpt.pickChatProvider(apiProviders, node.vptChatProvider, node.vptChatModel);
@@ -11050,6 +11100,7 @@ async function runCanvasVideoPromptConversion(nodeId, btn){
             prompt,
             duration: durationS,
             images,
+            videos,
             audios,
             character_voice: characterVoice,
             provider: providerId,
@@ -11126,6 +11177,10 @@ function deriveCanvasVideoPromptNodes(srcNode, target, result, durationS){
         voiceSampleNodeId:srcNode.voiceSampleNodeId || '',
         useFrameRoles:Boolean(target.preset?.frame_roles),
         multimodal:Boolean(target.preset?.multimodal),
+        useRefVideo:Boolean(srcNode.useRefVideo),
+        useRefAudio:Boolean(srcNode.useRefAudio),
+        _useRefVideoUserSet:srcNode._useRefVideoUserSet === true,
+        _useRefAudioUserSet:srcNode._useRefAudioUserSet === true,
         tempShLinks:[],
         inputs:[],
         running:false,
@@ -12622,6 +12677,9 @@ function deleteNode(id, event){
     event?.stopPropagation();
     pushUndo();
     destroyLTXEditor(nodes.find(n => n.id === id));
+    nodes.forEach(n => {
+        if(n.voiceSampleNodeId === id) n.voiceSampleNodeId = '';
+    });
     nodes = nodes.filter(n => n.id !== id);
     connections = connections.filter(c => c.from !== id && c.to !== id);
     selected.delete(id);
@@ -12632,6 +12690,8 @@ function clearNodeContentBeforeDelete(id){
     const node = nodes.find(n => n.id === id);
     if(!node) return false;
     if(node.type === 'image' && node.url){
+        const kind = mediaKindForNode(node);
+        if(kind === 'audio' || kind === 'video') return false;
         pushUndo();
         node.url = '';
         node.mediaKind = 'image';
