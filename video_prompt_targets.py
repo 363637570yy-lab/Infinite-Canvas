@@ -1,8 +1,9 @@
 """画布出片提示词适配。
 
 改词只吃导演本原文、目标 skill、时长、生成语言、图槽清单和按槽位附图。
-图槽直接来自本次上传列表，不抽中间稿。本模块只做纯逻辑：图槽、消息构造、
-校验；AI 调用由 main.py 的转换端点走既有文本模型通道完成。
+时长只用于排时间码，不写进正文当「一段 10 秒」。画幅 / 分辨率 / 帧率由出片
+节点提交，禁止写进提示词。图槽直接来自本次上传列表，不抽中间稿。本模块只做
+纯逻辑：图槽、消息构造、校验；AI 调用由 main.py 的转换端点走既有文本模型通道完成。
 """
 
 import re
@@ -407,10 +408,12 @@ def chat_model_likely_sees_images(model):
     return bool(lc) and any(key in lc for key in _VISION_MODEL_HINTS)
 
 
-def convert_input_warnings(ctx, model, image_urls):
+def convert_input_warnings(ctx, model, image_urls, target_id=""):
     warnings = []
     if image_urls and not chat_model_likely_sees_images(model):
         warnings.append("当前文字模型多半看不到附图，只会读文件名和导演本；要看图写词请换视觉模型")
+    if str(target_id or "").strip() == "h3-fl2va":
+        warnings.append("首尾帧成片画幅常跟首帧图，节点上选的比例可能被忽略")
     return warnings
 
 
@@ -524,6 +527,7 @@ def build_convert_messages(target_id, ctx, source_prompt="", language="en"):
     user = (
         f"目标：{target_id}\n"
         f"时长（秒）：{ctx.get('duration_s')}\n"
+        f"{generation_control_instruction()}\n"
         f"{video_flag}\n"
         f"{video_rule}\n"
         f"{audio_flag}\n"
@@ -573,6 +577,109 @@ def strip_model_output(text):
     if fence:
         value = fence.group(1).strip()
     return value
+
+
+def generation_control_instruction():
+    """时长数字只用于排时间码；画幅 / 分辨率 / 帧率由出片节点提交。"""
+    return (
+        "时长只用于安排时间码和对齐行，不要在正文里写「一段时长10秒」「时长15秒」"
+        "「严格持续10秒」「ten-second video」。"
+        "画幅、比例、分辨率、帧率由出片节点单独提交，禁止写进提示词："
+        "不要写竖屏 / 横屏 / 竖版 / 横版 / 9:16 / 16:9 / 720p / 1080p / 24fps / 十六比九。"
+        "每张参考只写一个职责：人物图只借脸和服装，场景图只借空间和光线，动作图只借姿态；"
+        "不要把参考图的竖横构图写成目标视频画幅。"
+        "只作外观来源的图写进 Subject / 对应标签，不要再给它单独的构图保留行。"
+        "时间码按真实动作速度排，不要为了凑满时长把动作写成慢动作或注水空镜。"
+        "导演本没写的质量包不要发明：8K、超高清、电影级超清、24fps。"
+        "Seedance 2.5：导演本没有时间戳时用镜头1/镜头2，不要为了凑页面时长发明 0-8s；"
+        "导演本已有整数秒才写 0-3s 这种分段。"
+        "时间码本身要保留：H3 的 At MM:SS.mmm、首尾帧对齐行的 S.SS-second mark、"
+        "Seedance 2.5 里用户已经写过的 0-4s。"
+    )
+
+
+# 出片节点会提交的参数。写进提示词会和节点选择冲突，H3 还会拿去当构图指令。
+_GEN_DURATION_LABEL = re.compile(
+    r"(?:一段(?:时长\s*)?|视频时长\s*|片段时长\s*|片子时长\s*|总时长\s*|时长\s*)\d+\s*秒"
+    r"|严格持续\s*\d+\s*秒"
+    r"|(?:a\s+)?(?:\d+|five|ten|fifteen)[-\s]seconds?(?:\s+(?:long|video|clip))?"
+    r"|(?:[一二三四五六七八九十两]+|\d+)\s*秒单镜头",
+    re.IGNORECASE,
+)
+_GEN_ASPECT_LABEL = re.compile(
+    r"(?:竖屏|横屏|竖版|横版|方屏)(?:\s*构图)?"
+    r"(?:\s*\d+\s*[:：xX]\s*\d+)?"
+    r"(?:\s*构图)?"
+    r"|(?:竖向|横向|纵向)\s*\d+\s*[:：xX]\s*\d+\s*(?:画幅)?"
+    r"|(?:竖向|横向|纵向)\s*画幅"
+    r"|(?:十六比九|九比十六|四比三|三比四)(?:横屏|竖屏|画幅)?"
+    r"|\b(?:9\s*[:：xX]\s*16|16\s*[:：xX]\s*9|3\s*[:：xX]\s*4|4\s*[:：xX]\s*3|"
+    r"1\s*[:：xX]\s*1|21\s*[:：xX]\s*9|9\s*[:：xX]\s*21)\b"
+    r"(?:\s*(?:aspect(?:\s*ratio)?|ratio|frame|cinematic))?"
+    r"|\b(?:portrait|landscape|widescreen)\s+(?:aspect(?:\s*ratio)?|ratio|frame|video|orientation)\b",
+    re.IGNORECASE,
+)
+_GEN_RES_FPS_LABEL = re.compile(
+    r"\b(?:480p|720p|1080p|1440p|2k|4k|8k)\b"
+    r"|\b\d{2}\s*fps\b"
+    r"|每秒\s*\d+\s*帧"
+    r"|\d+\s*帧率",
+    re.IGNORECASE,
+)
+_GEN_ALIGN_LINE = re.compile(
+    r"^(For the target video, at 0\.00 seconds|How the reference pictures align)",
+    re.IGNORECASE,
+)
+
+
+def leftover_generation_control_labels(text):
+    """找出仍写在正文里的出片参数标签，不含时间码。"""
+    found = []
+    for line in str(text or "").splitlines():
+        if _GEN_ALIGN_LINE.match(line.strip()):
+            continue
+        for pattern in (_GEN_DURATION_LABEL, _GEN_ASPECT_LABEL, _GEN_RES_FPS_LABEL):
+            for match in pattern.finditer(line):
+                token = re.sub(r"\s+", " ", match.group(0)).strip()
+                if token and token not in found:
+                    found.append(token)
+    return found
+
+
+def _cleanup_generation_control_punct(value):
+    text = str(value or "")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[、,，]{2,}", "、", text)
+    text = re.sub(r"(?:是一段的|是一段、的)", "是", text)
+    text = re.sub(r"(采用|是|为)\s*[、,，]*\s*的", r"\1", text)
+    text = re.sub(r"(采用|是|为)\s*[、,，]+\s*", r"\1", text)
+    text = re.sub(r"[、,，]\s*(?=和|与|\band\b)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:、|,|，)\s+(and|with)\b", r" \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"[、,，]\s*(?=[。．.!?！？])", "", text)
+    text = re.sub(r"（\s*）|\(\s*\)", "", text)
+    text = re.sub(r"[ \t]+([。．、,，.!?！？])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def _strip_generation_controls_line(line):
+    if _GEN_ALIGN_LINE.match(line.strip()):
+        return line
+    value = line
+    for pattern in (_GEN_DURATION_LABEL, _GEN_ASPECT_LABEL, _GEN_RES_FPS_LABEL):
+        value = pattern.sub("", value)
+    return _cleanup_generation_control_punct(value)
+
+
+def strip_generation_controls(text):
+    """去掉正文里的画幅 / 时长标签 / 分辨率 / 帧率，保留时间码和对齐行。"""
+    lines = str(text or "").splitlines()
+    stripped = [_strip_generation_controls_line(line) for line in lines]
+    return "\n".join(stripped).strip()
+
+
+def finalize_model_output(text):
+    return strip_generation_controls(strip_model_output(text))
 
 
 # ---------------------------------------------------------------------------
@@ -1179,6 +1286,12 @@ def validate_target_output(target_id, text, ctx, language="en"):
     if validator is None:
         return {"errors": [f"未知的提示词目标：{target_id}"], "warnings": warnings}
     validator(value, ctx, errors, warnings)
+    leftover = leftover_generation_control_labels(value)
+    if leftover:
+        warnings.append(
+            "正文写出了出片参数（画幅/时长标签/分辨率/帧率），这些应由节点提交，不要写进提示词："
+            + "、".join(leftover[:6])
+        )
     _check_requested_language(value, target_id, language, errors)
     hard, notes = _soften_content_issues(target_id, value, errors, warnings)
     return {"errors": hard, "warnings": notes}

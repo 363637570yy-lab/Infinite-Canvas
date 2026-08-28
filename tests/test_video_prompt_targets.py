@@ -274,6 +274,12 @@ class MessageBuildTests(unittest.TestCase):
         self.assertTrue(vpt.chat_model_likely_sees_images("gpt-4o-mini"))
         self.assertFalse(vpt.chat_model_likely_sees_images("gpt-3.5-turbo"))
 
+    def test_fl2va_convert_warns_aspect_follows_first_frame(self):
+        warnings = vpt.convert_input_warnings(xinghua_ctx(), "gpt-4o", ["http://x/1.png"], "h3-fl2va")
+        self.assertTrue(any("首帧图" in item for item in warnings))
+        ref_warnings = vpt.convert_input_warnings(xinghua_ctx(), "gpt-4o", ["http://x/1.png"], "h3-ref2va")
+        self.assertFalse(any("首帧图" in item for item in ref_warnings))
+
     def test_repair_messages_append_errors(self):
         ir = xinghua_ctx()
         messages = vpt.build_repair_messages("seedance-2.5", ir, "旧输出", ["缺少首帧声明行"])
@@ -287,6 +293,89 @@ class MessageBuildTests(unittest.TestCase):
     def test_strip_model_output_removes_fence(self):
         self.assertEqual(vpt.strip_model_output("```text\nabc\n```"), "abc")
         self.assertEqual(vpt.strip_model_output("  abc  "), "abc")
+
+    def test_convert_messages_forbid_generation_controls(self):
+        messages = vpt.build_convert_messages("h3-ref2va", xinghua_ctx(), language="zh")
+        joined = "\n".join(item["content"] for item in messages)
+        self.assertIn("时长（秒）：15", joined)
+        self.assertIn(vpt.generation_control_instruction(), joined)
+        self.assertIn("不要写竖屏", joined)
+        self.assertIn("由出片节点单独提交", joined)
+        self.assertIn("每张参考只写一个职责", joined)
+        self.assertIn("质量包", joined)
+        self.assertIn("真实动作速度", joined)
+
+    def test_strip_generation_controls_keeps_plain_output(self):
+        self.assertEqual(vpt.strip_generation_controls(GOOD_REF2VA), GOOD_REF2VA)
+
+    def test_strip_generation_controls_keeps_camera_words(self):
+        text = "镜头横向推进，穿过杏花。"
+        self.assertEqual(vpt.strip_generation_controls(text), text)
+
+    def test_strip_generation_controls_removes_ratio_and_duration_label(self):
+        raw = (
+            "[reference generation] 目标视频是一段时长 10 秒、竖屏 9:16 的写实真人当代舞视频。"
+            "<Subject 1> 在客厅中央跳舞。"
+        )
+        cleaned = vpt.strip_generation_controls(raw)
+        self.assertNotIn("9:16", cleaned)
+        self.assertNotIn("竖屏", cleaned)
+        self.assertNotIn("时长 10 秒", cleaned)
+        self.assertNotIn("是的写实", cleaned)
+        self.assertIn("写实真人当代舞视频", cleaned)
+        self.assertIn("<Subject 1> 在客厅中央跳舞。", cleaned)
+        self.assertEqual(vpt.leftover_generation_control_labels(cleaned), [])
+
+    def test_strip_generation_controls_keeps_timecodes_and_align(self):
+        fl2va = (
+            "How the reference pictures align with the target video — "
+            "Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; "
+            "Picture 2 (from Shot 1) aligns with the 8.00-second mark of the target video.\n"
+            "\n"
+            "integrated_multimodal_description: [Shot 1] 真人电影感。At 00:04.000, the camera cuts to the garden."
+        )
+        cleaned = vpt.strip_generation_controls(fl2va)
+        self.assertIn("8.00-second mark", cleaned)
+        self.assertIn("At 00:04.000", cleaned)
+        seedance = "@图片1用于皇帝的龙袍。\n镜头1（0-4s）：皇帝坐在石桌旁。\n镜头2（4-8s）：妃子走入。"
+        cleaned_sd = vpt.strip_generation_controls(seedance)
+        self.assertIn("0-4s", cleaned_sd)
+        self.assertIn("4-8s", cleaned_sd)
+
+    def test_strip_generation_controls_removes_fps_resolution_and_image_aspect(self):
+        raw = (
+            "目标视频采用温暖夕阳下的手绘动画悬疑风格，横向16:9画幅，24fps，画面连续稳定。\n"
+            "<Picture 3>（出现在 [Shot 1]）：fully_preserved - 作为客厅结构、物体位置、竖屏构图和自然光线的参考。"
+        )
+        cleaned = vpt.strip_generation_controls(raw)
+        self.assertNotIn("16:9", cleaned)
+        self.assertNotIn("24fps", cleaned)
+        self.assertNotIn("竖屏", cleaned)
+        self.assertNotIn("构图和", cleaned)
+        self.assertIn("自然光线", cleaned)
+        self.assertIn("画面连续稳定", cleaned)
+
+    def test_finalize_model_output_strips_fence_and_controls(self):
+        raw = "```text\n[reference generation] 目标视频是一段时长 10 秒、竖屏 9:16 的写实真人当代舞视频。\n```"
+        cleaned = vpt.finalize_model_output(raw)
+        self.assertNotIn("```", cleaned)
+        self.assertNotIn("9:16", cleaned)
+        self.assertIn("写实真人当代舞视频", cleaned)
+
+    def test_generation_control_leftover_is_warning(self):
+        bad = GOOD_REF2VA.replace(
+            "In an imperial garden at dusk",
+            "A 10-second 9:16 video in an imperial garden at dusk",
+        )
+        result = vpt.validate_target_output("h3-ref2va", bad, xinghua_ctx())
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(any("出片参数" in item for item in result["warnings"]))
+        cleaned = vpt.strip_generation_controls(bad)
+        self.assertNotIn("9:16", cleaned)
+        self.assertNotIn("10-second", cleaned)
+        result2 = vpt.validate_target_output("h3-ref2va", cleaned, xinghua_ctx())
+        self.assertEqual(result2["errors"], [])
+        self.assertFalse(any("出片参数" in item for item in result2["warnings"]))
 
 
 class ValidateRef2vaTests(unittest.TestCase):
@@ -781,6 +870,19 @@ class ValidateSeedanceTests(unittest.TestCase):
         self.assertIn("不要字幕，不要LOGO，不要水印", skill20)
         self.assertIn("不采用图片背景", skill20)
         self.assertIn("[Negative Prompts]", skill20)
+
+    def test_skills_borrow_asset_roles_and_event_speed(self):
+        ref = vpt.load_target_skill("h3-ref2va")
+        fl = vpt.load_target_skill("h3-fl2va")
+        skill25 = vpt.load_target_skill("seedance-2.5")
+        skill20 = vpt.load_target_skill("seedance-2.0")
+        self.assertIn("每张参考只写一个职责", ref)
+        self.assertIn("真实动作速度", ref)
+        self.assertIn("质量包", ref)
+        self.assertIn("不借原片人物身份", ref)
+        self.assertIn("成片画幅常跟首帧图", fl)
+        self.assertIn("不要为了凑页面时长发明", skill25)
+        self.assertIn("每张参考只写一个职责", skill20)
 
     def test_h3_skills_teach_positive_locks_not_negative_lists(self):
         ref = vpt.load_target_skill("h3-ref2va")

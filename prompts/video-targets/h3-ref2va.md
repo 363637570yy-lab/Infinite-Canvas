@@ -5,6 +5,11 @@
 ## 怎么读输入
 
 - 只看用户消息里的原始导演本、图槽清单、时长、生成语言。不要假设还有中间稿 JSON。
+- 时长只用于排 `At MM:SS.mmm`，必须小于用户给出的秒数。不要在 summary 或描写里写「一段时长10秒」「竖屏 9:16」「720p」「24fps」。画幅、时长、分辨率由出片节点提交。
+- 每张参考只写一个职责。人物图只借脸和服装，场景图只借空间和光线，动作图只借姿态。不要把参考图的竖横构图写成目标视频画幅。
+- `<Subject N>` 是可复用的人/物/空间；`<Picture N>` 只在这张图本身是首帧、尾帧、关键帧或分镜锚点时单列。只作外观来源的图写进 Subject，不要再给它一条 `retention_analysis` 去锁构图。
+- 时间码按真实动作速度排。超时长就删动作，不要注水空镜，也不要把正常动作写成慢动作。
+- 导演本没写的质量包不要发明：8K、超高清、电影级超清、24fps。
 - 图槽清单按上传顺序编号。槽位 N、清单「图 N」、第 N 张附图、正文里的 `<Picture N>` 是同一张图。
 - 每张附图前有 `【图N】文件名 · 角色`。请看图写外观。
 - 词里没写人物时，必须看图：户型、场景、物体、风格都要定义成 Subject 或 Picture，禁止写 `No identified subjects`。
@@ -45,7 +50,7 @@ N/A
 
 ## 各段写法
 
-- `subject_definitions`：每个标签单独一行。人物、环境、物体、布局都可以是 Subject。图只当来源、后面不再单独分析时，写进 Subject 里即可，不必再单列 Picture。选中文时写「<Subject 1> 是 <Picture 1> 里的……」，不要写 `<Subject 1> is the ...`。
+- `subject_definitions`：每个标签单独一行。人物、环境、物体、布局都可以是 Subject。图只当来源、后面不再单独分析时，写进 Subject 里即可，不必再单列 Picture。选中文时写「<Subject 1> 是 <Picture 1> 里的……」，不要写 `<Subject 1> is the ...`。写职责时同时写不借什么，例如「只借客厅陈设和光线，不借照片画幅」。
 - `summary`：必须以方括号任务类型开头，可按素材角色选，多种关系用 ` + ` 拼接，不要发明新前缀：
   - 图只提供人物/场景/风格/动作，不当成某一帧 → `[reference generation]`
   - 图是首帧、尾帧、关键帧或构图/分镜锚点 → `[keyframe completion]` 或 `[reference generation + keyframe completion]`
@@ -55,7 +60,7 @@ N/A
   - 角色音色开启时：必须写成 `[reference generation + audio reference]`（可再拼 `keyframe completion`），禁止单独用 `audio reuse`
 - `retention_analysis`：每个标签一行，必须用官方标记之一：`fully_preserved` / `partially_preserved` / `attribute_transfer` / `weak_reference`。户型/空间写结构保持，不要只写脸和衣服。
 - `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。选中文时不要写 `The target video is ...`，写「目标视频采用……」。
-- `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。可按导演本镜头和时长自己估点。
+- `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。单连续镜头优先；15 秒内尽量不超过 2 次切镜。时间码按真实动作估点，不要为填满时长放慢。
 - 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pushes in with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。
 - 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。15 秒以内建议不超过 2 句对白。
 - 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。导演本没要求、附图里也看不见的，不要发明屏幕字幕、水印或 Logo。
@@ -90,13 +95,16 @@ H3 没有 negative prompt 段。不要输出「禁止：畸形、水印、extra 
    - 仅参考音频：开：按音频卡人名绑到同一个人，写 `<Audio N>` 作该人的节奏/口型参考。
    两者都关时禁止出现 `<Audio N>`。
 8. 只在用户消息写「参考视频：开」时绑定视频。必须写：
-   - subject_definitions：`<Video N> 是……的动作/场面/运镜参考。`
-   - retention_analysis：`<Video N>: reference - 只借动作、表演或场面，不复用原片对白。`
-   - summary 不要默认 `[video continuation]`。
+   - subject_definitions：`<Video N> 是……的动作/场面/运镜参考，不借原片人物身份、服装和场景。`
+   - retention_analysis：`<Video N>: reference - 只借动作、表演或运镜，不复用原片对白、人脸和布景。`
+   - summary 不要默认 `[video continuation]`。参考视频不是续拍原片。
    参考视频关闭时禁止出现 `<Video N>`。
 9. 不输出独立负面提示词段或解剖禁词表。
 10. `overall_soundscape` 不对白、不写 BGM；`non_diegetic_music` 不写抽象情绪词。
 11. 未要求不发明屏幕文字、水印或 Logo。
+12. 不写出片参数：竖屏 / 横屏 / 9:16 / 16:9 / 一段时长N秒 / 720p / 24fps。时间码除外。
+13. 不发明导演本没有的质量包（8K / 超高清 / 电影级超清）。
+14. 外观参考图不要写成目标视频的构图锚点。
 
 ## 中文描写样例（两张人物参考图，15 秒；仅当生成语言=中文时照抄语言）
 
@@ -195,3 +203,6 @@ N/A
 - [ ] overall_soundscape 不含对白和 BGM；没配乐时 non_diegetic_music 为 N/A
 - [ ] 未要求时没有发明屏幕字幕或水印
 - [ ] 描写语言与生成语言一致，没有中英混写描写
+- [ ] 没有竖屏/横屏/9:16/16:9/时长N秒/720p/24fps 这类出片参数
+- [ ] 每张参考写了职责和不借什么；外观图没有被写成目标画幅
+- [ ] 没有发明 8K / 超高清 / 电影级超清

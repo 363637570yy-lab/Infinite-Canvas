@@ -19351,7 +19351,7 @@ async def _video_prompt_llm_text(provider_id, model, messages, images=None, imag
         image_captions=captions,
     )
     result = await canvas_llm(llm_payload)
-    return video_prompts.strip_model_output((result or {}).get("text") or "")
+    return video_prompts.finalize_model_output((result or {}).get("text") or "")
 
 @app.post("/api/video-prompt-targets/convert")
 async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
@@ -19430,7 +19430,7 @@ async def video_prompt_targets_convert(payload: VideoPromptConvertRequest):
         "prompt": text,
         "language": language,
         "errors": checked["errors"],
-        "warnings": video_prompts.convert_input_warnings(ctx, chat_model, image_urls) + checked["warnings"],
+        "warnings": video_prompts.convert_input_warnings(ctx, chat_model, image_urls, target) + checked["warnings"],
     }
 
 @app.get("/api/minimax-speech/voices")
