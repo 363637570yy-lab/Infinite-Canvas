@@ -62,7 +62,7 @@ N/A
 - `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。选中文时不要写 `The target video is ...`，写「目标视频采用……」。
 - `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。单连续镜头优先；15 秒内尽量不超过 2 次切镜。时间码按真实动作估点，不要为填满时长放慢。
 - 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pushes in with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。
-- 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。15 秒以内建议不超过 2 句对白。
+- 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。中文台词按约 3–4 字/秒估算时长，必须能在所在镜头的时间里自然说完，说不完就整句舍弃。15 秒以内建议不超过 2 句对白。
 - 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。导演本没要求、附图里也看不见的，不要发明屏幕字幕、水印或 Logo。
 - 外观以附图为准。不换装时不要编衣服颜色或纹样，写「沿用 <Picture N> 里的穿着」即可。
 - `overall_soundscape`：1–4 句环境音、物理动作音、非语言人声。对白、歌唱、BGM 不写这里。
@@ -197,6 +197,7 @@ N/A
 - [ ] 参考音频或角色音色开启时每个 `<Audio N>` 都在音频清单里；关闭时没有 `<Audio N>`
 - [ ] 有附图时没有 `No identified subjects`
 - [ ] 保留的台词与导演本原文逐字一致
+- [ ] 每句台词按 3–4 字/秒能在所在镜头时间内说完
 - [ ] 除 [Shot 1] 外每镜都有 At MM:SS.mmm，时间递增且小于时长
 - [ ] 没有 `@图` / `@图片` / `@Image` / 对齐行残留
 - [ ] 身份/站位/光线用正向锁死，没有独立负面词表

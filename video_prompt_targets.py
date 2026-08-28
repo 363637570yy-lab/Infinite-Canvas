@@ -687,6 +687,11 @@ def finalize_model_output(text):
 # ---------------------------------------------------------------------------
 
 _TIME_CODE = re.compile(r"\bAt\s+(\d{1,2}):(\d{2})\.(\d{3})", re.IGNORECASE)
+# fl2va 全程单镜头：对齐行把首尾帧都钉在 Shot 1，正文一旦切镜，尾帧就会被对齐到切镜点而不是片尾
+_FL2VA_CUT = re.compile(
+    r"cuts to|the shot (?:transitions|changes|switches) to|\[Shot\s+(?:[2-9]|\d{2,})\]",
+    re.IGNORECASE,
+)
 _D_TAG = re.compile(r"<d>\s*\[Chinese\]\s*(.*?)\s*</d>", re.DOTALL | re.IGNORECASE)
 _PICTURE_TAG = re.compile(r"<Picture\s+(\d{1,2})>", re.IGNORECASE)
 _SUBJECT_TAG = re.compile(r"<Subject\s+(\d{1,2})>", re.IGNORECASE)
@@ -985,9 +990,10 @@ def _validate_h3_fl2va(text, ctx, errors, warnings):
             errors.append(f"<Picture {number}> 超出首尾帧图数量 {frame_max}")
     if _SUBJECT_TAG.search(text) or _h3_has_canvas_or_seedance_at(text):
         errors.append("首尾帧目标不允许出现 <Subject> / @Image / @图片 / @图；帧锚点只用 <Picture 1/2>")
-    if len(re.findall(r"cuts to", text, re.IGNORECASE)) > 2:
-        warnings.append("切镜超过 2 次，首尾帧目标建议单镜头")
-    _check_time_codes(text, ctx.get("duration_s"), errors)
+    if _TIME_CODE.search(text) or _FL2VA_CUT.search(text):
+        errors.append(
+            "首尾帧目标必须全程单镜头：删掉切镜句、[Shot 2] 和 At MM:SS.mmm 时间码，写成一个连续镜头"
+        )
     _check_output_dialogues([m.group(1).strip() for m in _D_TAG.finditer(text)], ctx, errors, warnings)
 
 
@@ -1234,6 +1240,7 @@ _H3_STRUCTURAL_MARKERS = (
     "缺少音色绑定",
     "缺少视频绑定",
     "缺少音频绑定",
+    "必须全程单镜头",
 )
 
 
@@ -1274,7 +1281,7 @@ def _soften_content_issues(target_id, text, errors, warnings):
 def validate_target_output(target_id, text, ctx, language="en"):
     """返回 {"errors": [...], "warnings": [...]}。
 
-    errors 只留结构问题（空稿、太短、H3 缺段/对齐行错），前端不得派生。
+    errors 只留结构问题（空稿、太短、H3 缺段/对齐行错/首尾帧切镜），前端不得派生。
     台词、语言、图号、残留标记等可手改的问题进 warnings，结构过关就派生。
     """
     errors = []

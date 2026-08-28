@@ -700,6 +700,29 @@ class ValidateFl2vaTests(unittest.TestCase):
         result = vpt.validate_target_output("h3-fl2va", text, self._ir())
         self.assertEqual(result["errors"], [])
 
+    def test_cut_or_timecode_is_hard_error(self):
+        ir = self._ir()
+        with_cut = self._good(vpt.fl2va_align_first()).replace(
+            "The camera pushes in with small amplitude at slow speed. ",
+            "At 00:04.000, the camera cuts to a close-up of his face. ",
+        )
+        result = vpt.validate_target_output("h3-fl2va", with_cut, ir)
+        self.assertTrue(any("必须全程单镜头" in e for e in result["errors"]))
+
+    def test_shot2_marker_is_hard_error(self):
+        ir = self._ir(with_last=True)
+        text = self._good(vpt.fl2va_align_both(ir)).replace(
+            "(S1) <d>[Chinese] 春色正好。</d>",
+            "[Shot 2] He smiles at the blossoms.",
+        )
+        result = vpt.validate_target_output("h3-fl2va", text, ir)
+        self.assertTrue(any("必须全程单镜头" in e for e in result["errors"]))
+
+    def test_alignment_shot1_reference_not_flagged_as_cut(self):
+        ir = self._ir(with_last=True)
+        result = vpt.validate_target_output("h3-fl2va", self._good(vpt.fl2va_align_both(ir)), ir)
+        self.assertFalse(any("必须全程单镜头" in e for e in result["errors"]))
+
     def test_fl2va_language_must_match_selection(self):
         ir = self._ir()
         english = self._good(vpt.fl2va_align_first())
@@ -883,6 +906,17 @@ class ValidateSeedanceTests(unittest.TestCase):
         self.assertIn("成片画幅常跟首帧图", fl)
         self.assertIn("不要为了凑页面时长发明", skill25)
         self.assertIn("每张参考只写一个职责", skill20)
+
+    def test_skills_teach_single_shot_budget_and_dialogue_pacing(self):
+        fl = vpt.load_target_skill("h3-fl2va")
+        ref = vpt.load_target_skill("h3-ref2va")
+        skill25 = vpt.load_target_skill("seedance-2.5")
+        self.assertIn("全程单镜头，禁止切镜", fl)
+        self.assertIn("1–4 句", fl)
+        self.assertIn("3–4 字/秒", ref)
+        self.assertIn("700 词以内", skill25)
+        self.assertIn("起始状态 → 一个主要动作或变化 → 可见结果", skill25)
+        self.assertIn("3–4 字/秒", skill25)
 
     def test_h3_skills_teach_positive_locks_not_negative_lists(self):
         ref = vpt.load_target_skill("h3-ref2va")
