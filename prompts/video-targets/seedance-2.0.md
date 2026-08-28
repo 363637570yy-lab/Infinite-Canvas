@@ -24,11 +24,13 @@
 
 顺序可以按「谁 / 什么 → 动作 → 场景 → 运镜 → 声音」：
 
-- 参考图：中文 `皇帝（@图片1）……` / `公寓户型（@图片1）`；英文 `The emperor (@Image1) ...`。
+- 参考图：中文 `皇帝（@图片1）只采用外貌和服饰，不采用图片背景`；英文 `The emperor (@Image1), using only appearance and clothing, not the image background`。背景或路人不会串台时，「不采用」可省。
 - 动作一两句说完；单镜头优先，最多一次切镜
 - 台词最多留一句，中文原文引号保留：`妃子说：“臣妾参见皇上。”`
-- 声音一句带过
+- 声音一句带过；没要求配乐就写无背景音乐，只留环境声和动作音
 - 不编附图里看不见的衣服或五官
+- 短文末尾默认禁止项：`不要字幕，不要LOGO，不要水印`。导演本明确要字幕或 Logo 时按用户写，不要对打。
+- 画面问题正向锁死（「脸和服装保持一致」），不要堆 `deformed, extra fingers, blurry` 解剖词表，不要写成 `[Negative Prompts]` 段。
 
 ### 若图槽带了首帧 / 尾帧角色
 
@@ -39,7 +41,7 @@
 ```
 @图片1 作为首帧，定义开场构图、站位、姿态和镜头方向。
 @图片2 作为尾帧，定义收束构图、站位、姿态和镜头方向。
-主体从首帧连续走到尾帧。安静环境声。
+主体从首帧连续走到尾帧。安静环境声。不要字幕，不要LOGO，不要水印。
 ```
 
 英文：
@@ -47,7 +49,7 @@
 ```
 @Image1 as the first frame. It defines the opening composition, subject position, pose, and camera direction.
 @Image2 as the last frame. It defines the ending composition, subject position, pose, and camera direction.
-The subject moves continuously from the first frame to the last frame. Quiet ambience.
+The subject moves continuously from the first frame to the last frame. Quiet ambience. Do not add subtitles, logos, or watermarks.
 ```
 
 没有首尾帧角色时，不要写首帧 / 尾帧声明。
@@ -59,17 +61,20 @@ The subject moves continuously from the first frame to the last frame. Quiet amb
 3. 不用 `<Picture>` / `<Subject>` / `At MM:SS.mmm` / `@图N`。画布里的 `@图1` 要改成 `@图片1` 或 `@Image1`。
 4. 不翻译、不改写保留的台词。
 5. 有首尾帧角色时必须一行一图声明，禁止 `@Images 1 and 2 are the first and last frames.`
+6. 导演本没要求字幕时，短文末尾必须有不要字幕 / 不要LOGO / 不要水印。
+7. 不写 `[Negative Prompts]` 段，不堆解剖负面词，不写时间戳。
+8. 参考图背景或路人可能误带时必须写不采用。
 
 ## 中文描写样例（两张参考图，10 秒；仅当生成语言=中文时照抄语言）
 
 ```
-皇帝（@图片1）穿深金色龙袍坐在御花园石桌旁，妃子（@图片2）走入鞠躬，他抬头微笑。黄昏杏花，暖柔光。中景缓慢推进，然后切到双人中景。园中环境声；妃子说：“臣妾参见皇上。”
+皇帝（@图片1）只采用外貌和龙袍、不采用图片背景，坐在御花园石桌旁；妃子（@图片2）只采用外貌和宫装、不采用图片背景，走入鞠躬，他抬头微笑。黄昏杏花，暖柔光。中景缓慢推进，然后切到双人中景。园中环境声，无背景音乐；妃子说：“臣妾参见皇上。”不要字幕，不要LOGO，不要水印。
 ```
 
 ## 英文描写样例（两张参考图，10 秒；仅当生成语言=英文时照抄语言）
 
 ```
-The emperor (@Image1) in a dark golden dragon robe sits at a stone table in a palace garden, while the young consort (@Image2) walks in and bows; he looks up with a gentle smile. Blossoming apricot trees at dusk, warm soft light. Medium shot slowly pushing in, then cuts to a two-shot. Quiet garden ambience; the consort says: "臣妾参见皇上。"
+The emperor (@Image1), using only appearance and the dark golden robe, not the image background, sits at a stone table in a palace garden, while the young consort (@Image2), using only appearance and dress, not the image background, walks in and bows; he looks up with a gentle smile. Blossoming apricot trees at dusk, warm soft light. Medium shot slowly pushing in, then cuts to a two-shot. Quiet garden ambience, no BGM; the consort says: "臣妾参见皇上。" Do not add subtitles, logos, or watermarks.
 ```
 
 ## 自检清单
@@ -80,4 +85,6 @@ The emperor (@Image1) in a dark golden dragon robe sits at a stone table in a pa
 - [ ] 多动作用镜头序号，没有时间戳
 - [ ] 至多一次切镜；台词只留必要的一句且逐字一致
 - [ ] 无 `<Picture>` / `<Subject>` / `At MM:SS.mmm`
+- [ ] 导演本没要求字幕时，末尾有不要字幕 / 不要LOGO / 不要水印
+- [ ] 没有 `[Negative Prompts]` 段，没有解剖负面词表
 - [ ] 短文描写语言与生成语言一致，没有中英混写

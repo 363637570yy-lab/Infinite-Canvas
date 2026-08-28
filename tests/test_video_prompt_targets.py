@@ -647,6 +647,43 @@ class ValidateSeedanceTests(unittest.TestCase):
         result = vpt.validate_target_output("seedance-2.5", self.GOOD_25, xinghua_ctx())
         self.assertEqual(result["errors"], [])
 
+    def test_seedance_warns_when_default_negatives_missing(self):
+        for target in ("seedance-2.5", "seedance-2.0"):
+            result = vpt.validate_target_output(target, self.GOOD_25, xinghua_ctx())
+            self.assertEqual(result["errors"], [])
+            self.assertTrue(any("不要字幕" in w for w in result["warnings"]), target)
+            self.assertTrue(any("无背景音乐" in w for w in result["warnings"]), target)
+
+    def test_seedance_no_negative_warning_when_present(self):
+        text = self.GOOD_25 + "\nNo BGM; keep only garden ambience. Do not add subtitles."
+        for target in ("seedance-2.5", "seedance-2.0"):
+            result = vpt.validate_target_output(target, text, xinghua_ctx())
+            self.assertEqual(result["errors"], [])
+            self.assertFalse(any("不要字幕" in w for w in result["warnings"]), target)
+            self.assertFalse(any("无背景音乐" in w for w in result["warnings"]), target)
+        zh_text = (
+            "@图片1用于皇帝外貌，不采用图片背景。\n"
+            "皇帝坐在石桌旁。妃子说：“臣妾参见皇上。”\n"
+            "园中环境声，无背景音乐，不要字幕。"
+        )
+        zh = vpt.validate_target_output("seedance-2.5", zh_text, xinghua_ctx(), language="zh")
+        self.assertEqual(zh["errors"], [])
+        self.assertFalse(any("不要字幕" in w for w in zh["warnings"]))
+        self.assertFalse(any("无背景音乐" in w for w in zh["warnings"]))
+
+    def test_seedance_skips_negative_warning_when_source_asks(self):
+        prompt = XINGHUA_PROMPT + "加字幕【开场】。背景播放钢琴配乐。"
+        ctx = vpt.build_convert_context(prompt, TWO_IMAGES, 15)
+        result = vpt.validate_target_output("seedance-2.5", self.GOOD_25, ctx)
+        self.assertEqual(result["errors"], [])
+        self.assertFalse(any("不要字幕" in w for w in result["warnings"]))
+        self.assertFalse(any("无背景音乐" in w for w in result["warnings"]))
+
+    def test_h3_does_not_warn_seedance_default_negatives(self):
+        result = vpt.validate_target_output("h3-ref2va", GOOD_REF2VA, xinghua_ctx())
+        self.assertEqual(result["errors"], [])
+        self.assertFalse(any("不要字幕" in w or "无背景音乐" in w for w in result["warnings"]))
+
     def test_merged_frame_declaration_is_hint(self):
         bad = "@Images 1 and 2 are the first and last frames.\n" + self.GOOD_25
         result = vpt.validate_target_output("seedance-2.5", bad, xinghua_ctx())
@@ -730,6 +767,33 @@ class ValidateSeedanceTests(unittest.TestCase):
             self.assertIn("中文描写样例", skill, target_id)
             self.assertIn("英文描写样例", skill, target_id)
             self.assertIn("禁止中英混写", skill, target_id)
+
+    def test_seedance_skills_teach_default_negatives_and_exclusions(self):
+        skill25 = vpt.load_target_skill("seedance-2.5")
+        self.assertIn("不要字幕", skill25)
+        self.assertIn("无背景音乐", skill25)
+        self.assertIn("不采用图片背景", skill25)
+        self.assertIn("{ }", skill25)
+        self.assertIn("【】", skill25)
+        self.assertIn("[Negative Prompts]", skill25)
+        self.assertIn("解剖", skill25)
+        skill20 = vpt.load_target_skill("seedance-2.0")
+        self.assertIn("不要字幕，不要LOGO，不要水印", skill20)
+        self.assertIn("不采用图片背景", skill20)
+        self.assertIn("[Negative Prompts]", skill20)
+
+    def test_h3_skills_teach_positive_locks_not_negative_lists(self):
+        ref = vpt.load_target_skill("h3-ref2va")
+        fl = vpt.load_target_skill("h3-fl2va")
+        self.assertIn("正向连续性", ref)
+        self.assertIn("没有 negative prompt 段", ref)
+        self.assertIn("保持 Picture 1 的脸和服装", fl)
+        self.assertIn("没有 negative prompt 字段", fl)
+        for skill in (ref, fl):
+            self.assertIn("解剖禁词表", skill)
+            self.assertIn("不对白", skill)
+            self.assertIn("不写抽象情绪词", skill)
+            self.assertIn("不发明屏幕文字", skill)
 
     def test_english_seedance_is_hint_when_language_zh(self):
         result = vpt.validate_target_output("seedance-2.5", self.GOOD_25, xinghua_ctx(), language="zh")

@@ -755,6 +755,56 @@ def _require_seedance_frame_lines(text, ctx, errors):
         errors.append(f"缺少尾帧声明行：@图片{last_index} 作为尾帧 / @Image{last_index} as the last frame")
 
 
+_SOURCE_SUBTITLE_BAN = re.compile(
+    r"不要字幕|无字幕|不要任何文字|do not add subtitles|no subtitles|subtitle-free",
+    re.IGNORECASE,
+)
+_SOURCE_SUBTITLE_ASK = re.compile(
+    r"字幕|【[^】]{1,80}】|subtitles?|closed captions?",
+    re.IGNORECASE,
+)
+_SOURCE_BGM_BAN = re.compile(
+    r"无背景音乐|不要背景音乐|无\s*bgm|不要\s*bgm|不要配乐|不要音乐|不要任何声音|"
+    r"no\s*bgm|no background music|no sound at all",
+    re.IGNORECASE,
+)
+_SOURCE_BGM_ASK = re.compile(
+    r"配乐|背景音乐|\bbgm\b|background\s+music|钢琴乐|插曲|"
+    r"[\(（][^\)）]{0,40}(?:钢琴|配乐|bgm|music|piano)",
+    re.IGNORECASE,
+)
+_OUTPUT_SUBTITLE_BAN = re.compile(
+    r"不要字幕|无字幕|不要任何文字|keep it subtitle-free|"
+    r"do not add subtitles|no subtitles|subtitle-free|"
+    r"avoid generating any text or subtitles",
+    re.IGNORECASE,
+)
+_OUTPUT_BGM_BAN = re.compile(
+    r"无背景音乐|不要背景音乐|无\s*bgm|不要\s*bgm|不要配乐|不要任何声音|"
+    r"no\s*bgm|no background music|no sound at all",
+    re.IGNORECASE,
+)
+
+
+def _source_requests_subtitles(source):
+    stripped = _SOURCE_SUBTITLE_BAN.sub("", str(source or ""))
+    return bool(_SOURCE_SUBTITLE_ASK.search(stripped))
+
+
+def _source_requests_bgm(source):
+    stripped = _SOURCE_BGM_BAN.sub("", str(source or ""))
+    return bool(_SOURCE_BGM_ASK.search(stripped))
+
+
+def _check_seedance_default_negatives(text, ctx, warnings):
+    """导演本没要字幕/配乐时，成片词应写出默认负向控制。只警告，不失败。"""
+    source = ctx.get("source_prompt") or ""
+    if not _source_requests_subtitles(source) and not _OUTPUT_SUBTITLE_BAN.search(text):
+        warnings.append("导演本没要求字幕，建议补「不要字幕」")
+    if not _source_requests_bgm(source) and not _OUTPUT_BGM_BAN.search(text):
+        warnings.append("导演本没要求配乐，建议补「无背景音乐」")
+
+
 def _h3_has_canvas_or_seedance_at(text):
     return bool(_CANVAS_AT_TU.search(text) or _SEEDANCE_REF.search(text))
 
@@ -872,6 +922,7 @@ def _validate_seedance_common(text, ctx, errors, warnings, word_limit):
     else:
         _check_output_dialogues(quoted, ctx, errors, warnings)
     _require_seedance_frame_lines(text, ctx, errors)
+    _check_seedance_default_negatives(text, ctx, warnings)
 
 
 def _validate_seedance_25(text, ctx, errors, warnings):

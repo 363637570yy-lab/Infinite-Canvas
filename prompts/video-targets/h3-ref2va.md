@@ -58,8 +58,20 @@ N/A
 - `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。可按导演本镜头和时长自己估点。
 - 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pushes in with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。
 - 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。15 秒以内建议不超过 2 句对白。
-- 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。
+- 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。导演本没要求、附图里也看不见的，不要发明屏幕字幕、水印或 Logo。
 - 外观以附图为准。不换装时不要编衣服颜色或纹样，写「沿用 <Picture N> 里的穿着」即可。
+- `overall_soundscape`：1–4 句环境音、物理动作音、非语言人声。对白、歌唱、BGM 不写这里。
+- `non_diegetic_music`：只写乐器、速度、节奏、动态变化。不写「悲伤」「高级感」这类情绪词。没配乐写 `N/A`。
+
+## 正向连续性（不要写负面词表）
+
+H3 没有 negative prompt 段。不要输出「禁止：畸形、水印、extra fingers」这类清单；「no camera shake」会把 camera shake 喂给模型。改成正向锁死：
+
+- 身份：跨镜保持脸、发型、服装与 `<Picture N>` 一致
+- 空间：写死相对站位，例如始终在画面左侧
+- 光线：光源方向和色温只定义一次，后续引用
+- 色调：颜色词只在开头定义
+- 屏幕文字：只有导演本或画面里真有的才用英文双引号原样包住
 
 ## 硬性禁令
 
@@ -82,6 +94,9 @@ N/A
    - retention_analysis：`<Video N>: reference - 只借动作、表演或场面，不复用原片对白。`
    - summary 不要默认 `[video continuation]`。
    参考视频关闭时禁止出现 `<Video N>`。
+9. 不输出独立负面提示词段或解剖禁词表。
+10. `overall_soundscape` 不对白、不写 BGM；`non_diegetic_music` 不写抽象情绪词。
+11. 未要求不发明屏幕文字、水印或 Logo。
 
 ## 中文描写样例（两张人物参考图，15 秒；仅当生成语言=中文时照抄语言）
 
@@ -176,4 +191,7 @@ N/A
 - [ ] 保留的台词与导演本原文逐字一致
 - [ ] 除 [Shot 1] 外每镜都有 At MM:SS.mmm，时间递增且小于时长
 - [ ] 没有 `@图` / `@图片` / `@Image` / 对齐行残留
+- [ ] 身份/站位/光线用正向锁死，没有独立负面词表
+- [ ] overall_soundscape 不含对白和 BGM；没配乐时 non_diegetic_music 为 N/A
+- [ ] 未要求时没有发明屏幕字幕或水印
 - [ ] 描写语言与生成语言一致，没有中英混写描写
