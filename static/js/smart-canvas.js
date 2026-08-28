@@ -336,6 +336,7 @@ let settings = {
     videoCharacterVoice:false,
     videoSpeechProvider:'',
     videoSpeechModel:'',
+    videoSpeechLanguage:'Chinese',
     videoVoiceId:'',
     videoVoiceSampleUrl:'',
     videoVoiceSampleName:'',
@@ -15674,6 +15675,7 @@ function bindSmartCharacterVoicePanel(){
     if(!panel) return;
     const providerSel = panel.querySelector('[data-cv="provider"]');
     const modelSel = panel.querySelector('[data-cv="model"]');
+    const languageSel = panel.querySelector('[data-cv="language"]');
     const voiceSel = panel.querySelector('[data-cv="voice"]');
     const nameInput = panel.querySelector('[data-cv="name"]');
     const textInput = panel.querySelector('[data-cv="text"]');
@@ -15681,6 +15683,9 @@ function bindSmartCharacterVoicePanel(){
     const persist = () => {
         if(providerSel) settings.videoSpeechProvider = providerSel.value;
         if(modelSel) settings.videoSpeechModel = modelSel.value;
+        if(languageSel) settings.videoSpeechLanguage = cv.normalizeSpeechLanguage
+            ? cv.normalizeSpeechLanguage(languageSel.value)
+            : languageSel.value;
         if(voiceSel) settings.videoVoiceId = voiceSel.value;
         if(textInput) settings.videoVoiceSampleText = textInput.value;
         if(nameInput){
@@ -15690,7 +15695,7 @@ function bindSmartCharacterVoicePanel(){
         persistActiveSmartSettings();
         scheduleSave();
     };
-    [providerSel, modelSel, voiceSel, nameInput, textInput].forEach(el => {
+    [providerSel, modelSel, languageSel, voiceSel, nameInput, textInput].forEach(el => {
         if(!el) return;
         el.onchange = persist;
         el.oninput = persist;
@@ -15724,12 +15729,16 @@ function bindSmartCharacterVoicePanel(){
                     provider_id: settings.videoSpeechProvider,
                     model: settings.videoSpeechModel || '',
                     voice_id: settings.videoVoiceId,
+                    language_boost: cv.normalizeSpeechLanguage
+                        ? cv.normalizeSpeechLanguage(settings.videoSpeechLanguage)
+                        : (settings.videoSpeechLanguage || 'Chinese'),
                     text: settings.videoVoiceSampleText || cv.DEFAULT_TEXT,
                     name: sampleName
                 });
                 cv.applySampleToSettings(settings, sample, {
                     providerId: settings.videoSpeechProvider,
                     model: settings.videoSpeechModel,
+                    language: settings.videoSpeechLanguage,
                     voiceId: settings.videoVoiceId,
                     voiceName,
                     sampleName

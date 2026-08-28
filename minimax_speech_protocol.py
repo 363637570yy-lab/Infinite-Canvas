@@ -90,6 +90,95 @@ MINIMAX_T2A_MODELS = (
     "speech-01-turbo",
 )
 MINIMAX_DEFAULT_T2A_MODEL = "speech-2.8-hd"
+# Official T2A language_boost enum (platform.minimaxi.com / platform.minimax.io).
+# Upstream default is null; Speech 2.8 then auto-detects 汉字 as Mandarin or Cantonese.
+# Product default is Chinese so sample clips stay Mandarin unless the user picks otherwise.
+MINIMAX_LANGUAGE_BOOSTS = (
+    "Chinese",
+    "Chinese,Yue",
+    "English",
+    "Arabic",
+    "Russian",
+    "Spanish",
+    "French",
+    "Portuguese",
+    "German",
+    "Turkish",
+    "Dutch",
+    "Ukrainian",
+    "Vietnamese",
+    "Indonesian",
+    "Japanese",
+    "Italian",
+    "Korean",
+    "Thai",
+    "Polish",
+    "Romanian",
+    "Greek",
+    "Czech",
+    "Finnish",
+    "Hindi",
+    "Bulgarian",
+    "Danish",
+    "Hebrew",
+    "Malay",
+    "Persian",
+    "Slovak",
+    "Swedish",
+    "Croatian",
+    "Filipino",
+    "Hungarian",
+    "Norwegian",
+    "Slovenian",
+    "Catalan",
+    "Nynorsk",
+    "Tamil",
+    "Afrikaans",
+    "auto",
+)
+MINIMAX_LANGUAGE_BOOST_SET = frozenset(MINIMAX_LANGUAGE_BOOSTS)
+MINIMAX_DEFAULT_LANGUAGE_BOOST = "Chinese"
+_LANGUAGE_BOOST_ALIASES = {
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-hans": "Chinese",
+    "cmn": "Chinese",
+    "mandarin": "Chinese",
+    "chinese": "Chinese",
+    "yue": "Chinese,Yue",
+    "zh-yue": "Chinese,Yue",
+    "zh-hk": "Chinese,Yue",
+    "cantonese": "Chinese,Yue",
+    "chinese,yue": "Chinese,Yue",
+    "chinese-yue": "Chinese,Yue",
+    "en": "English",
+    "en-us": "English",
+    "en-gb": "English",
+    "english": "English",
+    "ja": "Japanese",
+    "jp": "Japanese",
+    "ja-jp": "Japanese",
+    "japanese": "Japanese",
+    "ko": "Korean",
+    "kr": "Korean",
+    "ko-kr": "Korean",
+    "korean": "Korean",
+    "auto": "auto",
+    "none": "auto",
+    "普通话": "Chinese",
+    "中文": "Chinese",
+    "汉语": "Chinese",
+    "粤语": "Chinese,Yue",
+    "广东话": "Chinese,Yue",
+    "英语": "English",
+    "英文": "English",
+    "日语": "Japanese",
+    "日文": "Japanese",
+    "韩语": "Korean",
+    "韩文": "Korean",
+    "自动": "auto",
+    "自动检测": "auto",
+}
 # MiniMax T2A 文档示范句 + 短收束，speech-2.8-hd speed 1.0 实测约 2.5 字/秒，目标 10–12 秒。
 # H3 参考音频单条 2–15 秒、合计 ≤15 秒；样音不要写成成片台词。
 MINIMAX_DEFAULT_SAMPLE_TEXT = "微风拂过柔软的草地，清新的芳香伴随着鸟儿的歌唱。阳光正好。"
@@ -343,6 +432,24 @@ def t2a_model(requested=""):
     return MINIMAX_DEFAULT_T2A_MODEL
 
 
+def t2a_language_boost(value, default=MINIMAX_DEFAULT_LANGUAGE_BOOST):
+    """Map UI/alias input to the official T2A language_boost enum."""
+    fallback = default if default in MINIMAX_LANGUAGE_BOOST_SET else MINIMAX_DEFAULT_LANGUAGE_BOOST
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if text in MINIMAX_LANGUAGE_BOOST_SET:
+        return text
+    mapped = _LANGUAGE_BOOST_ALIASES.get(text)
+    if mapped in MINIMAX_LANGUAGE_BOOST_SET:
+        return mapped
+    key = text.lower().replace("_", "-").replace(" ", "")
+    mapped = _LANGUAGE_BOOST_ALIASES.get(key)
+    if mapped in MINIMAX_LANGUAGE_BOOST_SET:
+        return mapped
+    return fallback
+
+
 def t2a_text(value, default=MINIMAX_DEFAULT_SAMPLE_TEXT, limit=MINIMAX_SAMPLE_TEXT_MAX):
     text = str(value or "").strip() or str(default or "").strip()
     cap = int(limit or MINIMAX_SAMPLE_TEXT_MAX)
@@ -380,7 +487,7 @@ def sample_display_name(name="", voice_id="", voice_name=""):
     return text[:MINIMAX_SAMPLE_NAME_MAX]
 
 
-def build_t2a_request(text, voice_id, model="", sample=True):
+def build_t2a_request(text, voice_id, model="", sample=True, language_boost=""):
     """Non-streaming T2A body. Sample clips stay short; per-shot dialogue is out of scope."""
     voice = str(voice_id or "").strip()
     if not voice:
@@ -390,6 +497,7 @@ def build_t2a_request(text, voice_id, model="", sample=True):
         "model": t2a_model(model),
         "text": t2a_text(text, limit=limit),
         "stream": False,
+        "language_boost": t2a_language_boost(language_boost),
         "voice_setting": {
             "voice_id": voice,
             "speed": 1,

@@ -2913,6 +2913,7 @@ class CanvasSpeechSampleRequest(BaseModel):
     voice_id: str = Field(min_length=1, max_length=200)
     text: str = Field(default="", max_length=minimax_speech.MINIMAX_SAMPLE_TEXT_MAX)
     name: str = Field(default="", max_length=80)
+    language_boost: str = Field(default="", max_length=40)
 
 class ConversationCreateRequest(BaseModel):
     title: str = "新对话"
@@ -19466,7 +19467,13 @@ async def minimax_speech_sample(payload: CanvasSpeechSampleRequest):
     if not api_key:
         raise HTTPException(status_code=400, detail="未配置 MiniMax API Key。")
     try:
-        body = minimax_speech.build_t2a_request(payload.text, payload.voice_id, payload.model, sample=True)
+        body = minimax_speech.build_t2a_request(
+            payload.text,
+            payload.voice_id,
+            payload.model,
+            sample=True,
+            language_boost=payload.language_boost,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     group_id = str(provider.get("minimax_group_id") or "").strip()
@@ -19509,6 +19516,7 @@ async def minimax_speech_sample(payload: CanvasSpeechSampleRequest):
         "filename": filename,
         "model": body["model"],
         "voice_id": payload.voice_id.strip(),
+        "language_boost": body["language_boost"],
         "duration_ms": duration_ms,
         "warning": warning,
     }

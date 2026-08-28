@@ -135,9 +135,33 @@ class MiniMaxT2ARequestTests(unittest.TestCase):
         self.assertFalse(body["stream"])
         self.assertEqual(body["voice_setting"]["voice_id"], "male-qn-qingse")
         self.assertEqual(body["audio_setting"]["format"], "mp3")
+        self.assertEqual(body["language_boost"], "Chinese")
         self.assertNotIn("generate_audio", body)
         self.assertNotIn("images", body)
         self.assertNotIn("prompt", body)
+
+    def test_language_boost_defaults_to_mandarin_not_auto(self):
+        body = speech.build_t2a_request("微风拂过柔软的草地。", "male-qn-qingse")
+        self.assertEqual(body["language_boost"], speech.MINIMAX_DEFAULT_LANGUAGE_BOOST)
+        self.assertEqual(speech.MINIMAX_DEFAULT_LANGUAGE_BOOST, "Chinese")
+        self.assertNotEqual(body["language_boost"], "auto")
+        self.assertEqual(speech.t2a_language_boost(""), "Chinese")
+        self.assertEqual(speech.t2a_language_boost(None), "Chinese")
+
+    def test_language_boost_maps_official_enum_and_aliases(self):
+        yue = speech.build_t2a_request("你好", "male-qn-qingse", language_boost="Chinese,Yue")
+        self.assertEqual(yue["language_boost"], "Chinese,Yue")
+        self.assertEqual(speech.t2a_language_boost("粤语"), "Chinese,Yue")
+        self.assertEqual(speech.t2a_language_boost("Cantonese"), "Chinese,Yue")
+        self.assertEqual(speech.t2a_language_boost("yue"), "Chinese,Yue")
+        self.assertEqual(speech.t2a_language_boost("普通话"), "Chinese")
+        self.assertEqual(speech.t2a_language_boost("English"), "English")
+        self.assertEqual(speech.t2a_language_boost("en"), "English")
+        self.assertEqual(speech.t2a_language_boost("Japanese"), "Japanese")
+        self.assertEqual(speech.t2a_language_boost("auto"), "auto")
+        self.assertEqual(speech.t2a_language_boost("not-a-language"), "Chinese")
+        self.assertIn("Chinese,Yue", speech.MINIMAX_LANGUAGE_BOOSTS)
+        self.assertIn("auto", speech.MINIMAX_LANGUAGE_BOOSTS)
 
     def test_unknown_t2a_model_falls_back_to_default_enum(self):
         body = speech.build_t2a_request("你好", "v1", "not-a-real-model")
@@ -372,6 +396,16 @@ class MiniMaxFetchModelsTests(unittest.TestCase):
         self.assertIn("applyMinimaxSpeechProtocolDefaults(item, {seedModels:true})", js)
         self.assertIn("'audio', 'unknown'", js)
         self.assertIn('<option value="audio">语音</option>', js)
+
+    def test_character_voice_panel_exposes_language_boost(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parents[1] / "static/js/character-voice.js").read_text(encoding="utf-8")
+        self.assertIn('data-cv="language"', js)
+        self.assertIn("Chinese,Yue", js)
+        self.assertIn("language_boost", js)
+        self.assertIn("DEFAULT_LANGUAGE = 'Chinese'", js)
+        self.assertIn("普通话", js)
+        self.assertIn("粤语", js)
 
     def test_empty_official_lists_use_catalog_without_clobbering_subset(self):
         empty = speech.with_official_catalog_defaults({

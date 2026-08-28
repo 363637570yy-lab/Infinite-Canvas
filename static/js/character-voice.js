@@ -10,7 +10,34 @@
         '今天天气不错，我把每个字念清楚。一二三四五，东南西北中。'
     ];
     const GENERIC_NAMES = ['', '音色', '角色样音', 'Voice', 'Audio', 'sample', '读取音色…', '读取音色'];
+    const DEFAULT_LANGUAGE = 'Chinese';
+    const LANGUAGE_OPTIONS = [
+        { value: 'Chinese', label: '普通话' },
+        { value: 'Chinese,Yue', label: '粤语' },
+        { value: 'English', label: '英语' },
+        { value: 'Japanese', label: '日语' },
+        { value: 'Korean', label: '韩语' },
+        { value: 'auto', label: '自动检测' }
+    ];
+    const LANGUAGE_VALUES = new Set(LANGUAGE_OPTIONS.map(item => item.value));
+    const LANGUAGE_ALIASES = {
+        zh: 'Chinese', 'zh-cn': 'Chinese', mandarin: 'Chinese', chinese: 'Chinese',
+        '普通话': 'Chinese', '中文': 'Chinese',
+        yue: 'Chinese,Yue', cantonese: 'Chinese,Yue', 'chinese,yue': 'Chinese,Yue',
+        '粤语': 'Chinese,Yue', '广东话': 'Chinese,Yue',
+        en: 'English', english: 'English', '英语': 'English', '英文': 'English',
+        ja: 'Japanese', jp: 'Japanese', japanese: 'Japanese', '日语': 'Japanese',
+        ko: 'Korean', kr: 'Korean', korean: 'Korean', '韩语': 'Korean',
+        auto: 'auto', '自动': 'auto', '自动检测': 'auto'
+    };
     const voiceCache = {};
+
+    function normalizeSpeechLanguage(value){
+        const text = String(value || '').trim();
+        if(LANGUAGE_VALUES.has(text)) return text;
+        const mapped = LANGUAGE_ALIASES[text] || LANGUAGE_ALIASES[text.toLowerCase().replace(/_/g, '-').replace(/\s+/g, '')];
+        return LANGUAGE_VALUES.has(mapped) ? mapped : DEFAULT_LANGUAGE;
+    }
 
     function esc(value){
         return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[ch]));
@@ -207,6 +234,7 @@
         const models = providerSpeechModels(provider);
         const voices = state.voices || cached.voices || [];
         const model = state.model || models[0] || '';
+        const language = normalizeSpeechLanguage(state.language);
         const voiceId = state.voiceId || voices[0]?.voice_id || '';
         const voiceName = (voices.find(item => item.voice_id === voiceId) || {}).voice_name || '';
         const text = sampleText(state.text);
@@ -221,6 +249,7 @@
         return `<div class="character-voice-panel${extraClass}" data-character-voice-panel="1">
             <select class="cv-provider" data-cv="provider">${providers.map(p => `<option value="${esc(p.id)}" ${p.id === providerId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</select>
             <select class="cv-model" data-cv="model">${(models.length ? models : ['speech-2.8-hd']).map(m => `<option value="${esc(m)}" ${m === model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
+            <select class="cv-language" data-cv="language" title="语言">${LANGUAGE_OPTIONS.map(item => `<option value="${esc(item.value)}" ${item.value === language ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select>
             <select class="cv-voice" data-cv="voice">${voices.length ? voices.map(v => `<option value="${esc(v.voice_id)}" ${v.voice_id === voiceId ? 'selected' : ''}>${esc(v.voice_name || v.voice_id)}</option>`).join('') : '<option value="">读取音色…</option>'}</select>
             ${nameField}
             <textarea class="cv-text" data-cv="text" maxlength="200" rows="2" title="样音试听文本，不要写成整段台词">${esc(text)}</textarea>
@@ -234,6 +263,7 @@
         return {
             providerId: src.speechProviderId || src.videoSpeechProvider || '',
             model: src.speechModel || src.videoSpeechModel || '',
+            language: normalizeSpeechLanguage(src.speechLanguage || src.videoSpeechLanguage),
             voiceId: src.voiceId || src.videoVoiceId || '',
             text: sampleText(src.voiceSampleText || src.videoVoiceSampleText || DEFAULT_TEXT),
             sampleUrl: src.voiceSampleUrl || src.videoVoiceSampleUrl || src.url || '',
@@ -249,6 +279,7 @@
         node.voiceSampleName = isGenericSampleName(node.name) ? name : node.name;
         node.voiceId = sample.voice_id || fields.voiceId || node.voiceId;
         node.speechModel = sample.model || fields.model || node.speechModel;
+        node.speechLanguage = normalizeSpeechLanguage(sample.language_boost || fields.language || node.speechLanguage);
         node.speechProviderId = fields.providerId || node.speechProviderId;
         if(node.type === NODE_TYPE){
             node.url = '';
@@ -266,6 +297,7 @@
         settings.videoVoiceSampleName = name;
         settings.videoVoiceId = sample.voice_id || fields.voiceId || settings.videoVoiceId;
         settings.videoSpeechModel = sample.model || fields.model || settings.videoSpeechModel;
+        settings.videoSpeechLanguage = normalizeSpeechLanguage(sample.language_boost || fields.language || settings.videoSpeechLanguage);
         settings.videoSpeechProvider = fields.providerId || settings.videoSpeechProvider;
         settings.videoCharacterVoice = true;
     }
@@ -279,6 +311,7 @@
             y: Number(p.y) || 0,
             speechProviderId: '',
             speechModel: '',
+            speechLanguage: DEFAULT_LANGUAGE,
             voiceId: '',
             voiceSampleText: DEFAULT_TEXT,
             voiceSampleUrl: '',
@@ -321,6 +354,7 @@
         const showError = hooks?.showError || ((msg, title) => { alert(msg); });
         const providerSel = panel.querySelector('[data-cv="provider"]');
         const modelSel = panel.querySelector('[data-cv="model"]');
+        const languageSel = panel.querySelector('[data-cv="language"]');
         const voiceSel = panel.querySelector('[data-cv="voice"]');
         const nameInput = panel.querySelector('[data-cv="name"]');
         const textInput = panel.querySelector('[data-cv="text"]');
@@ -329,6 +363,7 @@
         const persist = () => {
             if(providerSel) node.speechProviderId = providerSel.value;
             if(modelSel) node.speechModel = modelSel.value;
+            if(languageSel) node.speechLanguage = normalizeSpeechLanguage(languageSel.value);
             if(voiceSel) node.voiceId = voiceSel.value;
             if(textInput) node.voiceSampleText = textInput.value;
             if(nameInput){
@@ -342,7 +377,7 @@
             }
             hooks?.onChange?.();
         };
-        [providerSel, modelSel, voiceSel, nameInput, textInput].forEach(el => {
+        [providerSel, modelSel, languageSel, voiceSel, nameInput, textInput].forEach(el => {
             if(!el) return;
             el.onmousedown = e => e.stopPropagation();
             el.onclick = e => e.stopPropagation();
@@ -382,12 +417,14 @@
                         provider_id: node.speechProviderId,
                         model: node.speechModel || '',
                         voice_id: node.voiceId,
+                        language_boost: normalizeSpeechLanguage(node.speechLanguage),
                         text: sampleText(node.voiceSampleText || DEFAULT_TEXT),
                         name: sampleName
                     });
                     applySampleToNode(node, sample, {
                         providerId: node.speechProviderId,
                         model: node.speechModel,
+                        language: node.speechLanguage,
                         voiceId: node.voiceId,
                         voiceName,
                         sampleName
@@ -423,6 +460,9 @@
         PROTOCOL,
         NODE_TYPE,
         DEFAULT_TEXT,
+        DEFAULT_LANGUAGE,
+        LANGUAGE_OPTIONS,
+        normalizeSpeechLanguage,
         isGenericSampleName,
         looksLikeVoiceId,
         displaySampleName,

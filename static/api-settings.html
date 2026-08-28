@@ -169,6 +169,7 @@
                                     <span class="ms-line">验证只打 <span class="inline-code">POST /v1/get_voice</span> 和 <span class="inline-code">GET /v1/models</span>，不调用 T2A、生图或 <span class="inline-code">POST /v2/video_generation</span>。</span>
                                     <span class="ms-line">模型目录来自官方枚举：聊天 <span class="inline-code">MiniMax-M3</span> 等、视频 <span class="inline-code">MiniMax-H3</span>、图片 <span class="inline-code">image-01</span>、语音 <span class="inline-code">speech-2.8-hd</span>。不要把 <span class="inline-code">MiniMax-M2</span> 勾进视频。</span>
                                     <span class="ms-line">音色节点生成一条样音，连到视频节点后当作音频1 / 官方 H3 的 <span class="inline-code">reference_audio</span>，或继续走局域网 H3 网关。不会按每句台词重复合成。Hailuo 02/2.3 与音乐模型本轮未接。</span>
+                                    <span class="ms-line">样音默认按普通话合成（<span class="inline-code">language_boost=Chinese</span>）。需要粤语时在音色面板选粤语，值为 <span class="inline-code">Chinese,Yue</span>。不要依赖自动检测区分普通话和粤语。</span>
                                 </div>
                             </label>
                             <label class="field full api-key-field">
