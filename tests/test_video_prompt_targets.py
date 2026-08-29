@@ -931,6 +931,21 @@ class ValidateSeedanceTests(unittest.TestCase):
             self.assertIn("不写抽象情绪词", skill)
             self.assertIn("不发明屏幕文字", skill)
 
+    def test_h3_ref2va_skill_teaches_shot_size_and_face_scale(self):
+        ref = vpt.load_target_skill("h3-ref2va")
+        fl = vpt.load_target_skill("h3-fl2va")
+        self.assertIn("必须点名景别", ref)
+        self.assertIn("胸像", ref)
+        self.assertIn("脸占画面主要面积", ref)
+        self.assertIn("小幅度缓慢拉远", ref)
+        self.assertIn("户型走镜", ref)
+        self.assertNotIn("禁止远景", ref)
+        self.assertIn("胸像近景从 <Subject 1>", ref)
+        self.assertIn("The camera pulls out with small amplitude at slow speed, revealing the table", ref)
+        self.assertNotIn("A medium shot opens on <Subject 1>", ref)
+        self.assertNotIn("必须点名景别", fl)
+        self.assertIn("镜头小幅度缓慢推进", fl)
+
     def test_english_seedance_is_hint_when_language_zh(self):
         result = vpt.validate_target_output("seedance-2.5", self.GOOD_25, xinghua_ctx(), language="zh")
         self.assertEqual(result["errors"], [])

@@ -59,9 +59,11 @@ N/A
   - 角色音色关闭且参考音频关闭时：不要写 `audio reuse` / `audio reference`
   - 角色音色开启时：必须写成 `[reference generation + audio reference]`（可再拼 `keyframe completion`），禁止单独用 `audio reuse`
 - `retention_analysis`：每个标签一行，必须用官方标记之一：`fully_preserved` / `partially_preserved` / `attribute_transfer` / `weak_reference`。户型/空间写结构保持，不要只写脸和衣服。
-- `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。选中文时不要写 `The target video is ...`，写「目标视频采用……」。
+- `detailed_description`：先用一两句定风格（语言跟随生成语言），再按播放顺序写镜。generation 任务尽量写到 350–500 词（中文按汉字计），写清景别、构图、位置、动作、运镜、声音、参考内容在哪一帧生效。不要写成情节摘要。选中文时不要写 `The target video is ...`，写「目标视频采用……」。
 - `[Shot 1]` 不带时间码；之后 `[Shot N] At MM:SS.mmm, the camera cuts to ...`，时间严格递增且小于用户给出的时长秒数。单连续镜头优先；15 秒内尽量不超过 2 次切镜。时间码按真实动作估点，不要为填满时长放慢。
-- 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pushes in with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。
+- 每个 `[Shot N]` 必须点名景别，写在镜头开头。中文用：`大特写` / `特写` / `近景` / `胸像` / `中近景` / `中景` / `全景` / `远景` / `双人中近景`。英文用：`extreme close-up` / `close-up` / `chest-up` / `medium close-up` / `medium shot` / `wide shot` / `long shot` / `two-shot`。不要只写「镜头」而不说远近。
+- 人物露脸的默认路径：先用近景 / 胸像 / 中近景把脸放到画面主要面积，再按需要用同一镜 `Pull Out` 拉开身体或环境。需要空间时，切到背影、侧背或空镜。导演本已写远景 / 全景 / 全身，或户型走镜、环境空镜、群戏建立：按原意写，不要改成脸部特写。
+- 运镜写完整句子，需要时带类型 + 幅度 + 速度。英文：`The camera pulls out with small amplitude at slow speed.` 中文写成同等信息。常用类型：`Push In / Pull Out`、`Pan Left / Pan Right`、`Truck Left / Truck Right`、`Tilt Up / Tilt Down`、`Pedestal Up / Pedestal Down`、`Zoom In / Zoom Out`、`Arc Shot`、`Tracking Shot`、`Static Shot`、`Shake Slightly`、`POV`。幅度 `with small/large amplitude`，速度 `at slow/fast speed`。中等幅度和常速可省略。人物露脸的默认运镜是小幅度缓慢拉远，不是开场中景再推进。
 - 开口说话的主体写成 `<Subject 1> (S1) says: <d>[Chinese] 原文</d>`。`(S1)` 按出声顺序编号，不说话的主体不要编号。画外音用 `says in an off-screen voiceover`，并写嘴唇保持闭合。台词只准原样保留或按时长舍弃，不准改写、不准新编。中文台词按约 3–4 字/秒估算时长，必须能在所在镜头的时间里自然说完，说不完就整句舍弃。15 秒以内建议不超过 2 句对白。
 - 画面里真实可见的牌匾、字幕、霓虹、按钮原文，用英文双引号原样包住，例如 `"营业中"`，不要翻译。导演本没要求、附图里也看不见的，不要发明屏幕字幕、水印或 Logo。
 - 外观以附图为准。不换装时不要编衣服颜色或纹样，写「沿用 <Picture N> 里的穿着」即可。
@@ -73,6 +75,7 @@ N/A
 H3 没有 negative prompt 段。不要输出「禁止：畸形、水印、extra fingers」这类清单；「no camera shake」会把 camera shake 喂给模型。改成正向锁死：
 
 - 身份：跨镜保持脸、发型、服装与 `<Picture N>` 一致
+- 脸占比：人物露脸时用近景 / 胸像 / 中近景，脸占画面主要面积；要环境就拉远或切背影，不要开场就全身远景正脸
 - 空间：写死相对站位，例如始终在画面左侧
 - 光线：光源方向和色温只定义一次，后续引用
 - 色调：颜色词只在开头定义
@@ -122,10 +125,10 @@ retention_analysis:
 
 detailed_description:
 目标视频采用电影感真人宫廷风格，黄昏暖光。
-[Shot 1] 中景从 <Subject 1> 坐在石桌旁开始，衣着和面容对齐 <Picture 1>。他正在批阅奏折。镜头小幅度缓慢推进。
-[Shot 2] At 00:04.000, the camera cuts to <Subject 2> 从小径走入并鞠躬，外观对齐 <Picture 2>。<Subject 2> (S1) says: <d>[Chinese] 臣妾参见皇上。</d>
-[Shot 3] At 00:08.000, the camera holds as <Subject 1> 抬头微笑。<Subject 1> (S2) says: <d>[Chinese] 免礼。</d>
-[Shot 4] At 00:11.500, a two-shot shows them 对坐，花瓣飘落。
+[Shot 1] 胸像近景从 <Subject 1> 坐在石桌旁开始，脸占画面主要面积，衣着和面容对齐 <Picture 1>。他正在批阅奏折。镜头小幅度缓慢拉远，逐渐露出石桌和身侧杏花。
+[Shot 2] At 00:04.000, the camera cuts to 中近景 <Subject 2> 从小径走入并鞠躬，外观对齐 <Picture 2>。<Subject 2> (S1) says: <d>[Chinese] 臣妾参见皇上。</d>
+[Shot 3] At 00:08.000, the camera holds as 特写 <Subject 1> 抬头微笑。<Subject 1> (S2) says: <d>[Chinese] 免礼。</d>
+[Shot 4] At 00:11.500, 双人中近景对坐，花瓣飘落。
 
 overall_soundscape:
 园中轻风、远处鸟鸣、丝绸轻微摩擦。
@@ -150,10 +153,10 @@ retention_analysis:
 
 detailed_description:
 The target video is in a cinematic live-action palace style with warm dusk light.
-[Shot 1] A medium shot opens on <Subject 1> seated at a stone table among apricot trees, matching the robe and face from <Picture 1>. He reads a memorial. The camera pushes in with small amplitude at slow speed.
-[Shot 2] At 00:04.000, the camera cuts to <Subject 2> walking in from the path and bowing, matching <Picture 2>. <Subject 2> (S1) says: <d>[Chinese] 臣妾参见皇上。</d>
-[Shot 3] At 00:08.000, the camera holds as <Subject 1> looks up and smiles. <Subject 1> (S2) says: <d>[Chinese] 免礼。</d>
-[Shot 4] At 00:11.500, a two-shot shows them seated together while petals drift.
+[Shot 1] A chest-up close-up opens on <Subject 1> seated at a stone table among apricot trees, face filling most of the frame, matching the robe and face from <Picture 1>. He reads a memorial. The camera pulls out with small amplitude at slow speed, revealing the table and nearby blossoms.
+[Shot 2] At 00:04.000, the camera cuts to a medium close-up of <Subject 2> walking in from the path and bowing, matching <Picture 2>. <Subject 2> (S1) says: <d>[Chinese] 臣妾参见皇上。</d>
+[Shot 3] At 00:08.000, the camera holds on a close-up as <Subject 1> looks up and smiles. <Subject 1> (S2) says: <d>[Chinese] 免礼。</d>
+[Shot 4] At 00:11.500, a medium close-up two-shot shows them seated together while petals drift.
 
 overall_soundscape:
 Soft garden ambience, distant birdsong, light breeze through leaves, faint rustle of silk.
@@ -178,7 +181,7 @@ retention_analysis:
 
 detailed_description:
 目标视频是写实室内走镜。
-[Shot 1] 镜头从 <Picture 1> 的入户开始，沿走廊连续进入每个可见房间，保持图纸空间顺序。镜头小幅度缓慢前移。
+[Shot 1] 室内中景走镜从 <Picture 1> 的入户开始，沿走廊连续进入每个可见房间，保持图纸空间顺序。镜头小幅度缓慢前移。
 
 overall_soundscape:
 安静室内环境声、轻微脚步、细小门扣声。
@@ -200,6 +203,8 @@ N/A
 - [ ] 每句台词按 3–4 字/秒能在所在镜头时间内说完
 - [ ] 除 [Shot 1] 外每镜都有 At MM:SS.mmm，时间递增且小于时长
 - [ ] 没有 `@图` / `@图片` / `@Image` / 对齐行残留
+- [ ] 每个 [Shot N] 点名了景别
+- [ ] 人物露脸用近景/胸像/中近景，或先锁脸再拉远；户型/空镜/导演本已写的远景按原意
 - [ ] 身份/站位/光线用正向锁死，没有独立负面词表
 - [ ] overall_soundscape 不含对白和 BGM；没配乐时 non_diegetic_music 为 N/A
 - [ ] 未要求时没有发明屏幕字幕或水印
