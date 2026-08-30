@@ -1,5 +1,5 @@
 (function(){
-    const VERSION = '2026.08.27.voice-card.2';
+    const VERSION = '2026.08.30.voice-output.1';
     const scripts = [
         '/static/js/i18n-core.js',
         '/static/js/i18n/common.js',

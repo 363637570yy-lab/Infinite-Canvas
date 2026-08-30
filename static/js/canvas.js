@@ -181,19 +181,19 @@ function ensureCanvasVideoPreviewDelegation(){
     nodesEl.addEventListener('mousedown', e => {
         if(e.button !== 0) return;
         if(e.target.closest?.('.output-del,.port,.resize-handle')) return;
-        if(e.target.closest?.('.canvas-video-play, img[data-preview-kind="video"]')){
+        if(e.target.closest?.('.canvas-video-play, img[data-preview-kind="video"], audio, .output-audio-wrap, .video-input-audio')){
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
             return;
         }
         const wrap = e.target.closest?.('.video-card,.output-img-wrap');
-        if(wrap?.querySelector?.('img[data-preview-kind="video"], .canvas-video-play, video[data-url]')){
+        if(wrap?.querySelector?.('img[data-preview-kind="video"], .canvas-video-play, video[data-url], audio')){
             e.stopPropagation();
         }
     }, true);
     nodesEl.addEventListener('click', e => {
-        if(e.target.closest?.('.output-del')) return;
+        if(e.target.closest?.('.output-del, audio, .output-audio-wrap, .video-input-audio')) return;
         const playBtn = e.target.closest?.('.canvas-video-play');
         const wrap = e.target.closest?.('.output-img-wrap,.media-card,.image-preview-wrap');
         if(!wrap || !nodesEl.contains(wrap)) return;
@@ -223,7 +223,7 @@ function ensureCanvasVideoPreviewDelegation(){
         }
     }, true);
     nodesEl.addEventListener('dblclick', e => {
-        if(e.target.closest?.('.output-del,.canvas-video-play')) return;
+        if(e.target.closest?.('.output-del,.canvas-video-play, audio, .output-audio-wrap, .video-input-audio')) return;
         const wrap = e.target.closest?.('.output-img-wrap,.media-card,.image-preview-wrap');
         if(!wrap || !nodesEl.contains(wrap)) return;
         const url = canvasMediaUrlFromEl(wrap);
@@ -2803,60 +2803,40 @@ function addVoiceNode(point){
         mediaKind:'audio'
     });
 }
+function voiceOutputNodes(voiceNode){
+    return connections
+        .filter(c => c.from === voiceNode?.id)
+        .map(c => nodes.find(n => n.id === c.to))
+        .filter(n => n?.type === 'output');
+}
 function attachCanvasVoiceSampleNode(voiceNode, sample){
     const url = String(sample?.url || '').trim();
     if(!voiceNode || !url) return null;
     const cv = window.CharacterVoice;
-    let audioNode = voiceNode.voiceSampleNodeId ? nodes.find(n => n.id === voiceNode.voiceSampleNodeId) : null;
-    const keptName = audioNode && cv?.isGenericSampleName && !cv.isGenericSampleName(audioNode.name)
-        ? audioNode.name
-        : '';
     const name = cv?.displaySampleName
-        ? cv.displaySampleName(voiceNode.name || voiceNode.voiceSampleName || keptName || sample.name, '', '')
-        : String(voiceNode.name || keptName || sample.name || '角色样音');
-    const x = (Number(voiceNode.x) || 0) + (Number(voiceNode.w) || 280) + 48;
-    const y = Number(voiceNode.y) || 0;
-    if(audioNode && audioNode.type === 'image' && mediaKindForNode(audioNode) === 'audio'){
-        audioNode.url = url;
-        audioNode.name = name;
-        audioNode.mediaKind = 'audio';
-        audioNode.role = 'character_voice';
+        ? cv.displaySampleName(voiceNode.name || voiceNode.voiceSampleName || sample.name, '', '')
+        : String(voiceNode.name || sample.name || '角色样音');
+    const item = {url, name, kind:'audio', role:'character_voice', sourceType:'voice'};
+    voiceNode.generatedOutputs = Array.isArray(voiceNode.generatedOutputs) ? voiceNode.generatedOutputs : [];
+    if(!voiceNode.generatedOutputs.some(existing => outputUrlValue(existing) === url)){
+        voiceNode.generatedOutputs.push(item);
+    }
+    let outs = voiceOutputNodes(voiceNode);
+    if(!outs.length){
+        const x = (Number(voiceNode.x) || 0) + (Number(voiceNode.w) || 380) + 48;
+        const y = Number(voiceNode.y) || 0;
+        const out = {id:uid('out'), type:'output', x, y, images:[]};
+        nodes.push(out);
+        connections.push({id: uid('c'), from: voiceNode.id, to: out.id});
+        outs = [out];
+        appendOutputImagesWithoutDuplicates(out, voiceNode.generatedOutputs);
     } else {
-        const staleId = audioNode?.id;
-        if(staleId){
-            nodes = nodes.filter(n => n.id !== staleId);
-            connections = connections.filter(c => c.from !== staleId && c.to !== staleId);
-        }
-        audioNode = {
-            id: uid('img'),
-            type: 'image',
-            x,
-            y,
-            url,
-            name,
-            mediaKind: 'audio',
-            role: 'character_voice'
-        };
-        nodes.push(audioNode);
-        voiceNode.voiceSampleNodeId = audioNode.id;
+        outs.forEach(out => appendOutputImagesWithoutDuplicates(out, [item]));
     }
-    if(!connections.some(c => c.from === voiceNode.id && c.to === audioNode.id)){
-        connections.push({id: uid('c'), from: voiceNode.id, to: audioNode.id});
-    }
-    const dropVoiceToVideo = [];
-    connections.forEach(conn => {
-        if(conn.from !== voiceNode.id || conn.to === audioNode.id) return;
-        const dest = nodes.find(n => n.id === conn.to);
-        if(!dest || dest.type !== 'video') return;
-        if(!connections.some(c => c.from === audioNode.id && c.to === dest.id)){
-            connections.push({id: uid('c'), from: audioNode.id, to: dest.id});
-        }
-        dropVoiceToVideo.push(conn);
-    });
-    if(dropVoiceToVideo.length){
-        connections = connections.filter(c => !dropVoiceToVideo.includes(c));
-    }
-    return audioNode;
+    voiceNode.voiceSampleUrl = url;
+    voiceNode.voiceSampleName = name;
+    voiceNode.voiceSampleOutputId = outs[0].id;
+    return outs[0];
 }
 function beginCanvasAudioNodeRename(node, labelEl, ev){
     if(!node || !labelEl) return;
@@ -3478,6 +3458,7 @@ function linkCreateOptions(state){
     if(state.originKind === 'out'){
         if(node.type === 'voice'){
             return [
+                {type:'output', label:'Output', icon:'circle-dot'},
                 {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
             ];
         }
@@ -6607,13 +6588,29 @@ function renderNode(node){
             connections.push({id: uid('c'), from: node.id, to: linkedAudio.id});
             scheduleSave();
         }
+        const linkedOut = voiceOutputNodes(node)[0]
+            || (node.voiceSampleOutputId ? nodes.find(n => n.id === node.voiceSampleOutputId && n.type === 'output') : null);
+        if(linkedOut && !connections.some(c => c.from === node.id && c.to === linkedOut.id)){
+            connections.push({id: uid('c'), from: node.id, to: linkedOut.id});
+            scheduleSave();
+        }
         const voiceBody = window.CharacterVoice?.renderBody?.(node, {
             providers: apiProviders,
-            hint: trOr('canvas.voiceHint', '每个音色节点生成一条样音，只出现在右侧音频卡上。点音频卡名称改成角色名。生成后音色会连到音频卡；若已连视频，音频卡会再连到视频。样音约 10–12 秒，不要写成台词。', 'Each Voice node makes one sample on a separate audio card. Click the card name to rename it. Generating links Voice to the card, and the card to Video if Voice was already connected. Keep the clip around 10–12 seconds, not dialogue.'),
+            hint: trOr('canvas.voiceHint', '每次生成都会追加到右侧大框，不会覆盖旧样音。点框里的音频可选为当前音色，也可单独拉出。连到视频后可直接试听。样音约 10–12 秒，不要写成台词。', 'Each generate appends to the output box on the right and does not replace earlier samples. Click a clip to select it, or drag it out. After connecting to Video you can preview it there. Keep the clip around 10–12 seconds, not dialogue.'),
             onChange(){
                 const audio = node.voiceSampleNodeId ? nodes.find(n => n.id === node.voiceSampleNodeId) : null;
                 if(audio && window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)){
                     audio.name = node.name;
+                }
+                if(node.voiceSampleUrl && window.CharacterVoice && !window.CharacterVoice.isGenericSampleName(node.name)){
+                    voiceOutputNodes(node).forEach(out => {
+                        (out.images || []).forEach(item => {
+                            if(item && typeof item === 'object' && outputUrlValue(item) === node.voiceSampleUrl) item.name = node.name;
+                        });
+                    });
+                    (node.generatedOutputs || []).forEach(item => {
+                        if(item && typeof item === 'object' && outputUrlValue(item) === node.voiceSampleUrl) item.name = node.name;
+                    });
                 }
                 scheduleSave();
             },
@@ -6711,6 +6708,38 @@ function bindOutputWrap(wrap, node){
             const url = wrap.dataset.outputUrl;
             if(url) downloadUrl(url, outputDownloadName(url)).catch(err => alert(err.message || '下载失败'));
         };
+    }
+    if(audio && wrap.classList.contains('output-audio-wrap')){
+        const voice = connections.filter(c => c.to === node.id).map(c => nodes.find(n => n.id === c.from)).find(n => n?.type === 'voice');
+        const url = wrap.dataset.outputUrl || audio.dataset.url || '';
+        if(voice && url && voice.voiceSampleUrl === url) wrap.classList.add('is-selected');
+        wrap.draggable = true;
+        wrap.ondragstart = e => {
+            if(e.target.closest?.('audio, .output-del, button')){
+                e.preventDefault();
+                return;
+            }
+            e.stopPropagation();
+            wrap.dataset.dragging = '1';
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('application/x-canvas-output-image', url);
+            e.dataTransfer.setData('text/uri-list', url);
+        };
+        wrap.ondragend = () => setTimeout(() => { delete wrap.dataset.dragging; }, 0);
+        wrap.addEventListener('click', e => {
+            if(e.target.closest?.('audio, .output-del, button') || wrap.dataset.dragging === '1' || !voice || !url) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if(voice.voiceSampleUrl === url) return;
+            voice.voiceSampleUrl = url;
+            const item = (node.images || []).find(img => outputUrlValue(img) === url);
+            if(item && typeof item === 'object' && item.name) voice.voiceSampleName = item.name;
+            render();
+            scheduleSave();
+        });
+        audio.onmousedown = e => e.stopPropagation();
+        audio.onclick = e => e.stopPropagation();
+        audio.ondragstart = e => { e.preventDefault(); e.stopPropagation(); };
     }
     if(del){
         del.onmousedown = e => e.stopPropagation();
@@ -9123,17 +9152,18 @@ function renderVideoImageInputs(list, node, imageInputs){
     list.innerHTML = imageInputs.length ? '' : `<div class="text-[11px] text-gray-300 py-2">${tr('canvas.groupEmpty')}</div>`;
     imageInputs.forEach((src, i) => {
         const item = document.createElement('div');
-        item.className = 'input-item video-input-item';
+        const kind = mediaKindForRef(src.refs?.[0] || {url:src.preview || ''});
+        item.className = kind === 'audio' ? 'input-item video-input-item is-audio' : 'input-item video-input-item';
         item.draggable = true;
         item.dataset.sourceId = src.id;
-        const kind = mediaKindForRef(src.refs?.[0] || {url:src.preview || ''});
+        const mediaUrl = src.preview || src.refs?.[0]?.url || '';
         const previewHtml = kind === 'video'
-            ? canvasVideoPreviewHtml(src.preview || src.refs?.[0]?.url || '', 256, '', true)
+            ? canvasVideoPreviewHtml(mediaUrl, 256, '', true)
             : kind === 'audio'
-            ? `<div class="video-input-audio"><i data-lucide="file-audio" class="w-6 h-6"></i><span>${escapeHtml(src.label || 'Audio')}</span></div>`
-            : src.preview && !isMissingAssetUrl(src.preview)
-            ? canvasPreviewImgHtml(src.preview, 256, '', true)
-            : (src.preview ? missingAssetHtml(src.preview, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
+            ? `<div class="video-input-audio"><i data-lucide="file-audio" class="w-5 h-5"></i><span>${escapeHtml(src.label || 'Audio')}</span>${mediaUrl && !isMissingAssetUrl(mediaUrl) ? `<audio src="${escapeAttr(mediaUrl)}" data-url="${escapeAttr(mediaUrl)}" controls preload="metadata" controlslist="nodownload noplaybackrate noremoteplayback"></audio>` : ''}</div>`
+            : mediaUrl && !isMissingAssetUrl(mediaUrl)
+            ? canvasPreviewImgHtml(mediaUrl, 256, '', true)
+            : (mediaUrl ? missingAssetHtml(mediaUrl, true) : '<i data-lucide="image" class="w-6 h-6 text-slate-400"></i>');
         let typeLabel = `图${i + 1}`;
         let frameLabel = '';
         if(kind === 'audio'){
@@ -9160,7 +9190,18 @@ function renderVideoImageInputs(list, node, imageInputs){
         item.ondragend = () => { internalDrag = false; setTimeout(() => { delete item.dataset.dragging; }, 0); };
         item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
         item.ondrop = e => { e.preventDefault(); e.stopPropagation(); reorderInput(node, e.dataTransfer.getData('application/x-canvas-input'), src.id); internalDrag = false; };
-        bindCanvasInputItemLightbox(item, src.preview || src.refs?.[0]?.url || '', node);
+        const audioEl = item.querySelector('audio');
+        if(audioEl){
+            audioEl.addEventListener('pointerdown', e => {
+                e.stopPropagation();
+                item.draggable = false;
+            });
+            audioEl.addEventListener('pointerup', () => { item.draggable = true; });
+            audioEl.addEventListener('pointercancel', () => { item.draggable = true; });
+            audioEl.addEventListener('click', e => e.stopPropagation());
+            audioEl.ondragstart = e => { e.preventDefault(); e.stopPropagation(); };
+        }
+        if(kind !== 'audio') bindCanvasInputItemLightbox(item, mediaUrl, node);
         list.appendChild(item);
     });
     bindCanvasPreviewImageFallbacks(list);
@@ -10685,7 +10726,20 @@ function appendOutputImagesWithoutDuplicates(out, images, compareRef=null, metas
 function syncLatestGeneratedOutputToConnection(fromId, toId){
     const source = nodes.find(n => n.id === fromId);
     const out = nodes.find(n => n.id === toId);
-    if(!source || !out || out.type !== 'output' || !CANVAS_MEDIA_OUTPUT_TYPES.includes(source.type)) return false;
+    if(!source || !out || out.type !== 'output') return false;
+    if(source.type === 'voice'){
+        const list = (source.generatedOutputs || []).filter(item => outputUrlValue(item));
+        if(!list.length && source.voiceSampleUrl){
+            list.push({url:source.voiceSampleUrl, name:source.voiceSampleName || '角色样音', kind:'audio', role:'character_voice'});
+        }
+        if(!list.length) return false;
+        if(outputNodesForSource(source.id).some(n => n.id !== out.id)){
+            const latest = latestGeneratedOutputItem(source);
+            return latest ? appendOutputImagesWithoutDuplicates(out, [latest]) > 0 : false;
+        }
+        return appendOutputImagesWithoutDuplicates(out, list) > 0;
+    }
+    if(!CANVAS_MEDIA_OUTPUT_TYPES.includes(source.type)) return false;
     // 源节点已有别的输出时，新拉的输出是空槽，不能把历史成片再拷一份进去。
     if(outputNodesForSource(source.id).some(n => n.id !== out.id)) return false;
     const latest = latestGeneratedOutputItem(source);
@@ -10744,13 +10798,19 @@ function mediaRefsFromNode(node){
 function generatorSources(gen){
     return connections.filter(c => c.to === gen.id).map(c => nodes.find(n => n.id === c.from)).filter(Boolean).map(n => {
         if(n.type === 'output' && (n.images||[]).length){
-            // 从 output 节点取最新一张图当作 reference 给下游
+            // 从 output 节点取最新一张图当作 reference 给下游；音色框优先用当前选中的样音。
             const reversed = [...n.images].map((item, index) => ({item, index})).reverse();
-            const found = reversed.find(entry => outputUrlValue(entry.item));
+            const voice = connections.filter(c => c.to === n.id).map(c => nodes.find(x => x.id === c.from)).find(x => x?.type === 'voice');
+            const selectedUrl = String(voice?.voiceSampleUrl || '').trim();
+            const found = (selectedUrl && reversed.find(entry => outputUrlValue(entry.item) === selectedUrl))
+                || reversed.find(entry => outputUrlValue(entry.item));
             if(found){
                 const last = outputUrlValue(found.item);
                 const kind = mediaKindForOutputItem(found.item);
-                return {id:n.id, type:'outputImage', label:'上游输出', preview:last, refs:[{url:last, name:'output.png', kind, nodeId:n.id, outputIndex:found.index}], prompt:''};
+                const itemName = found.item && typeof found.item === 'object' ? String(found.item.name || '').trim() : '';
+                const refRole = (found.item && typeof found.item === 'object' && found.item.role)
+                    || (voice && kind === 'audio' ? 'character_voice' : '');
+                return {id:n.id, type:'outputImage', label:itemName || (kind === 'audio' ? '上游音频' : '上游输出'), preview:last, refs:[{url:last, name:itemName || (kind === 'audio' ? 'output.mp3' : 'output.png'), kind, role:refRole, nodeId:n.id, outputIndex:found.index}], prompt:''};
             }
         }
         if(CANVAS_MEDIA_OUTPUT_TYPES.includes(n.type)){
@@ -12683,6 +12743,7 @@ function deleteNode(id, event){
     destroyLTXEditor(nodes.find(n => n.id === id));
     nodes.forEach(n => {
         if(n.voiceSampleNodeId === id) n.voiceSampleNodeId = '';
+        if(n.voiceSampleOutputId === id) n.voiceSampleOutputId = '';
     });
     nodes = nodes.filter(n => n.id !== id);
     connections = connections.filter(c => c.from !== id && c.to !== id);
@@ -13474,7 +13535,7 @@ function renderOutputMedia(item, useGridLayout=false, options={}){
         return `<div class="output-img-wrap" data-output-url="${safe}"${gridStyle}>${canvasVideoPreviewHtml(url, useGridLayout ? 512 : 768, 'alt="" data-video-fallback-attrs="controls data-output-video-fallback=&quot;1&quot;"')}${timePill}<button class="canvas-video-play output-video-play" type="button" title="播放"><i data-lucide="play"></i></button><div class="output-video-badge"><i data-lucide="play" class="w-3 h-3"></i>VIDEO</div><button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'audio'){
-        return `<div class="output-img-wrap output-audio-wrap" data-output-url="${safe}"${gridStyle}><div class="output-audio-card"><i data-lucide="file-audio" class="w-7 h-7"></i><span>${escapeHtml(outputImageName(url))}</span><audio src="${safe}" data-url="${safe}" controls preload="metadata"></audio></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
+        return `<div class="output-img-wrap output-audio-wrap" data-output-url="${safe}"${gridStyle}><div class="output-audio-card"><i data-lucide="file-audio" class="w-7 h-7"></i><span>${escapeHtml(meta.name || outputImageName(url))}</span><audio src="${safe}" data-url="${safe}" controls preload="metadata"></audio></div>${timePill}<button class="output-del" title="${tr('common.delete')}">×</button></div>`;
     }
     if(kind === 'text' || kind === 'file'){
         const icon = kind === 'text' ? 'file-text' : 'file';
@@ -13533,6 +13594,8 @@ function appendOutputImages(out, images, compareRef, metas=[], layout=null){
         const item = {url:outputUrlValue(url), viewed:false, runMs:meta.runMs || 0, run:meta.run || null};
         if(source.name) item.name = source.name;
         if(source.kind || source.mediaKind) item.kind = source.kind || source.mediaKind;
+        if(source.role) item.role = source.role;
+        if(source.sourceType) item.sourceType = source.sourceType;
         if(meta.kind) item.kind = meta.kind;
         if(meta.grid) item.grid = meta.grid;
         return item;
@@ -13607,9 +13670,14 @@ function navigateOutputLightbox(direction){
 }
 function createImageCardFromOutput(url, point){
     if(!ensureCanvas() || !url) return;
-    if(mediaKindForRef(url) !== 'image') return;
+    const kind = mediaKindForRef(url);
+    if(kind !== 'image' && kind !== 'audio') return;
     const p = point || defaultPoint(0, 0);
-    nodes.push({id:uid('img'), type:'image', x:p.x, y:p.y, url, name:outputImageName(url)});
+    const item = nodes.filter(n => n.type === 'output').flatMap(n => n.images || []).find(img => outputUrlValue(img) === url);
+    const name = (item && typeof item === 'object' && item.name) ? item.name : outputImageName(url);
+    const node = {id:uid('img'), type:'image', x:p.x, y:p.y, url, name, mediaKind:kind};
+    if(kind === 'audio') node.role = 'character_voice';
+    nodes.push(node);
     render();
     scheduleSave();
 }
@@ -14913,7 +14981,7 @@ function startLink(e, originId, originKind){
                 render();
             }
         } else if(originKind === 'out'){
-            if(source && CANVAS_GENERATOR_TYPES.includes(source.type)){
+            if(source && (CANVAS_GENERATOR_TYPES.includes(source.type) || source.type === 'voice')){
                 const p = screenToWorld(e2.clientX, e2.clientY);
                 pushUndo();
                 const out = {id:uid('out'), type:'output', x:p.x, y:p.y - 63, images:[]};
@@ -14992,7 +15060,7 @@ function canConnect(fromId, toId){
     if(to.type === 'llm') return ['prompt','loop','promptGroup','llm','image','group','output'].includes(from.type);
     if(from.type === 'llm') return CANVAS_GENERATOR_TYPES.includes(to.type);
     if(from.type === 'voice'){
-        if(to.type === 'video') return true;
+        if(to.type === 'video' || to.type === 'output') return true;
         return to.type === 'image' && mediaKindForNode(to) === 'audio';
     }
     return CANVAS_GENERATOR_TYPES.includes(to.type) && ['image','prompt','loop','group','promptGroup','output','llm'].includes(from.type);

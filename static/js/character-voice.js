@@ -317,6 +317,8 @@
             voiceSampleUrl: '',
             voiceSampleName: '',
             voiceSampleNodeId: '',
+            voiceSampleOutputId: '',
+            generatedOutputs: [],
             url: '',
             name: '音色',
             mediaKind: 'audio'
@@ -445,7 +447,7 @@
         injectStyles();
         const wrap = document.createElement('div');
         wrap.className = 'voice-node-body generator-body';
-        const hint = hooks?.hint || '每个音色节点生成一条样音，只出现在右侧音频卡上。点音频卡名称改成角色名。生成后音色会连到音频卡；若已连视频，音频卡会再连到视频。样音约 10–12 秒，不要写成台词。';
+        const hint = hooks?.hint || '每次生成都会追加到右侧大框，不会覆盖旧样音。点框里的音频可选为当前音色，也可单独拉出。连到视频后可直接试听。样音约 10–12 秒，不要写成台词。';
         wrap.innerHTML = `<div class="voice-node-hint">${esc(hint)}</div>` + panelHtml({
             ...readStateFrom(node),
             sampleUrl: '',

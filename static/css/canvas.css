@@ -582,7 +582,8 @@ body.studio-theme-dark .rh-prompt-field textarea,
 .rh-param-thumb { grid-row:span 2; width:48px; height:48px; border-radius:12px; border:1px solid var(--line); background:var(--soft); overflow:hidden; display:flex; align-items:center; justify-content:center; color:var(--faint); }
 .rh-param-thumb img { width:100%; height:100%; object-fit:cover; }
 .rh-param-thumb.empty { border-style:dashed; }
-.output-audio-wrap { min-height:118px; }
+.output-audio-wrap { min-height:118px; cursor:grab; }
+.output-audio-wrap.is-selected .output-audio-card { box-shadow:inset 0 0 0 2px #2563eb; }
 .output-audio-card { width:100%; height:100%; min-height:116px; padding:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:var(--text); background:var(--soft); border-radius:16px; }
 .output-audio-card span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:800; color:var(--muted); }
 .output-audio-card audio { width:100%; max-width:220px; }
@@ -753,11 +754,18 @@ input[type=range].canvas-range::-webkit-slider-runnable-track { height:3px; bord
 .input-list { display:flex; align-items:flex-start; gap:8px; min-height:78px; overflow:auto; padding-bottom:2px; }
 .input-item { position:relative; width:72px; height:72px; flex:0 0 auto; border:1px solid #edf2f7; border-radius:16px; background:#f8fafc; padding:5px; font-size:10px; color:#475569; cursor:grab; display:flex; align-items:center; justify-content:center; }
 .video-input-item { height:auto; min-height:0; width:92px; padding-bottom:6px; flex-direction:column; justify-content:flex-start; gap:5px; }
+.video-input-item.is-audio { width:196px; }
 .video-input-thumb { position:relative; width:72px; height:72px; flex:0 0 auto; }
+.video-input-item.is-audio .video-input-thumb { width:100%; height:auto; min-height:72px; }
+.video-input-item.is-audio .input-label { display:none; }
 .video-input-thumb img { width:100%; height:100%; object-fit:cover; border-radius:12px; }
-.video-input-audio { width:100%; height:100%; border-radius:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; background:linear-gradient(160deg, #eef6ff, #f8fafc); color:#2563eb; border:1px solid #dbeafe; padding:5px; text-align:center; }
+.video-input-audio { width:100%; height:100%; border-radius:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; background:linear-gradient(160deg, #eef6ff, #f8fafc); color:#2563eb; border:1px solid #dbeafe; padding:8px 6px 6px; text-align:center; }
 .video-input-audio span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#475569; font-size:9px; font-weight:800; }
 .video-input-audio i,.video-input-audio svg { flex:0 0 auto; color:#2563eb; }
+.video-input-audio audio { width:100%; height:28px; color-scheme:light; }
+.theme-dark .video-input-audio { background:linear-gradient(160deg, #132033, #0f172a); border-color:var(--line); color:#93c5fd; }
+.theme-dark .video-input-audio span { color:var(--muted); }
+.theme-dark .video-input-audio audio { color-scheme:dark; }
 .input-item img { width:100%; height:100%; object-fit:cover; border-radius:12px; }
 .input-index { position:absolute; left:5px; top:5px; min-width:18px; height:18px; border-radius:999px; background:#111827; color:#fff; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
 .input-label { position:absolute; left:5px; right:5px; bottom:5px; border-radius:10px; padding:2px 4px; background:rgba(255,255,255,.86); color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

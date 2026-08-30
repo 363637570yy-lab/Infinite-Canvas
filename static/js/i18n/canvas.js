@@ -105,7 +105,7 @@
         "canvas.comfyGenerate": { zh: "ComfyUI 生成", en: "ComfyUI Generate" },
         "canvas.videoGenerateNode": { zh: "视频生成", en: "Video Generate" },
         "canvas.voiceNode": { zh: "音色", en: "Voice" },
-        "canvas.voiceHint": { zh: "每个音色节点生成一条样音，只出现在右侧音频卡上。点音频卡名称改成角色名。生成后音色会连到音频卡；若已连视频，音频卡会再连到视频。样音约 10–12 秒，不要写成台词。", en: "Each Voice node makes one sample on a separate audio card. Click the card name to rename it. Generating links Voice to the card, and the card to Video if Voice was already connected. Keep the clip around 10–12 seconds, not dialogue." },
+        "canvas.voiceHint": { zh: "每次生成都会追加到右侧大框，不会覆盖旧样音。点框里的音频可选为当前音色，也可单独拉出。连到视频后可直接试听。样音约 10–12 秒，不要写成台词。", en: "Each generate appends to the output box on the right and does not replace earlier samples. Click a clip to select it, or drag it out. After connecting to Video you can preview it there. Keep the clip around 10–12 seconds, not dialogue." },
         "canvas.rhGenerate": { zh: "RunningHub生成", en: "RunningHub Generate" },
         "canvas.rhModeApp": { zh: "AI应用", en: "AI App" },
         "canvas.rhModeWorkflow": { zh: "工作流", en: "Workflow" },
