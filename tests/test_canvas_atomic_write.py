@@ -42,6 +42,7 @@ class CanvasAtomicWriteTests(unittest.TestCase):
         ]
         for item in self.patches:
             item.start()
+        main._canvas_record_cache.update({"dir": None, "sig": None, "live": [], "trash": []})
 
     def tearDown(self):
         for item in reversed(self.patches):
@@ -117,6 +118,27 @@ class CanvasAtomicWriteTests(unittest.TestCase):
         records = main.iter_canvas_records()
 
         self.assertEqual([item["id"] for item in records], ["listed"])
+
+    def test_listing_does_not_purge_expired_trash(self):
+        canvas = {
+            "id": "old-trash",
+            "title": "gone",
+            "nodes": [],
+            "deleted_at": 1,
+            "updated_at": 1,
+        }
+        main.atomic_write_json(str(self.canvases / "old-trash.json"), canvas)
+        main._canvas_record_cache.update({"dir": None, "sig": None, "live": [], "trash": []})
+
+        self.assertEqual(main.iter_canvas_records(), [])
+        self.assertEqual([item["id"] for item in main.iter_canvas_records(include_deleted=True)], ["old-trash"])
+        self.assertTrue((self.canvases / "old-trash.json").exists())
+
+    def test_listing_cache_tracks_title_after_save(self):
+        main.save_canvas({"id": "named", "title": "one", "nodes": []})
+        self.assertEqual(main.list_canvases()[0]["title"], "one")
+        main.save_canvas({"id": "named", "title": "two", "nodes": []})
+        self.assertEqual(main.list_canvases()[0]["title"], "two")
 
     def test_projects_write_is_atomic(self):
         main.save_projects([{"id": "p1", "name": "项目一"}])

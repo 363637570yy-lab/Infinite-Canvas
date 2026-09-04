@@ -3643,21 +3643,52 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
 
-def iter_canvas_records(include_deleted=False):
-    cleanup_expired_canvas_trash()
-    records = []
-    for filename in os.listdir(CANVAS_DIR):
-        if not filename.endswith(".json"):
+_canvas_record_cache = {"dir": None, "sig": None, "live": [], "trash": []}
+
+def canvas_dir_signature():
+    entries = []
+    try:
+        names = os.listdir(CANVAS_DIR)
+    except FileNotFoundError:
+        return ()
+    for name in names:
+        if not name.endswith(".json"):
             continue
+        path = os.path.join(CANVAS_DIR, name)
         try:
-            data = read_canvas_file(os.path.join(CANVAS_DIR, filename))
+            st = os.stat(path)
+        except OSError:
+            continue
+        entries.append((name, st.st_mtime_ns, st.st_size))
+    entries.sort()
+    return tuple(entries)
+
+def refresh_canvas_record_cache():
+    """Index canvas cards from file mtime/size. GET list must not parse 46MB twice or delete trash."""
+    sig = canvas_dir_signature()
+    cache = _canvas_record_cache
+    if cache["dir"] == CANVAS_DIR and cache["sig"] == sig:
+        return cache
+    live, trash = [], []
+    for name, _mtime_ns, _size in sig:
+        try:
+            data = read_canvas_file(os.path.join(CANVAS_DIR, name))
         except Exception:
             continue
-        is_deleted = bool(data.get("deleted_at"))
-        if include_deleted != is_deleted:
-            continue
-        records.append(canvas_record(data))
-    return records
+        record = canvas_record(data)
+        if record.get("deleted_at"):
+            trash.append(record)
+        else:
+            live.append(record)
+    cache["dir"] = CANVAS_DIR
+    cache["sig"] = sig
+    cache["live"] = live
+    cache["trash"] = trash
+    return cache
+
+def iter_canvas_records(include_deleted=False):
+    cache = refresh_canvas_record_cache()
+    return list(cache["trash"] if include_deleted else cache["live"])
 
 def list_canvases():
     records = iter_canvas_records(include_deleted=False)
@@ -19566,7 +19597,7 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
 
 @app.get("/api/canvases")
 async def canvases():
-    return {"canvases": list_canvases()}
+    return {"canvases": await asyncio.to_thread(list_canvases)}
 
 @app.get("/api/projects")
 async def get_projects():
@@ -19620,7 +19651,7 @@ async def delete_project(project_id: str):
 
 @app.get("/api/canvases/trash")
 async def trashed_canvases():
-    return {"canvases": list_deleted_canvases(), "retention_days": 30}
+    return {"canvases": await asyncio.to_thread(list_deleted_canvases), "retention_days": 30}
 
 @app.post("/api/canvases")
 async def create_canvas(payload: CanvasCreateRequest):
