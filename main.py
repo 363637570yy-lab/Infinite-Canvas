@@ -16083,8 +16083,36 @@ def sd2_response_error_text(response):
                 return str(raw[key])
     return text[:500] or str(raw)[:500]
 
+def chre3_task_id(raw):
+    """文档：提交成功立刻返回 id / task_id，UUID 或 task_ 前缀都要认。"""
+    if not isinstance(raw, dict):
+        return ""
+    nodes = [raw]
+    if isinstance(raw.get("data"), dict):
+        nodes.append(raw["data"])
+    for node in nodes:
+        for key in ("task_id", "id"):
+            value = node.get(key)
+            if isinstance(value, (str, int)) and str(value).strip():
+                return str(value).strip()
+    return str(extract_task_id(raw) or "").strip()
+
+def is_chre3_proxy_read_timeout(status_code, text=""):
+    if int(status_code or 0) == 524:
+        return True
+    blob = str(text or "").lower()
+    return "proxy read timeout" in blob or "error 524" in blob or "524: a timeout occurred" in blob
+
+def chre3_submit_timeout_detail():
+    return (
+        "chre3 提交回执被 Cloudflare 约 120 秒读超时切断。"
+        "该接口是异步的：POST /v1/videos 应立刻返回任务号，再 GET /v1/videos/{id} 查询。"
+        "源站可能已经创建任务，但本次没有拿到任务号，画布无法续查。"
+        "请到 chre3 任务记录按提交时间核对；不要马上再点一次生成，以免重复扣费。"
+    )
+
 async def generate_sd2_video(client, payload, provider, base_url, requested_model):
-    """调用 chre3 视频合同：POST /v1/videos，GET /v1/videos/{id}。"""
+    """chre3 异步视频：POST /v1/videos 只取任务号，再 GET /v1/videos/{id} 轮询。"""
     body = await build_sd2_video_request(
         payload,
         requested_model,
@@ -16099,6 +16127,8 @@ async def generate_sd2_video(client, payload, provider, base_url, requested_mode
     if response.status_code >= 400:
         detail = sd2_response_error_text(response)
         print(f"[video] chre3 上游失败 http={response.status_code} model={requested_model} detail={str(detail)[:300]}")
+        if is_chre3_proxy_read_timeout(response.status_code, detail):
+            raise HTTPException(status_code=502, detail=chre3_submit_timeout_detail())
         raise HTTPException(status_code=response.status_code, detail=f"chre3 视频接口错误：{detail}")
     try:
         raw = response.json()
@@ -16114,7 +16144,7 @@ async def generate_sd2_video(client, payload, provider, base_url, requested_mode
         raise HTTPException(status_code=502, detail=detail) from exc
     if not isinstance(raw, dict):
         raise HTTPException(status_code=502, detail=f"chre3 视频接口返回了无法识别的响应：{str(raw)[:500]}")
-    task_id = extract_task_id(raw) or raw.get("task_id") or raw.get("id")
+    task_id = chre3_task_id(raw)
     result = raw
     initial_task_data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
     initial_status = str(initial_task_data.get("status") or initial_task_data.get("task_status") or "").upper()

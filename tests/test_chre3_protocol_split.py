@@ -1,9 +1,14 @@
 import asyncio
 import unittest
+from unittest import mock
 
 from fastapi import HTTPException
 
 import main
+
+
+def run(coro):
+    return asyncio.run(coro)
 
 
 class Chre3ProtocolSplitTests(unittest.TestCase):
@@ -83,6 +88,87 @@ class Chre3ProtocolSplitTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             asyncio.run(main.build_sd2_video_request(payload, ""))
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_sd2_c8_body_matches_async_docs(self):
+        payload = main.CanvasVideoRequest(
+            prompt="@Image1 是张三",
+            duration=15,
+            aspect_ratio="16:9",
+            images=[{"url": "https://example.com/image1.png"}],
+        )
+        body = run(main.build_sd2_video_request(payload, "sd2-c8"))
+        self.assertEqual(body["model"], "sd2-c8")
+        self.assertEqual(body["duration"], 15)
+        self.assertEqual(body["size"], "16:9")
+        self.assertEqual(body["image_refs"], ["https://example.com/image1.png"])
+        self.assertNotIn("generate_audio", body)
+        self.assertNotIn("compliance_enabled", body)
+
+    def test_uuid_and_task_prefix_ids_are_both_accepted(self):
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        self.assertEqual(main.chre3_task_id({"id": uuid, "task_id": uuid, "status": "processing"}), uuid)
+        self.assertEqual(main.chre3_task_id({"id": uuid, "status": "processing"}), uuid)
+        self.assertEqual(main.chre3_task_id({"id": "task_" + uuid}), "task_" + uuid)
+
+    def test_processing_is_not_a_terminal_status(self):
+        self.assertNotIn("PROCESSING", main.VIDEO_TASK_SUCCESS_STATUSES)
+        self.assertNotIn("PROCESSING", main.VIDEO_TASK_FAILURE_STATUSES)
+
+    def test_submit_processing_then_polls_get_until_completed(self):
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        provider = {"id": "custom-api-8", "protocol": main.CHRE3_VIDEO_PROTOCOL, "base_url": "https://llm.chre3.com"}
+        payload = main.CanvasVideoRequest(prompt="@Image1 面向镜头", duration=15, aspect_ratio="16:9")
+        post = mock.Mock(status_code=200, text="{}")
+        post.json.return_value = {
+            "id": uuid,
+            "task_id": uuid,
+            "object": "video",
+            "model": "sd2-c8",
+            "status": "processing",
+            "progress": 0,
+        }
+        get = mock.Mock(status_code=200, text="{}")
+        get.json.return_value = {
+            "id": uuid,
+            "status": "completed",
+            "progress": 100,
+            "video_url": "https://llm.chre3.com/outputs/xxx.mp4",
+            "url": "https://llm.chre3.com/outputs/xxx.mp4",
+        }
+        get.raise_for_status = mock.Mock()
+        client = mock.AsyncMock()
+        client.post.return_value = post
+        client.get.return_value = get
+        with mock.patch.object(main, "api_headers", return_value={"Authorization": "Bearer test"}), mock.patch.object(
+            main.asyncio, "sleep", new=mock.AsyncMock()
+        ), mock.patch.object(
+            main, "save_remote_video_to_output", new=mock.AsyncMock(return_value="/output/xxx.mp4")
+        ):
+            result = run(main.generate_sd2_video(client, payload, provider, "https://llm.chre3.com", "sd2-c8"))
+        self.assertEqual(client.post.await_count, 1)
+        self.assertEqual(client.post.await_args.args[0], "https://llm.chre3.com/v1/videos")
+        self.assertGreaterEqual(client.get.await_count, 1)
+        self.assertEqual(client.get.await_args.args[0], f"https://llm.chre3.com/v1/videos/{uuid}")
+        self.assertEqual(result["task_id"], uuid)
+        self.assertEqual(result["videos"], ["/output/xxx.mp4"])
+
+    def test_cloudflare_submit_timeout_explains_lost_task_id(self):
+        provider = {"id": "custom-api-8", "protocol": main.CHRE3_VIDEO_PROTOCOL, "base_url": "https://llm.chre3.com"}
+        payload = main.CanvasVideoRequest(prompt="海边", duration=8)
+        response = mock.Mock(
+            status_code=524,
+            text="The origin web server did not return a complete response within the 120-second Proxy Read Timeout window.",
+        )
+        response.json.side_effect = ValueError("not json")
+        client = mock.AsyncMock()
+        client.post.return_value = response
+        with mock.patch.object(main, "api_headers", return_value={"Authorization": "Bearer test"}):
+            with self.assertRaises(HTTPException) as ctx:
+                run(main.generate_sd2_video(client, payload, provider, "https://llm.chre3.com", "sd2-c8"))
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("异步", ctx.exception.detail)
+        self.assertIn("没有拿到任务号", ctx.exception.detail)
+        client.get.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -98,7 +98,7 @@
                                 </div>
                                 <div class="chre3-video-hint">
                                     <span class="ms-line">chre3 视频地址示例：<span class="inline-code">https://llm.chre3.com</span></span>
-                                    <span class="ms-line">视频接口固定为 <span class="inline-code">POST /v1/videos</span>，查询 <span class="inline-code">GET /v1/videos/{id}</span>。</span>
+                                    <span class="ms-line">视频是异步任务：<span class="inline-code">POST /v1/videos</span> 只拿任务号（文档为 HTTP 200，<span class="inline-code">status=processing</span>），再 <span class="inline-code">GET /v1/videos/{id}</span> 轮询到 completed / failed。站前 Cloudflare 若把提交回执 120 秒掐断，中转站里可能已有任务，画布没有任务号就无法续查。</span>
                                     <span class="ms-line"><span class="inline-code">视频：chre3协议</span> 用于普通素材，不发送真人合规参数。</span>
                                     <span class="ms-line"><span class="inline-code">视频：chre3真人协议</span> 用于真人素材，固定发送 <span class="inline-code">compliance_enabled=true</span>（默认 <span class="inline-code">colored-pencil</span>）。</span>
                                 </div>
