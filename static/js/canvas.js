@@ -1312,15 +1312,13 @@ function ensureCanvas(){
 }
 function setCreateMode(active, kind='classic'){
     creatingCanvas = active;
-    createCanvasKind = active ? ((kind === 'smart') ? 'smart' : 'classic') : 'classic';
+    createCanvasKind = 'classic';
     if(active) trashMode = false;
     canvasGate.classList.toggle('creating', active);
     refreshGateViewControls();
     setStatus(active ? tr('canvas.enterCanvasName') : (canvases.length ? tr('canvas.chooseFirst') : tr('canvas.noCanvasCreateFirst')));
     if(active) {
-        gateTitleInput.placeholder = createCanvasKind === 'smart'
-            ? (tr('canvas.newSmartCanvasPlaceholder') || tr('canvas.newCanvasPlaceholder'))
-            : tr('canvas.newCanvasPlaceholder');
+        gateTitleInput.placeholder = tr('canvas.newCanvasPlaceholder');
         gateTitleInput.focus();
         gateTitleInput.select();
     } else {
@@ -2060,8 +2058,7 @@ function positionCanvasMetaPopover(){
 }
 async function createCanvas(){
     const customTitle = gateTitleInput?.value.trim();
-    const isSmart = createCanvasKind === 'smart';
-    const titleBase = isSmart ? tr('canvas.newSmartCanvas') : tr('canvas.newCanvas');
+    const titleBase = tr('canvas.newCanvas');
     const title = customTitle || `${titleBase} ${new Date().toLocaleTimeString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN', {hour:'2-digit', minute:'2-digit'})}`;
     trashMode = false;
     refreshGateViewControls();
@@ -2070,16 +2067,10 @@ async function createCanvas(){
         const res = await fetch('/api/canvases', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({title, icon:isSmart ? 'sparkles' : '🧩', kind:isSmart ? 'smart' : 'classic'})
+            body:JSON.stringify({title, icon:'🧩', kind:'classic'})
         });
         if(!res.ok) throw new Error(tr('canvas.createFailed'));
         const data = await res.json();
-        if(isSmart){
-            setCreateMode(false);
-            await loadCanvasList(false);
-            openSmartCanvasPage(data.canvas?.id);
-            return;
-        }
         resetCascadeRuntimeState();
         canvas = data.canvas;
         canvas.logs = canvas.logs || [];
@@ -2100,13 +2091,6 @@ async function createCanvas(){
         setStatus(tr('canvas.createFailed'));
         console.error(e);
     }
-}
-async function createSmartCanvas(){
-    setCreateMode(true, 'smart');
-}
-function openSmartCanvasPage(id){
-    if(!id) return;
-    window.location.href = `/static/smart-canvas.html?id=${encodeURIComponent(id)}&v=2026.05.22.1`;
 }
 function toggleEmojiPicker(id, event){
     event?.preventDefault();
@@ -2225,10 +2209,6 @@ async function openCanvas(id){
         rememberCanvasListProject(canvas.project || 'default');
         const touched = await touchCanvasOpened(canvas.id);
         if(touched?.updated_at) canvas.updated_at = Number(touched.updated_at);
-        if((canvas.kind || 'classic') === 'smart'){
-            openSmartCanvasPage(canvas.id);
-            return;
-        }
         canvas.logs = canvas.logs || [];
         nodes = canvas.nodes || [];
         connections = canvas.connections || [];
@@ -2493,14 +2473,12 @@ async function purgeCanvas(id, event){
     }
 }
 window.createCanvas = createCanvas;
-window.createSmartCanvas = createSmartCanvas;
 window.loadCanvasList = loadCanvasList;
 window.openCanvas = openCanvas;
 window.deleteCanvas = deleteCanvas;
 window.returnToCanvasManager = returnToCanvasManager;
 // 选画布 gate 已拆分到 canvas-list.html；编辑器页不再含这些元素，用可选链避免空引用报错。
 gateCreateBtn?.addEventListener('click', () => setCreateMode(true));
-gateCreateSmartBtn?.addEventListener('click', createSmartCanvas);
 gateBackBtn?.addEventListener('click', () => setTrashMode(false));
 gateTrashBtn?.addEventListener('click', () => setTrashMode(true));
 gateRefreshBtn?.addEventListener('click', () => trashMode ? loadTrashList() : loadCanvasList(false));

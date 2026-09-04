@@ -942,19 +942,17 @@ function currentWorkflowItems(){
 }
 function canvasAssetCategories(){
     const cats = Array.isArray(canvasAssetsData.categories) && canvasAssetsData.categories.length
-        ? canvasAssetsData.categories.filter(cat => ['smart','classic'].includes(cat.id))
+        ? canvasAssetsData.categories.filter(cat => cat.id === 'classic')
         : [
-            {id:'smart', name:'智能画布', count:(canvasAssetsData.items || []).filter(item => item.canvas_kind === 'smart').length, canvas_count:(canvasAssetsData.canvases || []).filter(item => item.kind === 'smart').length},
             {id:'classic', name:'普通画布', count:(canvasAssetsData.items || []).filter(item => item.canvas_kind !== 'smart').length, canvas_count:(canvasAssetsData.canvases || []).filter(item => item.kind !== 'smart').length}
         ];
-    return cats;
+    return cats.length ? cats : [{id:'classic', name:'普通画布', count:0, canvas_count:0}];
 }
 function activeCanvasAssetCategoryInfo(){
-    return canvasAssetCategories().find(cat => cat.id === activeCanvasAssetCategory) || canvasAssetCategories()[0] || {id:'smart', name:'智能画布', count:0, canvas_count:0};
+    return canvasAssetCategories().find(cat => cat.id === activeCanvasAssetCategory) || canvasAssetCategories()[0] || {id:'classic', name:'普通画布', count:0, canvas_count:0};
 }
 function defaultCanvasAssetCategory(){
-    const cats = canvasAssetCategories();
-    return cats.find(cat => Number(cat.canvas_count || 0) > 0)?.id || cats[0]?.id || 'smart';
+    return 'classic';
 }
 function uniqueCanvasAssets(items){
     const seen = new Set();
@@ -978,7 +976,7 @@ function canvasAssetsForCategory(categoryId=activeCanvasAssetCategory){
 function canvasAssetOpenUrl(canvas){
     if(!canvas?.id) return '';
     const id = encodeURIComponent(canvas.id);
-    return canvas.kind === 'smart' ? `/static/smart-canvas.html?id=${id}` : `/static/canvas.html?id=${id}`;
+    return `/static/canvas.html?id=${id}`;
 }
 function activeCanvasAssetCanvas(){
     if(!activeCanvasAssetCanvasId) return null;

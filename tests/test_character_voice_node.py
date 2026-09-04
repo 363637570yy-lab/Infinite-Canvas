@@ -154,15 +154,6 @@ class CharacterVoiceNodeContractTests(unittest.TestCase):
         self.assertIn("enable_upsample:false", classic)
         self.assertIn("watermark:false", classic)
         self.assertIn("camerafixed:false", classic)
-        smart = _read("static/js/smart-canvas.js")
-        self.assertNotIn("renderVideoToggleControl('videoEnhancePrompt'", smart)
-        self.assertNotIn("renderVideoToggleControl('videoEnableUpsample'", smart)
-        self.assertNotIn("renderVideoToggleControl('videoWatermark'", smart)
-        self.assertNotIn("renderVideoToggleControl('videoCameraFixed'", smart)
-        self.assertIn("enhance_prompt: false", smart)
-        self.assertIn("enable_upsample: false", smart)
-        self.assertIn("watermark: false", smart)
-        self.assertIn("camerafixed: false", smart)
 
 
 class CharacterVoiceAudioOrderTests(unittest.TestCase):

@@ -7,10 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "static" / "js" / "canvas-media-display.js"
 CANVAS_JS = ROOT / "static" / "js" / "canvas.js"
-SMART_JS = ROOT / "static" / "js" / "smart-canvas.js"
 CANVAS_HTML = ROOT / "static" / "canvas.html"
 CANVAS_CSS = ROOT / "static" / "css" / "canvas.css"
-SMART_CSS = ROOT / "static" / "css" / "smart-canvas.css"
 ASSET_CSS = ROOT / "static" / "css" / "asset-manager.css"
 
 
@@ -191,25 +189,12 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertIn("bindCanvasVideoPlaybackUi", source)
         self.assertIn("playButtonHiddenForVideo", source)
 
-    def test_smart_canvas_keeps_paused_video_clickable(self):
-        source = SMART_JS.read_text(encoding="utf-8")
-        css = SMART_CSS.read_text(encoding="utf-8")
-        self.assertIn("syncSmartVideoPlayButton", source)
-        self.assertIn("bindSmartVideoPlaybackUi", source)
-        self.assertNotIn("video.parentElement?.querySelector?.('.smart-video-play')?.style?.setProperty('display', 'none')", source)
-        self.assertNotIn("if(e.target.closest('video,audio')) return;", source)
-        self.assertIn(".media-video-card video { background:#0f172a; pointer-events:none; }", css)
-        self.assertIn(".video-thumb.is-video-playing .smart-video-play { display:none; }", css)
-        self.assertIn("logThumbClickBound", source)
-
     def test_log_and_asset_thumbs_survive_video_fallback(self):
         canvas_source = CANVAS_JS.read_text(encoding="utf-8")
-        smart_source = SMART_JS.read_text(encoding="utf-8")
         asset_css = ASSET_CSS.read_text(encoding="utf-8")
         canvas_css = CANVAS_CSS.read_text(encoding="utf-8")
         self.assertIn("logThumbClickBound", canvas_source)
         self.assertIn(".log-thumbs [data-url], .log-thumbs [data-original-src]", canvas_source)
-        self.assertIn(".log-thumbs [data-url], .log-thumbs [data-original-src]", smart_source)
         self.assertIn(".asset-thumb video { pointer-events:none; }", asset_css)
         self.assertIn(".canvas-asset-thumb-wrap video { pointer-events:none; }", canvas_css)
 
@@ -228,12 +213,6 @@ class CanvasMediaDisplayTests(unittest.TestCase):
         self.assertIn("openOutputLightbox(url, canvasNodeFromEl(wrap))", source)
         self.assertIn(".output-img-wrap.is-video-playing video", css)
         self.assertNotIn("if(img.dataset.previewKind === 'video'){\n                canvasActivateVideoPreview(wrap);", source)
-
-    def test_smart_video_dblclick_opens_preview(self):
-        source = SMART_JS.read_text(encoding="utf-8")
-        self.assertIn("openImagePreviewSmart(target.targetNodeId, target.imageIndex)", source)
-        self.assertIn("previewCurrentVideo", source)
-        self.assertGreaterEqual(source.count("openImagePreviewSmart(target.targetNodeId, target.imageIndex)"), 2)
 
     def test_canvas_wires_phase_two_hooks(self):
         source = CANVAS_JS.read_text(encoding="utf-8")
