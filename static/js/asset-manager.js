@@ -1946,7 +1946,7 @@ function renderAssetManager(){
                 <div class="asset-grid">
                     ${activeAssetClassFilter ? '' : renderUploadCard(cat)}
                     ${items.map(item => renderAssetCard(item)).join('')}
-                    ${items.length ? '' : '<div class="empty-state">当前分组还没有素材，可以上传，或从智能画布输出保存到素材库。</div>'}
+                    ${items.length ? '' : '<div class="empty-state">当前分组还没有素材，可以上传，或从画布输出保存到素材库。</div>'}
                 </div>
             </div>
         </section>
@@ -2639,7 +2639,7 @@ function downloadAssetItem(id){
     downloadUrl(`/api/download-output?url=${encodeURIComponent(item.url)}&name=${encodeURIComponent(name)}`, name);
     setStatus('已开始下载');
 }
-const SMART_CANVAS_ASSET_INBOX_KEY = 'smart_canvas_asset_inbox';
+const CANVAS_ASSET_INBOX_KEY = 'smart_canvas_asset_inbox';
 function canvasInboxAssetFromItem(item){
     const out = {url:item?.url || '', name:item?.name || '素材', kind:item?.kind || ''};
     ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
@@ -2648,6 +2648,18 @@ function canvasInboxAssetFromItem(item){
     });
     return out;
 }
+function writeCanvasAssetInbox(items){
+    localStorage.setItem(CANVAS_ASSET_INBOX_KEY, JSON.stringify({items, ts: Date.now()}));
+    if(typeof window.pasteCanvasAssetInbox === 'function'){
+        const pasted = window.pasteCanvasAssetInbox();
+        if(pasted > 0){
+            setStatus(`已粘贴 ${pasted} 个素材到画布`);
+            return true;
+        }
+    }
+    setStatus(`已复制 ${items.length} 个素材，打开画布后按 Ctrl+V 粘贴`);
+    return true;
+}
 function copySelectedAssetsToCanvas(){
     const items = [...selectedAssetIds]
         .map(id => findAssetItem(id))
@@ -2655,13 +2667,10 @@ function copySelectedAssetsToCanvas(){
         .map(canvasInboxAssetFromItem);
     if(!items.length){ setStatus('没有可复制的素材'); return; }
     try {
-        // 写入跨页剪贴板，画布页按 Ctrl+V 读取并批量粘贴
-        localStorage.setItem(SMART_CANVAS_ASSET_INBOX_KEY, JSON.stringify({items, ts: Date.now()}));
+        writeCanvasAssetInbox(items);
     } catch(err){
         setStatus('复制失败：' + (err?.message || err));
-        return;
     }
-    setStatus(`已复制 ${items.length} 个素材，去智能画布按 Ctrl+V 粘贴`);
 }
 async function downloadSelectedAssets(){
     const items = [...selectedAssetIds].map(id => findAssetItem(id)).filter(it => it?.url);
@@ -2724,12 +2733,10 @@ function copySelectedLocalUploadsToCanvas(){
     const items = [...selectedLocalUploadIds].map(id => findLocalUpload(id)).filter(it => it?.url).map(canvasInboxAssetFromItem);
     if(!items.length){ setStatus('没有可复制的素材'); return; }
     try {
-        localStorage.setItem(SMART_CANVAS_ASSET_INBOX_KEY, JSON.stringify({items, ts: Date.now()}));
+        writeCanvasAssetInbox(items);
     } catch(err){
         setStatus('复制失败：' + (err?.message || err));
-        return;
     }
-    setStatus(`已复制 ${items.length} 个素材，去智能画布按 Ctrl+V 粘贴`);
 }
 function renderLocalUploadClipboardBar(){
     if(!localUploadClipboard?.ids?.length) return '';

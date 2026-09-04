@@ -3547,12 +3547,12 @@ def list_projects():
 
 def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None):
     timestamp = now_ms()
-    canvas_kind = normalize_canvas_kind(kind)
+    # 智能画布已下线：创建一律 classic，忽略 kind=smart
     canvas = {
         "id": uuid.uuid4().hex,
-        "title": (title or ("智能画布" if canvas_kind == "smart" else "未命名画布"))[:80],
-        "icon": (icon or ("sparkles" if canvas_kind == "smart" else "🧩"))[:32],
-        "kind": canvas_kind,
+        "title": (title or "未命名画布")[:80],
+        "icon": (icon or "🧩")[:32],
+        "kind": "classic",
         "owner": "",
         "color": "",
         "pinned": False,

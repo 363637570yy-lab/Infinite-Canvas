@@ -4288,6 +4288,39 @@ function createImageCardFromUrl(url, point, name='image'){
     render();
     scheduleSave();
 }
+const CANVAS_ASSET_INBOX_KEY = 'smart_canvas_asset_inbox';
+function readCanvasAssetInboxItems(){
+    try {
+        const data = JSON.parse(localStorage.getItem(CANVAS_ASSET_INBOX_KEY) || 'null');
+        const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+        return items.filter(item => String(item?.url || '').trim()).slice(0, CANVAS_UPLOAD_MAX);
+    } catch(e){
+        return [];
+    }
+}
+function pasteCanvasAssetInbox(point){
+    if(!ensureCanvas()) return 0;
+    const items = readCanvasAssetInboxItems();
+    if(!items.length) return 0;
+    const base = point || defaultPoint(0, 0);
+    pushUndo();
+    const created = [];
+    items.forEach((item, i) => {
+        const url = String(item.url || '').trim();
+        const mediaKind = isVideoUrl(url) ? 'video' : isAudioUrl(url) ? 'audio' : 'image';
+        const node = {id:uid('img'), type:'image', x:base.x + i * 36, y:base.y + i * 36, url, name:item.name || outputImageName(url), mediaKind};
+        nodes.push(node);
+        created.push(node);
+    });
+    try { localStorage.removeItem(CANVAS_ASSET_INBOX_KEY); } catch(e){}
+    lastImagePasteAt = Date.now();
+    selected.clear();
+    created.forEach(node => selected.add(node.id));
+    render();
+    scheduleSave();
+    return created.length;
+}
+window.pasteCanvasAssetInbox = pasteCanvasAssetInbox;
 async function createImageCardsFromLocalPaths(paths, point){
     if(!ensureCanvas()) return [];
     setStatus(langIsEn() ? 'Importing images...' : '导入图片...');
@@ -15741,12 +15774,15 @@ window.addEventListener('keydown', e => {
     if((e.ctrlKey || e.metaKey) && key === 'v') {
         const tag = document.activeElement?.tagName;
         if(tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
-        if(clipboardNodeCount()) {
+        const hasNodes = clipboardNodeCount();
+        const hasInbox = readCanvasAssetInboxItems().length > 0;
+        if(hasNodes || hasInbox) {
             const pasteRequestedAt = Date.now();
             setTimeout(() => {
                 if(!canvas) return;
                 if(lastImagePasteAt >= pasteRequestedAt) return;
-                pasteNodes();
+                if(clipboardNodeCount()) pasteNodes();
+                else pasteCanvasAssetInbox();
             }, 90);
         }
     }
