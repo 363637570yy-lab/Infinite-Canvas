@@ -140,6 +140,31 @@ class CanvasAtomicWriteTests(unittest.TestCase):
         main.save_canvas({"id": "named", "title": "two", "nodes": []})
         self.assertEqual(main.list_canvases()[0]["title"], "two")
 
+    def test_meta_uses_index_without_loading_full_canvas(self):
+        main.save_canvas({"id": "meta1", "title": "hello", "icon": "star", "kind": "classic", "nodes": [{"id": "n1"}]})
+        with patch.object(main, "load_canvas", side_effect=AssertionError("meta must not open the full canvas")):
+            rec = main.canvas_meta_payload("meta1")
+        self.assertEqual(rec["id"], "meta1")
+        self.assertEqual(rec["title"], "hello")
+        self.assertEqual(rec["icon"], "star")
+        self.assertEqual(rec["kind"], "classic")
+
+    def test_deleted_canvas_meta_is_404(self):
+        from fastapi import HTTPException
+        canvas = {"id": "gone-meta", "title": "x", "nodes": [], "deleted_at": 1, "updated_at": 1}
+        main.atomic_write_json(str(self.canvases / "gone-meta.json"), canvas)
+        main._canvas_record_cache.update({"dir": None, "sig": None, "files": {}, "live": [], "trash": []})
+        with self.assertRaises(HTTPException) as ctx:
+            main.canvas_meta_payload("gone-meta")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_get_canvas_endpoint_still_returns_nodes(self):
+        import asyncio
+        main.save_canvas({"id": "full1", "title": "body", "nodes": [{"id": "n1", "type": "prompt"}]})
+        data = asyncio.run(main.get_canvas("full1"))
+        self.assertEqual(data["canvas"]["title"], "body")
+        self.assertEqual(data["canvas"]["nodes"][0]["id"], "n1")
+
     def test_projects_write_is_atomic(self):
         main.save_projects([{"id": "p1", "name": "项目一"}])
 

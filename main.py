@@ -3712,6 +3712,23 @@ def list_deleted_canvases():
     records = iter_canvas_records(include_deleted=True)
     return sorted(records, key=lambda item: item["deleted_at"], reverse=True)
 
+def canvas_meta_payload(canvas_id: str):
+    """Card metadata from the list index. GET must not open the full canvas JSON."""
+    cache = refresh_canvas_record_cache()
+    entry = cache["files"].get(f"{canvas_id}.json")
+    if not entry:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    rec = entry[2]
+    if rec.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="画布已在回收站")
+    return {
+        "id": rec.get("id") or canvas_id,
+        "updated_at": rec.get("updated_at", 0),
+        "title": rec.get("title", "未命名画布"),
+        "icon": rec.get("icon") or "layers",
+        "kind": rec.get("kind") or "classic",
+    }
+
 def canvas_asset_url_value(value):
     if isinstance(value, str):
         return value.strip()
@@ -19609,7 +19626,7 @@ async def canvases():
 
 @app.get("/api/projects")
 async def get_projects():
-    return {"projects": list_projects()}
+    return {"projects": await asyncio.to_thread(list_projects)}
 
 @app.post("/api/projects")
 async def create_project(payload: ProjectCreateRequest):
@@ -19667,14 +19684,7 @@ async def create_canvas(payload: CanvasCreateRequest):
 
 @app.get("/api/canvases/{canvas_id}/meta")
 async def get_canvas_meta(canvas_id: str):
-    canvas = load_canvas(canvas_id)
-    return {
-        "id": canvas.get("id"),
-        "updated_at": canvas.get("updated_at", 0),
-        "title": canvas.get("title", "未命名画布"),
-        "icon": canvas.get("icon", "layers"),
-        "kind": normalize_canvas_kind(canvas.get("kind")),
-    }
+    return await asyncio.to_thread(canvas_meta_payload, canvas_id)
 
 @app.post("/api/canvases/{canvas_id}/meta")
 async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
@@ -19707,7 +19717,7 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
 
 @app.get("/api/canvases/{canvas_id}")
 async def get_canvas(canvas_id: str):
-    return {"canvas": load_canvas(canvas_id)}
+    return {"canvas": await asyncio.to_thread(load_canvas, canvas_id)}
 
 @app.post("/api/canvases/{canvas_id}/touch")
 async def touch_canvas(canvas_id: str):
