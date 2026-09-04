@@ -45,7 +45,7 @@ import zexi_protocol as zexi
 import pidoi_protocol as pidoi
 # MegabyAI 的 /v1/videos 请求体、模型能力与任务响应归一化独立维护。
 import megabyai_protocol as megabyai
-# Codelba 使用 /openapi/v1/videos 与 size / image_refs 字段，独立于 chre3 和 MegabyAI。
+# Codelba 使用 /openapi/v1/videos 与 resolution / aspect_ratio / image_refs 字段，独立于 chre3 和 MegabyAI。
 import codelba_protocol as codelba
 # Grok2API 的 JSON 视频合同与现有 grok multipart 合同不同，纯逻辑独立维护。
 import grok2api_protocol as grok2api
@@ -428,7 +428,7 @@ ZEXI_PROTOCOL = zexi.ZEXI_PROTOCOL
 PIDOI_PROTOCOL = pidoi.PIDOI_PROTOCOL
 # MegabyAI 的 referenceImages/referenceVideos/referenceAudios 与现有协议不同，单独注册。
 MEGABYAI_PROTOCOL = megabyai.MEGABYAI_PROTOCOL
-# Codelba（codelba.cn）Seedance 2.0：POST /openapi/v1/videos，字段是 size / image_refs。
+# Codelba（codelba.cn）Seedance：POST /openapi/v1/videos，公共字段是 resolution / aspect_ratio / image_refs。
 CODELBA_PROTOCOL = codelba.CODELBA_PROTOCOL
 # Grok2API 使用严格 JSON 的 /v1/videos/generations，与 grok multipart 合同单独注册。
 GROK2API_PROTOCOL = grok2api.GROK2API_PROTOCOL
@@ -16835,9 +16835,9 @@ async def load_codelba_catalog(client, provider, base_url):
     return catalog
 
 async def wait_for_codelba_video_task(client, provider, base_url, task_id, model):
-    """按 Codelba 文档每 5～10 秒查询一次。"""
+    """按 Codelba 文档每次查询间隔至少 20 秒。"""
     deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
-    delay = 5.0
+    delay = 20.0
     last_payload = {}
     while time.monotonic() < deadline:
         await asyncio.sleep(delay)
@@ -16850,7 +16850,7 @@ async def wait_for_codelba_video_task(client, provider, base_url, task_id, model
             )
         except httpx.HTTPError as exc:
             print(f"[codelba] 轮询网络错误，保留任务号继续重试：{str(exc) or type(exc).__name__}")
-            delay = min(delay + 1.0, 10.0)
+            delay = min(delay + 5.0, 30.0)
             continue
         try:
             raw = response.json() if response.text else {}
@@ -16858,7 +16858,14 @@ async def wait_for_codelba_video_task(client, provider, base_url, task_id, model
             raw = {}
         if response.status_code >= 500 or response.status_code == 429:
             print(f"[codelba] 轮询暂时失败 http={response.status_code}，保留任务号继续重试")
-            delay = min(delay + 1.0, 10.0)
+            delay = min(delay + 5.0, 30.0)
+            continue
+        if response.status_code == 409:
+            code = codelba.codelba_error_code(raw)
+            detail = codelba.codelba_error_text(raw, getattr(response, "text", ""))
+            if code == "video_generation_failed":
+                raise HTTPException(status_code=502, detail=f"Codelba 视频生成任务失败：{detail}")
+            delay = 20.0
             continue
         if response.status_code == 404:
             detail = codelba.codelba_error_text(raw, getattr(response, "text", ""))
@@ -16877,7 +16884,7 @@ async def wait_for_codelba_video_task(client, provider, base_url, task_id, model
                 status_code=502,
                 detail=f"Codelba 视频生成任务失败：{codelba.codelba_error_text(raw)}",
             )
-        delay = min(delay + 1.0, 10.0)
+        delay = 20.0
     raise HTTPException(status_code=504, detail=f"Codelba 视频生成任务超时：{last_payload or task_id}")
 
 async def generate_codelba_video(client, payload, provider, base_url, requested_model):

@@ -398,10 +398,10 @@ const RECOMMENDED_APIS = [
         tagKeys:['api.tagVideoModels','api.tagSeedance'],
         icons:['VID'],
         summaryKey:'api.recommendCodelbaSummary',
-        advantages:['Seedance 异步视频', '改名后按 /models 能力字段组包', '参考图 / 视频 / 音频按目录上限发送', '完成后由后端带 Key 下载成片'],
+        advantages:['Seedance 异步视频', '改名后按 /models 能力字段组包', '公共 resolution / aspect_ratio', '参考图 / 视频 / 音频按目录上限发送', '完成后由后端带 Key 下载成片'],
         image_models:[],
         chat_models:[],
-        video_models:['sd2.5', 'seedance-2.0-fast-720p']
+        video_models:['sd2.5', 'seedance-2.0-fast', 'wan-3.0-3']
     }
 ];
 const RECOMMEND_GROUPS = [

@@ -191,7 +191,7 @@
         "api.recommendAgnesSummary": { zh: "免费可用的 Agnes AI 接口，支持图像与视频生成，适合快速测试和低成本接入。", en: "Free Agnes AI API for image and video generation, suitable for quick testing and low-cost setup." },
         "api.recommendAgnesFree": { zh: "免费", en: "Free" },
         "api.recommendMegabyaiSummary": { zh: "MegabyAI 提供 OpenAI 兼容模型与独立异步视频接口，支持参考图、参考视频和参考音频。", en: "MegabyAI provides OpenAI-compatible models plus a dedicated async video API with image, video, and audio references." },
-        "api.recommendCodelbaSummary": { zh: "Codelba 提供 Seedance 异步视频接口。模型改名后按 /models 能力字段组包，支持参考图、参考视频和参考音频。", en: "Codelba provides Seedance async video. Renamed models use /models capability fields, with image, video, and audio references." },
+        "api.recommendCodelbaSummary": { zh: "Codelba 提供 Seedance 异步视频接口。模型改名后按 /models 能力字段组包，提交公共 resolution / aspect_ratio，支持参考图、参考视频和参考音频。", en: "Codelba provides Seedance async video. Renamed models use /models capability fields, submit public resolution / aspect_ratio, and support image, video, and audio references." },
         "api.recommendSeedancePrivateNote": { zh: "海外版本 Seedance，稳定不掺水", en: "Overseas Seedance version, stable and clean" },
         "api.recommendSeedancePrivateAction": { zh: "B站私信", en: "Message on Bilibili" },
         "api.recommendFeatured": { zh: "首选推荐", en: "Top Pick" },

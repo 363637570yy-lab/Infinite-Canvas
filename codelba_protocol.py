@@ -3,13 +3,13 @@
 站点合同是 POST /openapi/v1/videos → GET /openapi/v1/videos/{task_id}
 → GET /openapi/v1/videos/{task_id}/content。当前可用网关是
 https://hz.codelba.cn；https://hz.codelba.cn/ai_video_ui/ 只是网页后台。
-全部视频模型共用同一套 OpenAPI v1 请求字段：size 与
-image_refs / video_refs / audio_refs。模型改名不是新家族。
-时长、画幅、参考上限以 GET /openapi/v1/models 的能力字段为准；
+全部视频模型共用同一套 OpenAPI v1 请求字段：resolution、
+aspect_ratio 与 image_refs / video_refs / audio_refs。模型改名不是新家族。
+时长、清晰度、画幅、参考上限以 GET /openapi/v1/models 的能力字段为准；
 本地家族表只给目录不可用时的旧 ID 兜底。没有能力字段的模型
-不会按其它版本参数提交。文档示例 size 为 1280x720 这种宽x高；
-请求体按画幅发送对应像素尺寸，16:9 默认 1280x720。720p 只当作
-清晰度别名，不会写进 size。本模块不反向导入 main.py。
+不会按其它版本参数提交。平台把公共 resolution / aspect_ratio 转成
+厂商参数；调用方不要发 1280x720 这类内部宽高，也不要同时发 size。
+size 只作为入站旧字段，用来还原画幅或清晰度。本模块不反向导入 main.py。
 """
 
 import re
@@ -41,46 +41,64 @@ CODELBA_VIDEO_MODEL_FAMILIES = {
     "seedance2.0-14s": CODELBA_FAMILY_SEEDANCE_2_14S,
 }
 
-# 文档「标准尺寸」表把 1:1 写成仅 sd-2-c5，但模型能力表把 1:1 记在 sd-2-c5-10，
-# 且 sd-2-c5 的支持比例没有 1:1。发送时以模型能力表为准。
+# size 只用于把旧调用的宽高还原成公共 aspect_ratio，不再写入请求体。
 CODELBA_SIZE_BY_RATIO = {
     "16:9": "1280x720",
     "9:16": "720x1280",
     "4:3": "960x720",
     "3:4": "720x960",
     "1:1": "720x720",
+    "21:9": "1680x720",
 }
+CODELBA_RATIO_BY_SIZE = {size: ratio for ratio, size in CODELBA_SIZE_BY_RATIO.items()}
 
 CODELBA_FAMILY_SPECS = {
     CODELBA_FAMILY_SD_2_C5: {
         "durations": frozenset({5, 8, 10, 15}),
+        "duration_order": (5, 8, 10, 15),
         "sizes": frozenset({"1280x720", "720x1280", "960x720", "720x960"}),
         "ratios": frozenset({"16:9", "9:16", "4:3", "3:4"}),
-        "default_size": "1280x720",
+        "ratio_order": ("16:9", "9:16", "4:3", "3:4"),
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "resolution_originals": ("720p",),
+        "resolutions": frozenset({"720p", "720"}),
         "max_images": 9,
         "max_videos": 3,
         "max_audios": 3,
         "allow_video_refs": True,
         "allow_audio_refs": True,
         "duration_mode": "enum",
+        "compliance_supported": False,
     },
     CODELBA_FAMILY_SD_2_C5_10: {
         "durations": frozenset({5, 8, 10}),
+        "duration_order": (5, 8, 10),
         "sizes": frozenset({"1280x720", "720x1280", "720x720"}),
         "ratios": frozenset({"16:9", "9:16", "1:1"}),
-        "default_size": "1280x720",
+        "ratio_order": ("16:9", "9:16", "1:1"),
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "resolution_originals": ("720p",),
+        "resolutions": frozenset({"720p", "720"}),
         "max_images": 9,
         "max_videos": 3,
         "max_audios": 3,
         "allow_video_refs": True,
         "allow_audio_refs": True,
         "duration_mode": "enum",
+        "compliance_supported": False,
     },
     CODELBA_FAMILY_SEEDANCE_2_14S: {
         "durations": frozenset(range(5, 16)),
+        "duration_order": tuple(range(5, 16)),
         "sizes": frozenset({"1280x720", "720x1280"}),
         "ratios": frozenset({"16:9", "9:16"}),
-        "default_size": "1280x720",
+        "ratio_order": ("16:9", "9:16"),
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "resolution_originals": ("720p",),
+        "resolutions": frozenset({"720p", "720"}),
         "max_images": 9,
         "max_videos": 0,
         "max_audios": 0,
@@ -89,13 +107,13 @@ CODELBA_FAMILY_SPECS = {
         "duration_mode": "range",
         "min_duration": 5,
         "max_duration": 15,
+        "compliance_supported": False,
     },
 }
 
 CODELBA_DEFAULT_DURATION = 5
 CODELBA_PROMPT_MAX_LENGTH = 32000
 CODELBA_PIXEL_SIZE_RE = re.compile(r"^(\d+)\s*[xX]\s*(\d+)$")
-CODELBA_TIER_SIZE_ALIASES = frozenset({"720p", "720"})
 CODELBA_DEFAULT_RESOLUTIONS = frozenset({"720p", "720"})
 
 CODELBA_TERMINAL_SUCCESS_STATUSES = {"completed"}
@@ -142,34 +160,40 @@ def _normalize_resolution_token(value):
     return text
 
 
-def _catalog_resolutions(entry):
-    values = set()
+def _catalog_resolution_originals(entry):
+    values = []
+    seen = set()
     for item in _str_list((entry or {}).get("resolutions")):
-        token = _normalize_resolution_token(item)
-        if token:
-            values.add(token)
-    return frozenset(values)
+        original = str(item).strip()
+        token = _normalize_resolution_token(original)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        values.append(original)
+    return tuple(values)
+
+
+def _catalog_resolutions(entry):
+    return frozenset(_normalize_resolution_token(item) for item in _catalog_resolution_originals(entry))
 
 
 def has_codelba_video_capability_schema(item):
-    """OpenAPI v1 模型条目用时长/画幅/参考上限声明视频能力，不看模型名。"""
+    """OpenAPI v1 模型条目用时长/画幅/清晰度/参考上限声明视频能力，不看模型名。"""
     if not isinstance(item, dict):
         return False
     durations = _int_list(item.get("durations"))
     ratios = _str_list(item.get("aspect_ratios"))
+    resolutions = _catalog_resolution_originals(item)
     has_ref_caps = any(key in item for key in ("max_image_refs", "max_video_refs", "max_audio_refs"))
     has_compliance = "compliance_supported" in item
-    return bool(durations) and (bool(ratios) or has_ref_caps or has_compliance)
+    return bool(durations) and (bool(ratios) or bool(resolutions) or has_ref_caps or has_compliance)
 
 
 def _legacy_family_spec(model):
     family = CODELBA_VIDEO_MODEL_FAMILIES.get(str(model or "").strip().lower(), "")
     if not family:
         return None
-    spec = dict(CODELBA_FAMILY_SPECS[family])
-    spec.setdefault("resolutions", CODELBA_DEFAULT_RESOLUTIONS)
-    spec.setdefault("compliance_supported", False)
-    return spec
+    return dict(CODELBA_FAMILY_SPECS[family])
 
 
 class CodelbaCatalog:
@@ -199,7 +223,8 @@ class CodelbaCatalog:
         if not entry:
             return None
         durations = _int_list(entry.get("durations"))
-        ratios = [item for item in _str_list(entry.get("aspect_ratios")) if item in CODELBA_SIZE_BY_RATIO]
+        ratios = _str_list(entry.get("aspect_ratios"))
+        resolution_originals = _catalog_resolution_originals(entry)
         sizes = set()
         for item in _str_list(entry.get("sizes")):
             pixel = _normalize_pixel_size(item)
@@ -209,26 +234,36 @@ class CodelbaCatalog:
             mapped = CODELBA_SIZE_BY_RATIO.get(ratio)
             if mapped:
                 sizes.add(mapped)
-        if not durations or not sizes:
+        if not durations:
             return None
+        if not ratios and not resolution_originals and not sizes:
+            return None
+        if not ratios:
+            ratios = [
+                ratio for ratio, size in CODELBA_SIZE_BY_RATIO.items() if size in sizes
+            ]
         max_images = _optional_nonneg_int(entry, "max_image_refs")
         max_videos = _optional_nonneg_int(entry, "max_video_refs")
         max_audios = _optional_nonneg_int(entry, "max_audio_refs")
         duration_set = frozenset(durations)
         low, high = min(durations), max(durations)
         is_range = duration_set == frozenset(range(low, high + 1)) and (high - low + 1) >= 4
-        default_size = (
-            CODELBA_SIZE_BY_RATIO["16:9"]
-            if "16:9" in ratios and CODELBA_SIZE_BY_RATIO["16:9"] in sizes
-            else sorted(sizes)[0]
-        )
+        if not resolution_originals:
+            resolution_originals = ("720p",)
+        default_resolution = resolution_originals[0]
+        for original in resolution_originals:
+            if _normalize_resolution_token(original) in {"720p", "720"}:
+                default_resolution = original
+                break
         return {
             "durations": duration_set,
+            "duration_order": tuple(durations),
             "sizes": frozenset(sizes),
-            "ratios": frozenset(ratios) if ratios else frozenset(
-                ratio for ratio, size in CODELBA_SIZE_BY_RATIO.items() if size in sizes
-            ),
-            "default_size": default_size,
+            "ratios": frozenset(ratios),
+            "ratio_order": tuple(ratios),
+            "default_ratio": ratios[0] if ratios else "",
+            "default_resolution": default_resolution,
+            "resolution_originals": resolution_originals,
             "max_images": 0 if max_images is None else max_images,
             "max_videos": 0 if max_videos is None else max_videos,
             "max_audios": 0 if max_audios is None else max_audios,
@@ -237,7 +272,9 @@ class CodelbaCatalog:
             "duration_mode": "range" if is_range else "enum",
             "min_duration": low,
             "max_duration": high,
-            "resolutions": _catalog_resolutions(entry) or CODELBA_DEFAULT_RESOLUTIONS,
+            "resolutions": frozenset(
+                _normalize_resolution_token(item) for item in resolution_originals
+            ) or CODELBA_DEFAULT_RESOLUTIONS,
             "compliance_supported": bool(entry.get("compliance_supported")),
         }
 
@@ -382,8 +419,11 @@ def _prompt(payload):
 
 
 def _duration(payload, spec):
-    raw = getattr(payload, "duration", CODELBA_DEFAULT_DURATION)
+    raw = getattr(payload, "duration", None)
     if raw in (None, ""):
+        order = spec.get("duration_order") or tuple(sorted(spec.get("durations") or []))
+        if order:
+            return int(order[0])
         raw = CODELBA_DEFAULT_DURATION
     try:
         value = int(raw)
@@ -414,62 +454,119 @@ def _normalize_pixel_size(value):
     return f"{int(match.group(1))}x{int(match.group(2))}"
 
 
-def _is_tier_size_alias(value):
-    return str(value or "").strip().lower() in CODELBA_TIER_SIZE_ALIASES
+def _raw_aspect_ratio(payload):
+    for key in ("aspect_ratio", "aspectRatio", "ratio"):
+        value = str(getattr(payload, key, "") or "").strip()
+        if value:
+            return value
+    return ""
 
 
-def _size(payload, spec):
+def _resolution_choices(spec):
+    originals = spec.get("resolution_originals") or ()
+    if originals:
+        return "、".join(originals)
+    allowed = spec.get("resolutions") or CODELBA_DEFAULT_RESOLUTIONS
+    return "、".join(sorted(item for item in allowed if item)) or "720p"
+
+
+def _match_resolution(value, spec):
+    token = _normalize_resolution_token(value)
+    if not token:
+        return ""
+    for original in spec.get("resolution_originals") or ():
+        if _normalize_resolution_token(original) == token:
+            return original
+    allowed = spec.get("resolutions") or CODELBA_DEFAULT_RESOLUTIONS
+    if token in allowed or str(value or "").strip() in allowed:
+        if token.isdigit():
+            return f"{token}p"
+        return token
+    return ""
+
+
+def _size_as_resolution(raw_size, spec):
+    if not raw_size or _normalize_pixel_size(raw_size):
+        return ""
+    if raw_size in spec.get("ratios", frozenset()) or raw_size in CODELBA_SIZE_BY_RATIO:
+        return ""
+    if _match_resolution(raw_size, spec) or _normalize_resolution_token(raw_size):
+        return raw_size
+    return ""
+
+
+def _aspect_ratio(payload, spec):
+    raw_ratio = _raw_aspect_ratio(payload)
     raw_size = str(getattr(payload, "size", "") or "").strip()
-    raw_ratio = str(getattr(payload, "aspect_ratio", "") or "").strip()
     pixel = _normalize_pixel_size(raw_size)
-    if pixel:
-        if pixel not in spec["sizes"]:
-            choices = "、".join(sorted(spec["sizes"]))
-            raise HTTPException(
-                status_code=400,
-                detail=f"Codelba 该模型不支持尺寸「{pixel}」；可选值：{choices}。",
-            )
-        return pixel
-    ratio = raw_size if raw_size in CODELBA_SIZE_BY_RATIO else raw_ratio
-    if _is_tier_size_alias(raw_size):
-        ratio = raw_ratio
+    ratio_from_pixel = CODELBA_RATIO_BY_SIZE.get(pixel, "")
+    size_as_ratio = raw_size if raw_size in spec.get("ratios", frozenset()) or raw_size in CODELBA_SIZE_BY_RATIO else ""
+    if pixel and raw_ratio and ratio_from_pixel and raw_ratio != ratio_from_pixel:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Codelba 同时传 size「{pixel}」和 aspect_ratio「{raw_ratio}」时必须一致，"
+                f"该尺寸对应 {ratio_from_pixel}。"
+            ),
+        )
+    ratio = raw_ratio or size_as_ratio or ratio_from_pixel
     if ratio in {"keep_ratio", "adaptive"}:
         raise HTTPException(
             status_code=400,
             detail="Codelba 需要明确画幅，不支持 keep_ratio / adaptive。",
         )
+    allowed = spec.get("ratios") or frozenset()
     if ratio:
-        mapped = CODELBA_SIZE_BY_RATIO.get(ratio)
-        if not mapped or mapped not in spec["sizes"] or ratio not in spec["ratios"]:
-            choices = "、".join(sorted(spec["ratios"]))
+        if ratio not in allowed:
+            choices = "、".join(spec.get("ratio_order") or sorted(allowed))
             raise HTTPException(
                 status_code=400,
                 detail=f"Codelba 该模型不支持画幅「{ratio}」；可选值：{choices}。",
             )
-        return mapped
-    return spec["default_size"]
+        return ratio
+    default = spec.get("default_ratio") or ""
+    if default:
+        return default
+    order = spec.get("ratio_order") or tuple(sorted(allowed))
+    if order:
+        return order[0]
+    raise HTTPException(status_code=400, detail="Codelba 该模型没有可用的 aspect_ratio。")
 
 
-def _reject_resolution(payload, spec):
-    value = str(getattr(payload, "resolution", "") or "").strip().lower()
-    if not value:
-        return
-    token = _normalize_resolution_token(value)
-    allowed = spec.get("resolutions") or CODELBA_DEFAULT_RESOLUTIONS
-    if token in allowed or value in allowed:
-        if token in {"1080p", "4k"}:
+def _resolution(payload, spec):
+    raw_res = str(getattr(payload, "resolution", "") or "").strip()
+    raw_size = str(getattr(payload, "size", "") or "").strip()
+    pixel = _normalize_pixel_size(raw_size)
+    size_as_res = _size_as_resolution(raw_size, spec)
+    if pixel and raw_res:
+        implied = "720p" if pixel in CODELBA_RATIO_BY_SIZE else ""
+        if implied and _normalize_resolution_token(raw_res) not in {"720p", "720"}:
             raise HTTPException(
                 status_code=400,
-                detail="Codelba 文档只给出 720P 的宽x高尺寸，不会把 1080p/4K 改写成 1280x720 后静默提交。",
+                detail=(
+                    f"Codelba 同时传 size「{pixel}」和 resolution「{raw_res}」时必须一致，"
+                    f"该尺寸对应 {implied}。"
+                ),
             )
-        return
-    if token in {"720p", "720"} and not allowed.difference(CODELBA_DEFAULT_RESOLUTIONS):
-        return
-    choices = "、".join(sorted(item for item in allowed if item))
-    raise HTTPException(
-        status_code=400,
-        detail=f"Codelba 该模型不支持清晰度「{value}」；可选值：{choices or '720p'}。不会改写成邻近值。",
-    )
+    if raw_res and size_as_res:
+        if _normalize_resolution_token(raw_res) != _normalize_resolution_token(size_as_res):
+            raise HTTPException(
+                status_code=400,
+                detail="Codelba 同时传 size 和 resolution 时必须一致。",
+            )
+    chosen = raw_res or size_as_res
+    if not chosen:
+        return spec.get("default_resolution") or ""
+    matched = _match_resolution(chosen, spec)
+    if not matched:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Codelba 该模型不支持清晰度「{chosen}」；"
+                f"可选值：{_resolution_choices(spec)}。不会改写成邻近值。"
+            ),
+        )
+    return matched
 
 
 def _reject_unsupported_modes(payload, images, spec):
@@ -482,7 +579,7 @@ def _reject_unsupported_modes(payload, images, spec):
     if bool(getattr(payload, "generate_audio", False)):
         raise HTTPException(
             status_code=400,
-            detail="Codelba 没有 generate_audio 开关；有声参考请使用 audio_refs，且必须同时带图片或视频。",
+            detail="Codelba 没有 generate_audio 开关；有声参考请使用 audio_refs。",
         )
     if getattr(payload, "compliance_enabled", None) is True or str(getattr(payload, "compliance_mode", "") or "").strip():
         if not spec.get("compliance_supported"):
@@ -552,24 +649,23 @@ async def build_codelba_video_request(payload, requested_model, resolve_ref=None
     images = getattr(payload, "images", []) or []
     videos = getattr(payload, "videos", []) or []
     audios = getattr(payload, "audios", []) or []
-    _reject_resolution(payload, spec)
     _reject_unsupported_modes(payload, images, spec)
 
     image_urls = await _resolve_references(images, "图片", spec["max_images"], resolve_ref)
     video_urls = await _resolve_references(videos, "视频", spec["max_videos"], resolve_ref)
     audio_urls = await _resolve_references(audios, "音频", spec["max_audios"], resolve_ref)
-    if audio_urls and not (image_urls or video_urls):
-        raise HTTPException(
-            status_code=400,
-            detail="Codelba 传音频时必须同时传图片或视频参考，不能只传 audio_refs。",
-        )
 
     body = {
         "model": model,
         "prompt": _prompt(payload),
         "duration": _duration(payload, spec),
-        "size": _size(payload, spec),
     }
+    resolution = _resolution(payload, spec)
+    aspect_ratio = _aspect_ratio(payload, spec)
+    if resolution:
+        body["resolution"] = resolution
+    if aspect_ratio:
+        body["aspect_ratio"] = aspect_ratio
     if image_urls:
         body["image_refs"] = image_urls
     if video_urls:
@@ -578,7 +674,6 @@ async def build_codelba_video_request(payload, requested_model, resolve_ref=None
         body["audio_refs"] = audio_urls
     if spec.get("compliance_supported") and getattr(payload, "compliance_enabled", None) is True:
         body["compliance_enabled"] = True
-        body["compliance_mode"] = str(getattr(payload, "compliance_mode", "") or "").strip() or "fishnet"
     return body
 
 
@@ -637,6 +732,15 @@ def codelba_video_result_urls(raw):
         if value and value not in urls:
             urls.append(value)
     return urls
+
+
+def codelba_error_code(raw):
+    if not isinstance(raw, dict):
+        return ""
+    error = raw.get("error")
+    if isinstance(error, dict):
+        return str(error.get("code") or "").strip()
+    return ""
 
 
 def codelba_error_text(raw, fallback=""):

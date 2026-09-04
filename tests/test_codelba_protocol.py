@@ -17,7 +17,7 @@ CODELBA_OPENAPI_SD25 = {
     "object": "model",
     "name": "SD2.5",
     "durations": [5, 8, 10, 15],
-    "resolutions": ["720"],
+    "resolutions": ["720p", "1080p"],
     "aspect_ratios": ["16:9", "4:3", "9:16", "1:1"],
     "max_image_refs": 9,
     "max_video_refs": 3,
@@ -30,12 +30,32 @@ CODELBA_OPENAPI_SEEDANCE_FAST = {
     "object": "model",
     "name": "SD2.0 Fast 720p",
     "durations": [5, 8, 10, 15],
-    "resolutions": ["720"],
+    "resolutions": ["720p"],
     "aspect_ratios": ["16:9", "4:3", "9:16", "1:1"],
     "max_image_refs": 9,
     "max_video_refs": 3,
     "max_audio_refs": 3,
     "compliance_supported": True,
+}
+
+CODELBA_OPENAPI_LEGACY_720_TOKEN = {
+    "id": "legacy-720-token",
+    "durations": [5, 10],
+    "resolutions": ["720"],
+    "aspect_ratios": ["16:9", "9:16"],
+    "max_image_refs": 1,
+    "max_video_refs": 0,
+    "max_audio_refs": 0,
+}
+
+CODELBA_OPENAPI_WIDE_ONLY = {
+    "id": "wide-21-9",
+    "durations": [8],
+    "resolutions": ["1080p"],
+    "aspect_ratios": ["21:9"],
+    "max_image_refs": 0,
+    "max_video_refs": 0,
+    "max_audio_refs": 0,
 }
 
 CODELBA_MODELS_RESPONSE = {
@@ -136,6 +156,14 @@ class CodelbaRoutingTests(unittest.TestCase):
         self.assertEqual(codelba.classify_codelba_model_entry(None, "seedance2.0-14s"), "unknown")
         self.assertEqual(codelba.classify_codelba_model_entry({"id": "video-looking-model"}, "video-looking-model"), "unknown")
         self.assertEqual(codelba.classify_codelba_model_entry({"id": "sd2.5", "name": "SD2.5"}, "sd2.5"), "unknown")
+        self.assertEqual(codelba.classify_codelba_model_entry({"id": "sd2-c6-10s", "type": "video"}, "sd2-c6-10s"), "video")
+        self.assertEqual(
+            codelba.classify_codelba_model_entry(
+                {"id": "gpt-image-3", "type": "image", "resolutions": ["1k", "2k"], "aspect_ratios": ["1:1"]},
+                "gpt-image-3",
+            ),
+            "image",
+        )
 
     def test_openapi_capability_schema_is_video_without_name_guessing(self):
         self.assertEqual(codelba.classify_codelba_model_entry(CODELBA_OPENAPI_SD25, "sd2.5"), "video")
@@ -179,13 +207,14 @@ class CodelbaCatalogTests(unittest.TestCase):
         )
         self.assertEqual(body["model"], "sd2.5")
         self.assertEqual(body["duration"], 10)
-        self.assertEqual(body["size"], "1280x720")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["aspect_ratio"], "16:9")
         self.assertEqual(body["image_refs"], ["https://cdn.example/图片-1.media"])
         self.assertEqual(body["video_refs"], ["https://cdn.example/视频-1.media"])
         self.assertEqual(body["audio_refs"], ["https://cdn.example/音频-1.media"])
         self.assertNotIn("compliance_enabled", body)
-        self.assertNotIn("aspect_ratio", body)
-        self.assertNotIn("resolution", body)
+        self.assertNotIn("size", body)
+        self.assertNotIn("compliance_mode", body)
 
         fast = run(
             codelba.build_codelba_video_request(
@@ -196,7 +225,9 @@ class CodelbaCatalogTests(unittest.TestCase):
             )
         )
         self.assertEqual(fast["model"], "seedance-2.0-fast-720p")
-        self.assertEqual(fast["size"], "720x720")
+        self.assertEqual(fast["resolution"], "720p")
+        self.assertEqual(fast["aspect_ratio"], "1:1")
+        self.assertNotIn("size", fast)
 
     def test_catalog_incomplete_entry_does_not_guess_another_family(self):
         catalog = codelba.parse_codelba_catalog({"data": [{"id": "sd2.5", "name": "SD2.5"}]})
@@ -241,7 +272,7 @@ class CodelbaCatalogTests(unittest.TestCase):
             )
         )
         self.assertEqual(enabled["compliance_enabled"], True)
-        self.assertEqual(enabled["compliance_mode"], "fishnet")
+        self.assertNotIn("compliance_mode", enabled)
 
     def test_catalog_overrides_legacy_family_when_both_exist(self):
         catalog = codelba.parse_codelba_catalog({
@@ -260,7 +291,7 @@ class CodelbaCatalogTests(unittest.TestCase):
 
 
 class CodelbaRequestTests(unittest.TestCase):
-    def test_sd2_c5_uses_pixel_size_and_snake_case_refs(self):
+    def test_sd2_c5_uses_public_resolution_and_aspect_ratio(self):
         payload = video_payload(
             model="sd-2-c5",
             duration=15,
@@ -277,16 +308,17 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "sd-2-c5",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720x1280",
+                "resolution": "720p",
+                "aspect_ratio": "9:16",
                 "image_refs": ["https://cdn.example/图片-1.media"],
                 "video_refs": ["https://cdn.example/视频-1.media"],
                 "audio_refs": ["https://cdn.example/音频-1.media"],
             },
         )
         for wrong_key in (
-            "aspect_ratio",
+            "size",
             "ratio",
-            "resolution",
+            "aspectRatio",
             "reference_image_urls",
             "referenceImages",
             "images",
@@ -294,14 +326,16 @@ class CodelbaRequestTests(unittest.TestCase):
             "audios",
             "generate_audio",
             "compliance_enabled",
+            "compliance_mode",
         ):
             self.assertNotIn(wrong_key, body)
 
     def test_empty_reference_arrays_are_omitted(self):
         body = run(codelba.build_codelba_video_request(video_payload(), "sd-2-c5", fake_resolve))
-        for key in ("image_refs", "video_refs", "audio_refs"):
+        for key in ("image_refs", "video_refs", "audio_refs", "size"):
             self.assertNotIn(key, body)
-        self.assertEqual(body["size"], "1280x720")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["aspect_ratio"], "16:9")
         self.assertEqual(body["duration"], 10)
 
     def test_sd2_c5_duration_and_ratio_are_exact_enums(self):
@@ -319,11 +353,14 @@ class CodelbaRequestTests(unittest.TestCase):
                     run(codelba.build_codelba_video_request(video_payload(**kwargs), "sd-2-c5", fake_resolve))
                 self.assertIn(message, ctx.exception.detail)
 
-    def test_sd2_c5_maps_43_and_34_to_pixel_sizes(self):
+    def test_sd2_c5_sends_43_and_34_as_aspect_ratio(self):
         body_43 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="4:3"), "sd-2-c5", fake_resolve))
         body_34 = run(codelba.build_codelba_video_request(video_payload(aspect_ratio="3:4"), "sd-2-c5", fake_resolve))
-        self.assertEqual(body_43["size"], "960x720")
-        self.assertEqual(body_34["size"], "720x960")
+        self.assertEqual(body_43["aspect_ratio"], "4:3")
+        self.assertEqual(body_34["aspect_ratio"], "3:4")
+        self.assertEqual(body_43["resolution"], "720p")
+        self.assertNotIn("size", body_43)
+        self.assertNotIn("size", body_34)
 
     def test_sd2_c5_10_supports_11_and_rejects_15s_and_43(self):
         body = run(
@@ -335,7 +372,9 @@ class CodelbaRequestTests(unittest.TestCase):
         )
         self.assertEqual(body["model"], "sd-2-c5-10")
         self.assertEqual(body["duration"], 8)
-        self.assertEqual(body["size"], "720x720")
+        self.assertEqual(body["aspect_ratio"], "1:1")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertNotIn("size", body)
         with self.assertRaises(HTTPException) as ctx:
             run(codelba.build_codelba_video_request(video_payload(model="sd-2-c5-10", duration=15), "sd-2-c5-10", fake_resolve))
         self.assertIn("只支持时长", ctx.exception.detail)
@@ -362,7 +401,8 @@ class CodelbaRequestTests(unittest.TestCase):
                 "model": "seedance2.0-14s",
                 "prompt": "人物站在海边，海风吹动衣角，镜头缓慢向前推进，电影质感。",
                 "duration": 15,
-                "size": "720x1280",
+                "resolution": "720p",
+                "aspect_ratio": "9:16",
                 "image_refs": ["https://cdn.example/图片-1.media"],
             },
         )
@@ -400,26 +440,41 @@ class CodelbaRequestTests(unittest.TestCase):
             run(codelba.build_codelba_video_request(video_payload(model="seedance2.0-14s", duration=4), "seedance2.0-14s", fake_resolve))
         self.assertIn("5-15", ctx.exception.detail)
 
-    def test_pixel_size_passthrough_and_audio_requires_image_or_video(self):
-        body = run(
-            codelba.build_codelba_video_request(
-                video_payload(size="1280x720", aspect_ratio="9:16"),
-                "sd-2-c5",
-                fake_resolve,
-            )
-        )
-        self.assertEqual(body["size"], "1280x720")
+    def test_conflicting_pixel_size_and_aspect_ratio_are_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
             run(
                 codelba.build_codelba_video_request(
-                    video_payload(audios=["https://example.com/a.mp3"]),
+                    video_payload(size="1280x720", aspect_ratio="9:16"),
                     "sd-2-c5",
                     fake_resolve,
                 )
             )
-        self.assertIn("必须同时传图片或视频", ctx.exception.detail)
+        self.assertIn("必须一致", ctx.exception.detail)
 
-    def test_legacy_720p_size_alias_maps_16_9_to_1280x720(self):
+    def test_legacy_pixel_size_maps_to_aspect_ratio_not_size(self):
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(size="1280x720", aspect_ratio="16:9"),
+                "sd-2-c5",
+                fake_resolve,
+            )
+        )
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertNotIn("size", body)
+
+    def test_audio_only_refs_are_allowed_when_catalog_supports_audio(self):
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(audios=["https://example.com/a.mp3"]),
+                "sd-2-c5",
+                fake_resolve,
+            )
+        )
+        self.assertEqual(body["audio_refs"], ["https://cdn.example/音频-1.media"])
+        self.assertNotIn("image_refs", body)
+
+    def test_legacy_720p_size_alias_maps_to_resolution(self):
         body = run(
             codelba.build_codelba_video_request(
                 video_payload(size="720p", aspect_ratio="16:9"),
@@ -427,7 +482,180 @@ class CodelbaRequestTests(unittest.TestCase):
                 fake_resolve,
             )
         )
-        self.assertEqual(body["size"], "1280x720")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertNotIn("size", body)
+
+    def test_catalog_1080p_is_sent_as_is_not_rewritten_to_size(self):
+        catalog = codelba.parse_codelba_catalog({"data": [CODELBA_OPENAPI_SD25]})
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="sd2.5", resolution="1080p", aspect_ratio="16:9"),
+                "sd2.5",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["resolution"], "1080p")
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertNotIn("size", body)
+
+    def test_catalog_resolution_token_is_sent_as_is(self):
+        catalog = codelba.parse_codelba_catalog({"data": [CODELBA_OPENAPI_LEGACY_720_TOKEN]})
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="legacy-720-token", duration=5, resolution="720p"),
+                "legacy-720-token",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["resolution"], "720")
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertNotIn("size", body)
+
+    def test_catalog_unmapped_aspect_ratio_does_not_need_pixel_size(self):
+        catalog = codelba.parse_codelba_catalog({"data": [CODELBA_OPENAPI_WIDE_ONLY]})
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="wide-21-9", duration=8, aspect_ratio="21:9", resolution="1080p"),
+                "wide-21-9",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["model"], "wide-21-9")
+        self.assertEqual(body["resolution"], "1080p")
+        self.assertEqual(body["aspect_ratio"], "21:9")
+        self.assertNotIn("size", body)
+
+    def test_empty_resolution_prefers_720p_when_catalog_also_has_1080p(self):
+        catalog = codelba.parse_codelba_catalog({"data": [CODELBA_OPENAPI_SD25]})
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="sd2.5", resolution=""),
+                "sd2.5",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["resolution"], "720p")
+
+    def test_live_catalog_shape_sends_public_fields(self):
+        live = {
+            "id": "sd2-c6-10s",
+            "type": "video",
+            "durations": [10, 8, 5],
+            "resolutions": ["720"],
+            "aspect_ratios": ["16:9", "9:16", "21:9", "4:3", "3:4", "1:1"],
+            "sizes": ["1280x720", "720x1280", "1680x720", "960x720", "720x960", "720x720"],
+            "max_image_refs": 9,
+            "max_video_refs": 0,
+            "max_audio_refs": 0,
+            "compliance_supported": False,
+        }
+        catalog = codelba.parse_codelba_catalog({"object": "list", "data": [live]})
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="sd2-c6-10s", duration=10, aspect_ratio="21:9", resolution="720p"),
+                "sd2-c6-10s",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["model"], "sd2-c6-10s")
+        self.assertEqual(body["duration"], 10)
+        self.assertEqual(body["resolution"], "720")
+        self.assertEqual(body["aspect_ratio"], "21:9")
+        self.assertNotIn("size", body)
+        with self.assertRaises(HTTPException) as ctx:
+            run(
+                codelba.build_codelba_video_request(
+                    video_payload(model="sd2-c6-10s", duration=15),
+                    "sd2-c6-10s",
+                    fake_resolve,
+                    catalog=catalog,
+                )
+            )
+        self.assertIn("只支持时长", ctx.exception.detail)
+        with self.assertRaises(HTTPException) as ctx:
+            run(
+                codelba.build_codelba_video_request(
+                    video_payload(model="sd2-c6-10s", duration=10, videos=["https://example.com/a.mp4"]),
+                    "sd2-c6-10s",
+                    fake_resolve,
+                    catalog=catalog,
+                )
+            )
+        self.assertIn("参考视频", ctx.exception.detail)
+
+    def test_live_sd25_rejects_canvas_default_duration_when_catalog_is_30s(self):
+        catalog = codelba.parse_codelba_catalog({
+            "data": [{
+                "id": "sd2.5",
+                "type": "video",
+                "durations": [30],
+                "resolutions": ["720p"],
+                "aspect_ratios": ["16:9", "9:16"],
+                "max_image_refs": 9,
+                "max_video_refs": 0,
+                "max_audio_refs": 0,
+            }]
+        })
+        with self.assertRaises(HTTPException) as ctx:
+            run(
+                codelba.build_codelba_video_request(
+                    video_payload(model="sd2.5", duration=5),
+                    "sd2.5",
+                    fake_resolve,
+                    catalog=catalog,
+                )
+            )
+        self.assertIn("只支持时长", ctx.exception.detail)
+        body = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="sd2.5", duration=30, aspect_ratio="9:16"),
+                "sd2.5",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(body["duration"], 30)
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["aspect_ratio"], "9:16")
+
+    def test_live_480p_is_sent_when_requested_and_auto_stays_720p(self):
+        catalog = codelba.parse_codelba_catalog({
+            "data": [{
+                "id": "seedance-2.0-mini-2",
+                "type": "video",
+                "durations": [15, 12, 10, 8, 5],
+                "resolutions": ["480p", "720p"],
+                "aspect_ratios": ["16:9", "9:16", "1:1", "4:3"],
+                "max_image_refs": 9,
+                "max_video_refs": 3,
+                "max_audio_refs": 3,
+            }]
+        })
+        auto = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="seedance-2.0-mini-2", duration=8, resolution=""),
+                "seedance-2.0-mini-2",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(auto["resolution"], "720p")
+        low = run(
+            codelba.build_codelba_video_request(
+                video_payload(model="seedance-2.0-mini-2", duration=8, resolution="480p"),
+                "seedance-2.0-mini-2",
+                fake_resolve,
+                catalog=catalog,
+            )
+        )
+        self.assertEqual(low["resolution"], "480p")
+        self.assertNotIn("size", low)
 
     def test_reference_limits_are_rejected_not_truncated(self):
         cases = (
