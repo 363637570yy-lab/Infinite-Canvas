@@ -70,6 +70,40 @@ class MediaPreviewWarmupTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(main.can_warmup_media_preview(str(path)))
         self.assertIsNone(main.schedule_media_preview_warmup("/assets/output/notes.txt"))
 
+    def write_fake_mp4(self, name="clip.mp4"):
+        path = self.generated / name
+        path.write_bytes(b"\x00\x00\x00\x20ftypisom" + b"\x00" * 128)
+        return path, f"/assets/output/{name}"
+
+    def test_video_placeholder_is_small_webp(self):
+        payload = main.video_preview_placeholder_bytes()
+        self.assertTrue(payload.startswith(b"RIFF"))
+        self.assertIn(b"WEBP", payload[:16])
+        self.assertLess(len(payload), 4096)
+
+    def test_video_preview_without_ffmpeg_raises(self):
+        path, _url = self.write_fake_mp4()
+        with patch.object(main.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg"):
+                main.generate_video_preview_image(str(path), 512)
+
+    async def test_video_preview_without_ffmpeg_returns_image_not_video(self):
+        from fastapi.responses import FileResponse
+
+        path, url = self.write_fake_mp4()
+        with patch.object(main.shutil, "which", return_value=None):
+            resp = await main.media_preview(url, 512)
+        self.assertFalse(isinstance(resp, FileResponse))
+        self.assertEqual(resp.media_type, "image/webp")
+        self.assertEqual(resp.headers.get("cache-control"), "no-store")
+        body = resp.body
+        self.assertTrue(body.startswith(b"RIFF"))
+        self.assertIn(b"WEBP", body[:16])
+        self.assertLess(len(body), 4096)
+        webp, png = main.media_preview_cache_paths(str(path), 512)
+        self.assertFalse(Path(webp).exists())
+        self.assertFalse(Path(png).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

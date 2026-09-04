@@ -7139,6 +7139,16 @@ def media_preview_cache_paths(path: str, width: int):
 def is_video_preview_file(path: str) -> bool:
     return os.path.splitext(str(path or "").split("?", 1)[0])[1].lower() in {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
 
+VIDEO_PREVIEW_PLACEHOLDER_SIZE = (64, 36)
+VIDEO_PREVIEW_PLACEHOLDER_COLOR = (32, 36, 44)
+
+def video_preview_placeholder_bytes() -> bytes:
+    """Tiny cached-never placeholder so a failed video thumb stays an image, not the source MP4."""
+    img = Image.new("RGB", VIDEO_PREVIEW_PLACEHOLDER_SIZE, VIDEO_PREVIEW_PLACEHOLDER_COLOR)
+    buf = BytesIO()
+    img.save(buf, format="WEBP", quality=50, method=0)
+    return buf.getvalue()
+
 def generate_video_preview_image(path: str, width: int) -> Image.Image:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -7242,7 +7252,13 @@ async def media_preview(url: str, w: int = 512):
         return FileResponse(out_path, media_type=media_type)
     except Exception as exc:
         if is_video_preview_file(path):
-            return FileResponse(path, media_type=content_type_for_path(path))
+            print(f"video preview failed: {exc}")
+            payload = await asyncio.to_thread(video_preview_placeholder_bytes)
+            return Response(
+                content=payload,
+                media_type="image/webp",
+                headers={"Cache-Control": "no-store"},
+            )
         raise HTTPException(status_code=415, detail=f"无法生成预览图：{exc}") from exc
 
 @app.get("/api/image-jpeg")
