@@ -420,6 +420,7 @@ const world = document.getElementById('world');
 const nodesEl = document.getElementById('nodes');
 const minimap = document.getElementById('minimap');
 const minimapContent = document.getElementById('minimapContent');
+const canvasFitBtn = document.getElementById('canvasFitBtn');
 const canvasArrangeBtn = document.getElementById('canvasArrangeBtn');
 let minimapViewport = document.getElementById('minimapViewport');
 const linksEl = document.getElementById('links');
@@ -726,7 +727,7 @@ function localViewportForCanvas(canvasId, fallback={x:0, y:0, scale:1}){
     return {
         x:Number.isFinite(Number(item.x)) ? Number(item.x) : Number(fallback.x || 0),
         y:Number.isFinite(Number(item.y)) ? Number(item.y) : Number(fallback.y || 0),
-        scale:Number.isFinite(Number(item.scale)) ? Math.max(.12, Math.min(8, Number(item.scale))) : Number(fallback.scale || 1)
+        scale:Number.isFinite(Number(item.scale)) ? Math.max(.001, Math.min(8, Number(item.scale))) : Number(fallback.scale || 1)
     };
 }
 function saveLocalViewport(){
@@ -1460,10 +1461,12 @@ function safeViewportScale(value){
 }
 function fitAllNodesViewport(){
     const rect = board.getBoundingClientRect();
+    const stageW = Math.max(1, rect.width || 0);
+    const stageH = Math.max(1, rect.height || 0);
     if(!nodes.length){
         viewport.scale = 0.45;
-        viewport.x = rect.width / 2;
-        viewport.y = rect.height / 2;
+        viewport.x = stageW / 2;
+        viewport.y = stageH / 2;
         applyViewport();
         renderLinks();
         renderSelectionHub();
@@ -1475,19 +1478,31 @@ function fitAllNodesViewport(){
     const minY = Math.min(...rects.map(r => r.y));
     const maxX = Math.max(...rects.map(r => r.x + r.w));
     const maxY = Math.max(...rects.map(r => r.y + r.h));
-    const pad = 180;
-    const width = Math.max(1, maxX - minX + pad * 2);
-    const height = Math.max(1, maxY - minY + pad * 2);
-    const nextScale = Math.max(0.06, Math.min(0.82, (rect.width - 80) / width, (rect.height - 80) / height));
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
+    const contentW = Math.max(1, maxX - minX);
+    const contentH = Math.max(1, maxY - minY);
+    const padX = Math.max(40, stageW * 0.18);
+    const padY = Math.max(40, stageH * 0.18);
+    const usableW = Math.max(1, stageW - padX * 2);
+    const usableH = Math.max(1, stageH - padY * 2);
+    const nextScale = Math.max(0.001, Math.min(1.2, Math.min(usableW / contentW, usableH / contentH)));
     viewport.scale = nextScale;
-    viewport.x = rect.width / 2 - cx * viewport.scale;
-    viewport.y = rect.height / 2 - cy * viewport.scale;
+    viewport.x = (stageW - contentW * nextScale) / 2 - minX * nextScale;
+    viewport.y = (stageH - contentH * nextScale) / 2 - minY * nextScale;
     applyViewport();
     renderLinks();
     renderSelectionHub();
     scheduleViewportSave();
+}
+function commitZoomPreviewState(){
+    if(!zoomPreviewState) return;
+    zoomPreviewState = null;
+    shell.classList.remove('zoom-preview');
+    document.body.classList.remove('canvas-zoom-preview');
+}
+function fitAllNodesToView(){
+    if(!canvas) return;
+    commitZoomPreviewState();
+    fitAllNodesViewport();
 }
 function enterZoomPreview(){
     if(zoomPreviewState || !canvas) return;
@@ -15541,7 +15556,7 @@ function isEditableTarget(target){
 }
 minimap?.addEventListener('mousedown', e => {
     if(!canvas || e.button !== 0) return;
-    if(e.target.closest?.('#canvasArrangeBtn')) return;
+    if(e.target.closest?.('#canvasArrangeBtn, #canvasFitBtn')) return;
     e.preventDefault();
     e.stopPropagation();
     minimapDrag = true;
@@ -15556,6 +15571,12 @@ minimap?.addEventListener('mousedown', e => {
         scheduleViewportSave();
     };
 });
+canvasFitBtn?.addEventListener('mousedown', e => e.stopPropagation());
+canvasFitBtn?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    fitAllNodesToView();
+});
 canvasArrangeBtn?.addEventListener('mousedown', e => e.stopPropagation());
 canvasArrangeBtn?.addEventListener('click', e => {
     e.preventDefault();
@@ -15563,7 +15584,7 @@ canvasArrangeBtn?.addEventListener('click', e => {
     arrangeSelectedCanvasNodes();
 });
 function isZoomPreviewIgnoredTarget(target){
-    return !!target?.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasAssetPanel, #assetManagerModal, #workflowTransferModal, #logModal, #promptTemplateModal, #imageEditModal, #outputLightbox');
+    return !!target?.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasFitBtn, #canvasArrangeBtn, #canvasAssetPanel, #assetManagerModal, #workflowTransferModal, #logModal, #promptTemplateModal, #imageEditModal, #outputLightbox');
 }
 board.addEventListener('mousedown', e => {
     if(!zoomPreviewState || e.button !== 0) return;
@@ -15582,7 +15603,7 @@ board.addEventListener('click', e => {
 }, true);
 function startBoardPan(e, opts={}){
     if(!canvas) return false;
-    if(isEditableTarget(e.target) || e.target.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap')) return false;
+    if(isEditableTarget(e.target) || e.target.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasFitBtn, #canvasArrangeBtn')) return false;
     e.preventDefault();
     e.stopPropagation();
     closeCreateMenu();
@@ -15748,6 +15769,12 @@ window.addEventListener('keydown', e => {
         return;
     }
     if(e.key === 'Escape' && outputLightbox.classList.contains('open')) { closeOutputLightbox(); return; }
+    if((e.ctrlKey || e.metaKey) && key === '1' && !e.altKey && !e.shiftKey){
+        if(isEditableTarget(e.target)) return;
+        e.preventDefault();
+        fitAllNodesToView();
+        return;
+    }
     if(!e.ctrlKey && !e.metaKey && !e.altKey && key === 'z' && !isEditableTarget(e.target)
         && !document.getElementById('imageEditModal')?.classList.contains('open')
         && !promptTemplateModal?.classList.contains('open')

@@ -69,6 +69,8 @@
         "canvas.msGenerate": { zh: "Modelscope生成", en: "Modelscope Generate" },
         "canvas.videoGenerate": { zh: "视频生成", en: "Video Generate" },
         "canvas.group": { zh: "分组", en: "Group" },
+        "canvas.fitAll": { zh: "适应", en: "Fit" },
+        "canvas.fitAllTitle": { zh: "适应全部 (Ctrl+1)", en: "Fit all (Ctrl+1)" },
         "canvas.logs": { zh: "日志", en: "Logs" },
         "canvas.generationLogs": { zh: "生成日志", en: "Generation Logs" },
         "canvas.noLogs": { zh: "还没有生成日志", en: "No generation logs yet" },
