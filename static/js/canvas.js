@@ -15556,7 +15556,7 @@ function isEditableTarget(target){
 }
 minimap?.addEventListener('mousedown', e => {
     if(!canvas || e.button !== 0) return;
-    if(e.target.closest?.('#canvasArrangeBtn, #canvasFitBtn')) return;
+    if(e.target.closest?.('#canvasArrangeBtn, #canvasFitBtn, #canvasStageTools')) return;
     e.preventDefault();
     e.stopPropagation();
     minimapDrag = true;
@@ -15584,7 +15584,7 @@ canvasArrangeBtn?.addEventListener('click', e => {
     arrangeSelectedCanvasNodes();
 });
 function isZoomPreviewIgnoredTarget(target){
-    return !!target?.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasFitBtn, #canvasArrangeBtn, #canvasAssetPanel, #assetManagerModal, #workflowTransferModal, #logModal, #promptTemplateModal, #imageEditModal, #outputLightbox');
+    return !!target?.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasStageTools, #canvasFitBtn, #canvasArrangeBtn, #canvasAssetPanel, #assetManagerModal, #workflowTransferModal, #logModal, #promptTemplateModal, #imageEditModal, #outputLightbox');
 }
 board.addEventListener('mousedown', e => {
     if(!zoomPreviewState || e.button !== 0) return;
@@ -15603,7 +15603,7 @@ board.addEventListener('click', e => {
 }, true);
 function startBoardPan(e, opts={}){
     if(!canvas) return false;
-    if(isEditableTarget(e.target) || e.target.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasFitBtn, #canvasArrangeBtn')) return false;
+    if(isEditableTarget(e.target) || e.target.closest?.('#createMenu, #linkCreateMenu, #nodeInputMenu, #nodeOutputMenu, #imageNodeMenu, .minimap, #canvasStageTools, #canvasFitBtn, #canvasArrangeBtn')) return false;
     e.preventDefault();
     e.stopPropagation();
     closeCreateMenu();

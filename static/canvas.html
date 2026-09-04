@@ -51,6 +51,7 @@
                     <button class="tool-btn" onclick="addLTXDirectorNode()"><i data-lucide="film" class="w-4 h-4"></i><span data-i18n="canvas.ltxDirector">LTX Director</span></button>
                     <button class="tool-btn" onclick="addOutputNode()"><i data-lucide="circle-dot" class="w-4 h-4"></i>Output</button>
                     <button class="tool-btn" onclick="groupSelectedImages()"><i data-lucide="group" class="w-4 h-4"></i><span data-i18n="canvas.group">分组</span></button>
+                    <button class="tool-btn" type="button" onclick="fitAllNodesToView()" title="适应全部 (Ctrl+1)" aria-label="适应全部" data-i18n-title="canvas.fitAllTitle"><i data-lucide="maximize-2" class="w-4 h-4"></i><span data-i18n="canvas.fitAll">适应</span></button>
                 </div>
                 <div class="toolbar-fixed">
                     <button id="workflowTransferToggle" class="tool-btn toolbar-workflow" type="button" title="导入导出工作流" aria-label="导入导出工作流"><i data-lucide="package-open" class="w-4 h-4"></i><span>工作流</span></button>
@@ -89,8 +90,10 @@
                 <div id="linkControls" class="link-controls"></div>
                 <div id="nodes"></div>
             </div>
-            <button id="canvasFitBtn" class="minimap-tool-btn" type="button" title="适应全部 (Ctrl+1)" aria-label="适应全部" data-i18n-title="canvas.fitAllTitle"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i><span data-i18n="canvas.fitAll">适应</span></button>
-            <button id="canvasArrangeBtn" class="minimap-tool-btn minimap-arrange-btn" type="button" title="整理选中节点" aria-label="整理选中节点"><i data-lucide="layout-grid" class="w-3.5 h-3.5"></i><span>整理选中</span></button>
+            <div id="canvasStageTools" class="canvas-stage-tools">
+                <button id="canvasFitBtn" class="canvas-stage-tool-btn" type="button" title="适应全部 (Ctrl+1)" aria-label="适应全部" data-i18n-title="canvas.fitAllTitle">适应</button>
+                <button id="canvasArrangeBtn" class="canvas-stage-tool-btn minimap-arrange-btn" type="button" title="整理选中节点" aria-label="整理选中节点">整理</button>
+            </div>
             <div id="minimap" class="minimap" title="导航地图">
                 <div id="minimapContent" class="minimap-content">
                     <div id="minimapViewport" class="minimap-viewport"></div>
