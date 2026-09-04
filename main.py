@@ -3643,7 +3643,7 @@ def cleanup_expired_canvas_trash():
             except Exception:
                 continue
 
-_canvas_record_cache = {"dir": None, "sig": None, "live": [], "trash": []}
+_canvas_record_cache = {"dir": None, "sig": None, "files": {}, "live": [], "trash": []}
 
 def canvas_dir_signature():
     entries = []
@@ -3664,24 +3664,32 @@ def canvas_dir_signature():
     return tuple(entries)
 
 def refresh_canvas_record_cache():
-    """Index canvas cards from file mtime/size. GET list must not parse 46MB twice or delete trash."""
+    """Index canvas cards by file mtime/size. A single autosave must not reparse every canvas."""
     sig = canvas_dir_signature()
     cache = _canvas_record_cache
     if cache["dir"] == CANVAS_DIR and cache["sig"] == sig:
         return cache
+    old_files = cache["files"] if cache["dir"] == CANVAS_DIR else {}
+    files = {}
     live, trash = [], []
-    for name, _mtime_ns, _size in sig:
-        try:
-            data = read_canvas_file(os.path.join(CANVAS_DIR, name))
-        except Exception:
-            continue
-        record = canvas_record(data)
+    for name, mtime_ns, size in sig:
+        prev = old_files.get(name)
+        if prev and prev[0] == mtime_ns and prev[1] == size:
+            record = prev[2]
+        else:
+            try:
+                data = read_canvas_file(os.path.join(CANVAS_DIR, name))
+            except Exception:
+                continue
+            record = canvas_record(data)
+        files[name] = (mtime_ns, size, record)
         if record.get("deleted_at"):
             trash.append(record)
         else:
             live.append(record)
     cache["dir"] = CANVAS_DIR
     cache["sig"] = sig
+    cache["files"] = files
     cache["live"] = live
     cache["trash"] = trash
     return cache

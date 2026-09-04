@@ -42,7 +42,7 @@ class CanvasAtomicWriteTests(unittest.TestCase):
         ]
         for item in self.patches:
             item.start()
-        main._canvas_record_cache.update({"dir": None, "sig": None, "live": [], "trash": []})
+        main._canvas_record_cache.update({"dir": None, "sig": None, "files": {}, "live": [], "trash": []})
 
     def tearDown(self):
         for item in reversed(self.patches):
@@ -128,7 +128,7 @@ class CanvasAtomicWriteTests(unittest.TestCase):
             "updated_at": 1,
         }
         main.atomic_write_json(str(self.canvases / "old-trash.json"), canvas)
-        main._canvas_record_cache.update({"dir": None, "sig": None, "live": [], "trash": []})
+        main._canvas_record_cache.update({"dir": None, "sig": None, "files": {}, "live": [], "trash": []})
 
         self.assertEqual(main.iter_canvas_records(), [])
         self.assertEqual([item["id"] for item in main.iter_canvas_records(include_deleted=True)], ["old-trash"])
